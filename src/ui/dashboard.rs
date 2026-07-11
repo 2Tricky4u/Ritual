@@ -115,11 +115,30 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         .collect();
     f.render_widget(List::new(items), chunks[0]);
 
-    // Widgets: branch, codex auth, check state.
-    let codex = match app.codex_ok {
+    // Widgets: branch, agent auth, mcp bridge, check state.
+    let claude = match &app.agents.claude {
+        Some(a) if a.logged_in => Span::styled(
+            format!(
+                "claude ok{}",
+                a.subscription_type
+                    .as_deref()
+                    .map(|s| format!(" ({s})"))
+                    .unwrap_or_default()
+            ),
+            Style::default().fg(t.ok()),
+        ),
+        Some(_) => Span::styled("claude: not logged in", Style::default().fg(t.error())),
+        None => Span::styled("claude …", Style::default().fg(t.muted())),
+    };
+    let codex = match app.agents.codex_cli_ok {
         Some(true) => Span::styled("codex ok", Style::default().fg(t.ok())),
         Some(false) => Span::styled("codex: run `codex login`", Style::default().fg(t.error())),
         None => Span::styled("codex …", Style::default().fg(t.muted())),
+    };
+    let mcp = match app.agents.mcp_codex_connected {
+        Some(true) => Span::styled("bridge ok", Style::default().fg(t.ok())),
+        Some(false) => Span::styled("bridge down", Style::default().fg(t.error())),
+        None => Span::styled("bridge …", Style::default().fg(t.muted())),
     };
     let check = match &app.check {
         CheckState::Unknown => Span::styled("check ?", Style::default().fg(t.muted())),
@@ -130,6 +149,14 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         CheckState::Green => Span::styled("check green", Style::default().fg(t.ok())),
         CheckState::Red { .. } => Span::styled("check RED", Style::default().fg(t.error())),
     };
+    let widget_line = |icon: &'static str, content: Span<'static>| {
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(icon, Style::default().fg(t.accent())),
+            Span::raw(" "),
+            content,
+        ])
+    };
     let lines = vec![
         Line::default(),
         Line::from(vec![
@@ -139,18 +166,10 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             ),
             Span::styled(app.branch.clone(), Style::default().fg(t.fg())),
         ]),
-        Line::from(vec![
-            Span::raw(" "),
-            Span::styled(t.icon_agent(), Style::default().fg(t.accent())),
-            Span::raw(" "),
-            codex,
-        ]),
-        Line::from(vec![
-            Span::raw(" "),
-            Span::styled(t.icon_check(), Style::default().fg(t.accent())),
-            Span::raw(" "),
-            check,
-        ]),
+        widget_line(t.icon_agent(), claude),
+        widget_line(t.icon_agent(), codex),
+        widget_line(t.icon_agent(), mcp),
+        widget_line(t.icon_check(), check),
     ];
     f.render_widget(Paragraph::new(lines), chunks[1]);
 }
@@ -276,6 +295,19 @@ fn event_line<'a>(t: &Theme, ev: &'a AgentEvent) -> Line<'a> {
 
 fn draw_live(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.cfg.theme;
+
+    // A red check gets a dedicated pane at the bottom of the live tab.
+    let (stream_area, check_area) = if let CheckState::Red { tail } = &app.check {
+        let h = (tail.lines().count() as u16 + 2).min(area.height / 2);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(h)])
+            .split(area);
+        (chunks[0], Some((chunks[1], tail.clone())))
+    } else {
+        (area, None)
+    };
+
     if app.stream.is_empty() {
         let hint = if app.running.is_some() {
             "waiting for agent output…"
@@ -287,18 +319,36 @@ fn draw_live(f: &mut Frame, app: &App, area: Rect) {
                 .style(Style::default().fg(t.muted()))
                 .alignment(Alignment::Center)
                 .wrap(Wrap { trim: true }),
-            centered_vertically(area, 1),
+            centered_vertically(stream_area, 1),
         );
-        return;
+    } else {
+        let height = stream_area.height as usize;
+        let end = app.stream_scroll.unwrap_or(app.stream.len());
+        let start = end.saturating_sub(height);
+        let lines: Vec<Line> = app.stream[start..end]
+            .iter()
+            .map(|e| event_line(t, e))
+            .collect();
+        f.render_widget(Paragraph::new(lines), stream_area);
     }
-    let height = area.height as usize;
-    let end = app.stream_scroll.unwrap_or(app.stream.len());
-    let start = end.saturating_sub(height);
-    let lines: Vec<Line> = app.stream[start..end]
-        .iter()
-        .map(|e| event_line(t, e))
-        .collect();
-    f.render_widget(Paragraph::new(lines), area);
+
+    if let Some((rect, tail)) = check_area {
+        f.render_widget(
+            Paragraph::new(tail)
+                .style(Style::default().fg(t.error()))
+                .wrap(Wrap { trim: false })
+                .block(
+                    Block::default()
+                        .borders(Borders::TOP)
+                        .border_style(Style::default().fg(t.error()))
+                        .title(Span::styled(
+                            " check.sh failed ",
+                            Style::default().fg(t.error()).add_modifier(Modifier::BOLD),
+                        )),
+                ),
+            rect,
+        );
+    }
 }
 
 fn draw_findings(f: &mut Frame, app: &App, area: Rect) {

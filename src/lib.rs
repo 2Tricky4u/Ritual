@@ -1,3 +1,4 @@
+pub mod agents_status;
 pub mod cli;
 pub mod config;
 pub mod findings;
@@ -11,3 +12,4 @@ pub mod state;
 pub mod term;
 pub mod theme;
 pub mod ui;
+pub mod watcher;

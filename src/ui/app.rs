@@ -44,7 +44,8 @@ pub enum AppMsg {
     Agent(Box<AgentEvent>),
     RunExited(Box<Result<RunOutcome>>),
     CheckDone { ok: bool, tail: String },
-    CodexAuth(bool),
+    AgentsStatus(Box<crate::agents_status::AgentsStatus>),
+    FileChanged,
     Tick,
 }
 
@@ -69,7 +70,7 @@ pub struct App {
     pub selected_finding: usize,
     pub metas: Vec<RunMeta>,
     pub check: CheckState,
-    pub codex_ok: Option<bool>,
+    pub agents: crate::agents_status::AgentsStatus,
     pub running: Option<StageId>,
     pub spinner: usize,
     pub show_help: bool,
@@ -104,7 +105,7 @@ impl App {
             selected_finding: 0,
             metas,
             check: CheckState::Unknown,
-            codex_ok: None,
+            agents: Default::default(),
             running: None,
             spinner: 0,
             show_help: false,
@@ -161,7 +162,15 @@ impl App {
                     CheckState::Red { tail }
                 };
             }
-            AppMsg::CodexAuth(ok) => self.codex_ok = Some(ok),
+            AppMsg::AgentsStatus(status) => self.agents = *status,
+            AppMsg::FileChanged => {
+                // Auto-check only when idle: agent runs already get checked
+                // by the PostToolUse hook, and parallel checks fight over
+                // build locks.
+                if self.running.is_none() && self.check != CheckState::Running {
+                    self.run_check(tx, true);
+                }
+            }
         }
     }
 
@@ -264,7 +273,7 @@ impl App {
                 return;
             }
         };
-        if cmd.needs_codex && self.codex_ok == Some(false) {
+        if cmd.needs_codex && self.agents.codex_cli_ok == Some(false) {
             self.status_msg = Some("codex not authenticated — run `codex login`".into());
             return;
         }
@@ -487,7 +496,7 @@ impl App {
 
     fn refresh(&mut self, tx: &mpsc::Sender<AppMsg>) {
         self.reload_artifacts();
-        spawn_codex_probe(&self.cfg, tx.clone());
+        crate::agents_status::spawn_probe(&self.cfg, tx.clone());
         self.status_msg = Some("refreshed".into());
     }
 
@@ -509,14 +518,6 @@ impl App {
         argv.push(file.clone());
         self.pending_attached = Some(AttachedRequest { stage: None, argv });
     }
-}
-
-pub fn spawn_codex_probe(cfg: &Config, tx: mpsc::Sender<AppMsg>) {
-    let cfg = cfg.clone();
-    tokio::task::spawn_blocking(move || {
-        let ok = stages::codex_ready(&cfg);
-        let _ = tx.blocking_send(AppMsg::CodexAuth(ok));
-    });
 }
 
 fn list_dir(dir: &std::path::Path) -> Vec<String> {
@@ -571,7 +572,8 @@ pub async fn run(cfg: Config, dirs: RitualDirs) -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<AppMsg>(512);
 
     let mut app = App::new(cfg, dirs).context("loading project state")?;
-    spawn_codex_probe(&app.cfg, tx.clone());
+    crate::agents_status::spawn_probe(&app.cfg, tx.clone());
+    let watcher = crate::watcher::spawn(app.dirs.project_root.clone(), tx.clone()).ok();
 
     // Spinner/refresh tick.
     let tick_tx = tx.clone();
@@ -598,13 +600,25 @@ pub async fn run(cfg: Config, dirs: RitualDirs) -> Result<()> {
             app.update(msg, &tx);
         }
 
+        // The watcher stands down while any agent owns the project.
+        if let Some(w) = &watcher {
+            w.paused
+                .store(app.running.is_some(), std::sync::atomic::Ordering::SeqCst);
+        }
+
         if let Some(req) = app.take_attached() {
             if let Some(task) = input.take() {
                 task.stop().await; // crossterm reader is global: MUST join first
             }
+            if let Some(w) = &watcher {
+                w.paused.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
             let cwd = app.dirs.project_root.clone();
             // std::process blocks; tell tokio so the worker thread is compensated.
             let ok = tokio::task::block_in_place(|| term.run_attached(&req.argv, &cwd))?;
+            if let Some(w) = &watcher {
+                w.paused.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
             app.after_attached(req.stage, ok);
             input = Some(InputTask::spawn(tx.clone()));
         }
