@@ -54,6 +54,7 @@ Rules that make it work:
 | `/plan-review` skill | `~/.claude/skills/plan-review/` | Bounded cross-model plan critique |
 | `/tdd` skill | `~/.claude/skills/tdd/` | Cross-model test-first implementation |
 | `/dual-review` skill | `~/.claude/skills/dual-review/` | Independent two-model diff review |
+| `/brainstorm` `/debug` `/commit` `/pr` `/changelog` `/docs` `/document` `/deps-audit` | `~/.claude/skills/*` | Tailored toolbelt (2026-07): pre-spec discovery, root-cause debugging, git delivery, verified docs, pandoc deliverables, supply-chain audit. ~11 skills total — at the community-recommended context-tax ceiling; disable what you don't use |
 | `code-reviewer` subagent | `~/.claude/agents/code-reviewer.md` | Read-only fresh-eyes reviewer (no Edit/Write) |
 | check-on-edit hook | `~/.claude/hooks/check-on-edit.sh` + `PostToolUse` in `~/.claude/settings.json` | Runs `./check.sh fast` after every Edit/Write; failures block with feedback |
 

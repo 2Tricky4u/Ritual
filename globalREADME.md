@@ -27,10 +27,20 @@ The two review stages write machine-readable findings to `.ritual/findings/` —
 ## What you can do, tool by tool
 
 ### In any Claude Code session (skills — installed user-level, work everywhere)
+
+The cross-model workflow trio:
 - `/plan-review [plan-file]` — cross-model critique of a plan before you accept it. Checklist: missing requirements, edge cases, hidden complexity, simpler alternative, risks, testability.
 - `/tdd [feature]` — test-first implementation with Codex as the independent test designer.
 - `/dual-review [base-ref]` — independent two-model diff review, confirm-before-fix.
 - The `code-reviewer` subagent — read-only fresh-context reviewer; Claude uses it proactively after changes.
+
+The tailored toolbelt (added 2026-07, modeled on the best-rated community skills, integrated with check.sh/.ritual conventions):
+- `/brainstorm [idea]` — Socratic discovery BEFORE planning; converges on a spec (writes `.ritual` spec.md); hands off to plan mode.
+- `/debug [symptom]` — systematic 4-phase root-cause debugging; fixing before understanding is forbidden; every fix ends with a regression test.
+- `/commit`, `/pr [base]`, `/changelog [range]` — git delivery: Conventional Commits from the staged diff, evidence-based PR descriptions with risk/rollback, Keep-a-Changelog release notes.
+- `/docs [target]` — project documentation with executed-before-documented examples; no marketing adjectives.
+- `/document [what]` — deliverable .docx/.pdf via markdown + pandoc, verified artifacts.
+- `/deps-audit` — supply-chain audit (cargo/npm/pip audit + licenses) with reachability triage; writes `.ritual` findings. Complements built-in `/security-review` (code-level).
 
 ### Talk to Codex directly (plugin commands)
 - `/codex:review` — Codex reviews uncommitted changes / a branch / a commit.
