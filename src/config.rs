@@ -33,6 +33,8 @@ pub struct FileConfig {
     pub check_timeout_secs: Option<u64>,
     /// Air-gapped mode: skip cloud auth preflights/probes entirely.
     pub offline: Option<bool>,
+    /// Terminal background shows through the main pane (chadrc parity).
+    pub transparency: Option<bool>,
     /// `[commands]` table: name -> shell template with {{branch}}, {{run_id}},
     /// {{finding.file}}, {{finding.line}} placeholders (lazygit-style).
     pub commands: Option<HashMap<String, String>>,
@@ -93,6 +95,7 @@ impl Config {
         let mut theme_name = cfg.theme_name.clone();
         let mut icons = IconSet::Nerd;
         let mut key_overrides: HashMap<String, String> = HashMap::new();
+        let mut transparency = true;
 
         let mut layers: Vec<PathBuf> = Vec::new();
         if let Some(dir) = dirs::config_dir() {
@@ -151,6 +154,9 @@ impl Config {
             if let Some(o) = fc.offline {
                 cfg.offline = o;
             }
+            if let Some(t) = fc.transparency {
+                transparency = t;
+            }
             if let Some(commands) = fc.commands {
                 for (name, template) in commands {
                     cfg.commands.retain(|(n, _)| *n != name);
@@ -178,6 +184,7 @@ impl Config {
 
         cfg.theme = Theme::by_name(&theme_name, icons)
             .with_context(|| format!("unknown theme '{theme_name}' (eldritch, tokyonight)"))?;
+        cfg.theme.transparency = transparency;
         cfg.theme_name = theme_name;
         cfg.keymap = Keymap::default().with_overrides(&key_overrides)?;
         Ok(cfg)
