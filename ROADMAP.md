@@ -1,5 +1,11 @@
 # ritual — roadmap
 
+> **Status (v0.2, 2026-07-12): everything below through v0.4 is SHIPPED**, except the
+> in-app version-check note (deferred — `ritual --version` covers it) and full
+> session-state persistence (the load-bearing part — daemonized runs + reattach —
+> shipped; scroll/tab restoration was judged not worth the complexity).
+> This file is kept as the design rationale for what was built.
+
 Feature candidates researched July 2026 across three sources: what makes professional TUIs beloved (lazygit, k9s, yazi, zellij, atuin…), what AI-coding orchestrators ship (Claude Squad, vibe-kanban, Plandex, aider, goose…), and what research engineers / embedded technicians / ops actually need (MLflow, 21 CFR Part 11 audit trails, Zephyr HIL pipelines, gitleaks…). Ranked by value ÷ effort **for this codebase** — most items build directly on existing pieces (raw run archives, run meta, check.sh abstraction, config layering).
 
 ## v0.2 — high value, low effort (quality-of-life + safety)

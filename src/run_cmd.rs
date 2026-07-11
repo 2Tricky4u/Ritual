@@ -44,7 +44,7 @@ pub fn execute(
 
     let cmd = stages::build(stage, cfg, dirs, &slug, arg)?;
 
-    if cmd.needs_codex && !stages::codex_ready(cfg) {
+    if cmd.needs_codex && !cfg.offline && !stages::codex_ready(cfg) {
         anyhow::bail!(
             "codex is not authenticated — run `codex login` first (stage '{}' talks to Codex via MCP)",
             stage.label()

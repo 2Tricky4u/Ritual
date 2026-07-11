@@ -138,7 +138,11 @@ impl App {
             .as_ref()
             .map(|p| p.input.clone())
             .unwrap_or_default();
-        keymap::palette_entries()
+        let mut entries = keymap::palette_entries();
+        for (i, (name, _)) in self.cfg.commands.iter().enumerate() {
+            entries.push((format!("cmd: {name}"), Action::Custom(i)));
+        }
+        entries
             .into_iter()
             .filter(|(label, _)| keymap::fuzzy_match(&filter, label))
             .collect()
@@ -359,6 +363,7 @@ impl App {
             Action::FeatureNext => self.select_feature(1),
             Action::FeaturePrev => self.select_feature(-1),
             Action::Takeover => self.takeover(),
+            Action::Custom(i) => self.run_custom(i, tx),
             Action::RunStage(id) => {
                 if let Some(idx) = PIPELINE.iter().position(|s| *s == id) {
                     self.selected = idx;
@@ -569,6 +574,60 @@ impl App {
             let _ = forward.await;
             let _ = tx_done.send(AppMsg::RunExited(Box::new(outcome))).await;
         }));
+    }
+
+    /// Run a user-defined [commands] template ({{branch}}, {{run_id}},
+    /// {{finding.file}}, {{finding.line}}); output lands in the live stream.
+    fn run_custom(&mut self, idx: usize, tx: &mpsc::Sender<AppMsg>) {
+        let Some((name, template)) = self.cfg.commands.get(idx).cloned() else {
+            return;
+        };
+        let agg = crate::findings::aggregate(&self.findings);
+        let finding = agg.get(self.selected_finding).map(|(_, f)| f.clone());
+        let rendered = template
+            .replace("{{branch}}", &self.branch)
+            .replace("{{run_id}}", self.current_run_id.as_deref().unwrap_or(""))
+            .replace(
+                "{{finding.file}}",
+                finding
+                    .as_ref()
+                    .and_then(|f| f.file.as_deref())
+                    .unwrap_or(""),
+            )
+            .replace(
+                "{{finding.line}}",
+                &finding
+                    .as_ref()
+                    .and_then(|f| f.line)
+                    .map(|l| l.to_string())
+                    .unwrap_or_default(),
+            );
+        self.status_msg = Some(format!("cmd {name}: running…"));
+        self.tab = Tab::Live;
+        let cwd = self
+            .run_cwd()
+            .unwrap_or_else(|| self.dirs.work_root.clone());
+        let tx = tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&rendered)
+                .current_dir(&cwd)
+                .output();
+            let text = match out {
+                Ok(o) => format!(
+                    "$ {rendered}\n{}{}",
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                ),
+                Err(e) => format!("$ {rendered}\nfailed: {e}"),
+            };
+            for line in text.lines().take(80) {
+                let _ = tx.blocking_send(AppMsg::Agent(Box::new(AgentEvent::Text {
+                    text: line.to_string(),
+                })));
+            }
+        });
     }
 
     /// Stages stuck in Running whose run actually finished (launcher died

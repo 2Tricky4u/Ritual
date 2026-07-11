@@ -84,6 +84,23 @@ pub enum Command {
     },
     /// Verify the tamper-evident hash chain over all recorded runs
     VerifyLog,
+    /// Run a headless stage N times and score the results (model/prompt comparison)
+    Bench {
+        /// Stage: plan-review | dual-review
+        stage: String,
+        /// Number of repetitions
+        #[arg(long, default_value_t = 3)]
+        runs: usize,
+        /// JSON array of expected finding titles to score recall against
+        #[arg(long)]
+        golden: Option<std::path::PathBuf>,
+    },
+    /// Export run history as OTLP-shaped JSON lines (one span per run)
+    Export {
+        /// Write to a file instead of stdout
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
     /// Internal: detached run executor (do not invoke by hand)
     #[command(name = "_spawn", hide = true)]
     InternalSpawn { run_id: String },

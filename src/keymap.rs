@@ -33,6 +33,8 @@ pub enum Action {
     FeaturePrev,
     Takeover,
     RunStage(StageId),
+    /// User-defined [commands] entry by index (palette-only).
+    Custom(usize),
 }
 
 /// (config name, action, palette label) for every nameable action.

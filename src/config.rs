@@ -31,6 +31,11 @@ pub struct FileConfig {
     pub models: Option<HashMap<String, String>>,
     /// Hard ceiling on any check.sh invocation (hung boards, wedged builds).
     pub check_timeout_secs: Option<u64>,
+    /// Air-gapped mode: skip cloud auth preflights/probes entirely.
+    pub offline: Option<bool>,
+    /// `[commands]` table: name -> shell template with {{branch}}, {{run_id}},
+    /// {{finding.file}}, {{finding.line}} placeholders (lazygit-style).
+    pub commands: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +54,8 @@ pub struct Config {
     pub notifications: bool,
     pub models: HashMap<String, String>,
     pub check_timeout_secs: u64,
+    pub offline: bool,
+    pub commands: Vec<(String, String)>,
 }
 
 impl Default for Config {
@@ -67,6 +74,8 @@ impl Default for Config {
             notifications: true,
             models: HashMap::new(),
             check_timeout_secs: 600,
+            offline: false,
+            commands: Vec::new(),
         }
     }
 }
@@ -138,6 +147,16 @@ impl Config {
             }
             if let Some(t) = fc.check_timeout_secs {
                 cfg.check_timeout_secs = t;
+            }
+            if let Some(o) = fc.offline {
+                cfg.offline = o;
+            }
+            if let Some(commands) = fc.commands {
+                for (name, template) in commands {
+                    cfg.commands.retain(|(n, _)| *n != name);
+                    cfg.commands.push((name, template));
+                }
+                cfg.commands.sort_by(|a, b| a.0.cmp(&b.0));
             }
         }
 
