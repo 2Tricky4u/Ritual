@@ -65,6 +65,11 @@ fn probe_mcp_codex(cfg: &Config) -> Option<bool> {
 
 /// Fire all probes on a blocking thread; one message when done.
 pub fn spawn_probe(cfg: &Config, tx: mpsc::Sender<AppMsg>) {
+    if cfg.offline {
+        // Air-gapped: report all-unknown instead of probing cloud auth.
+        let _ = tx.try_send(AppMsg::AgentsStatus(Box::default()));
+        return;
+    }
     let cfg = cfg.clone();
     tokio::task::spawn_blocking(move || {
         let status = AgentsStatus {

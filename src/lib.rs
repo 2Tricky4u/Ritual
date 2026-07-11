@@ -1,7 +1,9 @@
 pub mod agents_status;
+pub mod bench;
 pub mod ci;
 pub mod cli;
 pub mod config;
+pub mod export;
 pub mod findings;
 pub mod history;
 pub mod keymap;

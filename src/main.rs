@@ -112,6 +112,16 @@ fn main() -> Result<()> {
                 }
             }
         }
+        Some(Command::Bench {
+            stage,
+            runs,
+            golden,
+        }) => {
+            ritual::bench::bench(&cfg, &dirs, &stage, runs, golden.as_deref())?;
+        }
+        Some(Command::Export { out }) => {
+            ritual::export::otlp_json(&dirs, out.as_deref())?;
+        }
         Some(Command::InternalSpawn { run_id }) => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
