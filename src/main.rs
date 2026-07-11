@@ -25,7 +25,7 @@ fn main() -> Result<()> {
         }
         Some(Command::Status { json }) => {
             let state = State::load(&dirs)?;
-            let branch = state::current_branch(&dirs.project_root);
+            let branch = state::current_branch(&dirs.work_root);
             if json {
                 println!(
                     "{}",
@@ -128,12 +128,38 @@ fn main() -> Result<()> {
                 println!("pdf:    {}", p.display());
             }
         }
-        Some(Command::New { title }) => {
+        Some(Command::New { title, worktree }) => {
             let title = title.join(" ");
             anyhow::ensure!(!title.is_empty(), "usage: ritual new <title>");
             anyhow::ensure!(dirs.exists(), "no .ritual/ here — run `ritual init` first");
-            let branch =
-                state::current_branch(&dirs.project_root).unwrap_or_else(|| "detached".to_string());
+            let branch = match &worktree {
+                Some(branch) => {
+                    // Parallel feature: own worktree, shared .ritual state.
+                    let slug = state::branch_slug(branch);
+                    let name = dirs
+                        .project_root
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "repo".into());
+                    let wt_path = dirs
+                        .project_root
+                        .parent()
+                        .map(|p| p.join(format!("{name}-{slug}")))
+                        .context("project root has no parent for a worktree")?;
+                    let status = std::process::Command::new("git")
+                        .args(["worktree", "add", "-b", branch])
+                        .arg(&wt_path)
+                        .current_dir(&dirs.project_root)
+                        .status()
+                        .context("running git worktree add")?;
+                    anyhow::ensure!(status.success(), "git worktree add failed");
+                    println!("worktree: {}", wt_path.display());
+                    branch.clone()
+                }
+                None => {
+                    state::current_branch(&dirs.work_root).unwrap_or_else(|| "detached".to_string())
+                }
+            };
             let mut state = State::load(&dirs)?;
             let feature = state.feature_for_branch_mut(&branch);
             feature.title = title.clone();

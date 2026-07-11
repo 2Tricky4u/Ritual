@@ -54,6 +54,7 @@ pub enum AppMsg {
 pub struct AttachedRequest {
     pub stage: Option<StageId>,
     pub argv: Vec<String>,
+    pub cwd: std::path::PathBuf,
 }
 
 pub struct App {
@@ -94,7 +95,7 @@ pub struct PaletteState {
 
 impl App {
     pub fn new(cfg: Config, dirs: RitualDirs) -> Result<Self> {
-        let branch = state::current_branch(&dirs.project_root).unwrap_or_else(|| "detached".into());
+        let branch = state::current_branch(&dirs.work_root).unwrap_or_else(|| "detached".into());
         let slug = state::branch_slug(&branch);
         let mut st = State::load(&dirs)?;
         st.feature_for_branch_mut(&branch);
@@ -148,6 +149,63 @@ impl App {
     /// Today's spend from loaded metas (status-bar budget segment).
     pub fn today_spend(&self) -> f64 {
         crate::history::today_summary(&self.metas).cost_usd
+    }
+
+    /// True when any stage of the feature needs a human.
+    pub fn feature_needs_you(&self, slug: &str) -> bool {
+        self.state
+            .features
+            .get(slug)
+            .map(|f| {
+                f.stages
+                    .values()
+                    .any(|s| matches!(s.status, StageStatus::NeedsAttention | StageStatus::Failed))
+            })
+            .unwrap_or(false)
+    }
+
+    /// All features, needs-you first, then most recently updated.
+    pub fn feature_order(&self) -> Vec<String> {
+        let mut slugs: Vec<&String> = self.state.features.keys().collect();
+        slugs.sort_by_key(|slug| {
+            let needs = self.feature_needs_you(slug);
+            let updated = self
+                .state
+                .features
+                .get(*slug)
+                .map(|f| f.updated_at)
+                .unwrap_or_default();
+            (std::cmp::Reverse(needs), std::cmp::Reverse(updated))
+        });
+        slugs.into_iter().cloned().collect()
+    }
+
+    /// Cycle the viewed feature; run cwd resolution happens at run time.
+    fn select_feature(&mut self, delta: i32) {
+        let order = self.feature_order();
+        if order.len() < 2 {
+            return;
+        }
+        let idx = order.iter().position(|s| *s == self.slug).unwrap_or(0);
+        let next = (idx as i32 + delta).rem_euclid(order.len() as i32) as usize;
+        self.slug = order[next].clone();
+        if let Some(f) = self.state.features.get(&self.slug) {
+            self.branch = f.branch.clone();
+        }
+        self.status_msg = Some(format!("viewing feature: {}", self.slug));
+    }
+
+    /// Where a run for the currently selected feature must execute: the
+    /// current checkout if branches match, else that branch's worktree.
+    fn run_cwd(&self) -> Option<std::path::PathBuf> {
+        let checked_out = state::current_branch(&self.dirs.work_root);
+        if checked_out.as_deref() == Some(self.branch.as_str()) || self.branch == "detached" {
+            return Some(self.dirs.work_root.clone());
+        }
+        state::worktrees(&self.dirs.work_root)
+            .into_iter()
+            .find(|(b, _)| *b == self.branch)
+            .map(|(_, p)| p)
     }
 
     pub fn stage_status(&self, id: StageId) -> StageStatus {
@@ -296,6 +354,9 @@ impl App {
             Action::CheckFull => self.run_check(tx, false),
             Action::Refresh => self.refresh(tx),
             Action::OpenEditor => self.open_editor(),
+            Action::FeatureNext => self.select_feature(1),
+            Action::FeaturePrev => self.select_feature(-1),
+            Action::Takeover => self.takeover(),
             Action::RunStage(id) => {
                 if let Some(idx) = PIPELINE.iter().position(|s| *s == id) {
                     self.selected = idx;
@@ -346,6 +407,13 @@ impl App {
             self.status_msg = Some("a run is already active — x to cancel".into());
             return;
         }
+        let Some(run_cwd) = self.run_cwd() else {
+            self.status_msg = Some(format!(
+                "branch '{}' has no checkout — `ritual new --worktree {}` or switch to it",
+                self.branch, self.branch
+            ));
+            return;
+        };
         let stage = self.selected_stage();
         let cmd = match stages::build(stage, &self.cfg, &self.dirs, &self.slug, None) {
             Ok(c) => c,
@@ -378,22 +446,62 @@ impl App {
                 self.pending_attached = Some(AttachedRequest {
                     stage: Some(StageId::Spec),
                     argv: vec![editor, spec.display().to_string()],
+                    cwd: run_cwd,
                 });
             }
             Mode::Interactive => {
                 self.pending_attached = Some(AttachedRequest {
                     stage: Some(stage),
                     argv: cmd.argv,
+                    cwd: run_cwd,
                 });
             }
-            Mode::Headless => self.spawn_headless(stage, cmd, tx),
+            Mode::Headless => self.spawn_headless(stage, cmd, run_cwd, tx),
         }
+    }
+
+    /// `a`: reattach interactively to the selected stage's last recorded
+    /// session (`claude --resume <session_id>`).
+    fn takeover(&mut self) {
+        let stage = self.selected_stage();
+        let Some(run_id) = self
+            .state
+            .features
+            .get(&self.slug)
+            .map(|f| f.stage(stage))
+            .and_then(|s| s.runs.last().cloned())
+        else {
+            self.status_msg = Some(format!("no recorded runs for {}", stage.label()));
+            return;
+        };
+        let Some(sid) = self
+            .metas
+            .iter()
+            .find(|m| m.run_id == run_id)
+            .and_then(|m| m.session_id.clone())
+        else {
+            self.status_msg = Some(format!("run {run_id} recorded no session id"));
+            return;
+        };
+        let Some(cwd) = self.run_cwd() else {
+            self.status_msg = Some(format!("branch '{}' has no checkout", self.branch));
+            return;
+        };
+        let mut argv = self.cfg.claude_cmd.clone();
+        argv.push("--resume".into());
+        argv.push(sid);
+        self.pending_attached = Some(AttachedRequest {
+            stage: None,
+            argv,
+            cwd,
+        });
     }
 
     fn spawn_headless(
         &mut self,
         stage: StageId,
         cmd: stages::StageCommand,
+        run_cwd: std::path::PathBuf,
         tx: &mpsc::Sender<AppMsg>,
     ) {
         if let Some((spent, budget)) = crate::run_cmd::budget_exceeded(&self.cfg, &self.dirs) {
@@ -425,6 +533,7 @@ impl App {
             branch: self.branch.clone(),
             redact: self.cfg.redaction,
             repro: None,
+            cwd: run_cwd,
         };
         let dirs = self.dirs.clone();
         let cfg = self.cfg.clone();
@@ -573,26 +682,37 @@ impl App {
         if self.check == CheckState::Running {
             return;
         }
-        if !self.dirs.project_root.join("check.sh").exists() {
+        if !self.dirs.work_root.join("check.sh").exists() {
             self.status_msg =
                 Some("no check.sh in this project — `ritual init` creates one".into());
             return;
         }
         self.check = CheckState::Running;
-        let root = self.dirs.project_root.clone();
+        let root = self.dirs.work_root.clone();
+        let timeout = self.cfg.check_timeout_secs;
         let tx = tx.clone();
         tokio::task::spawn_blocking(move || {
-            let out = std::process::Command::new("./check.sh")
-                .args(if fast { vec!["fast"] } else { vec![] })
-                .current_dir(&root)
-                .output();
-            let (ok, tail) = match out {
-                Ok(o) => {
-                    let text = format!(
-                        "{}{}",
-                        String::from_utf8_lossy(&o.stdout),
-                        String::from_utf8_lossy(&o.stderr)
-                    );
+            // Output goes to a temp file: no pipe-fill deadlock, and the
+            // deadline (hung build / dead HIL board) can kill the child.
+            let (ok, tail) = match tempfile::NamedTempFile::new() {
+                Ok(log) => {
+                    let mut cmd = std::process::Command::new("./check.sh");
+                    if fast {
+                        cmd.arg("fast");
+                    }
+                    cmd.current_dir(&root)
+                        .stdout(
+                            log.reopen()
+                                .map(std::process::Stdio::from)
+                                .unwrap_or_else(|_| std::process::Stdio::null()),
+                        )
+                        .stderr(
+                            log.reopen()
+                                .map(std::process::Stdio::from)
+                                .unwrap_or_else(|_| std::process::Stdio::null()),
+                        );
+                    let status = crate::run_cmd::run_with_timeout(cmd, timeout);
+                    let text = std::fs::read_to_string(log.path()).unwrap_or_default();
                     let tail: String = text
                         .lines()
                         .rev()
@@ -602,7 +722,13 @@ impl App {
                         .rev()
                         .collect::<Vec<_>>()
                         .join("\n");
-                    (o.status.success(), tail)
+                    match status {
+                        Some(s) => (s.success(), tail),
+                        None => (
+                            false,
+                            format!("check.sh timed out after {timeout}s\n{tail}"),
+                        ),
+                    }
                 }
                 Err(e) => (false, e.to_string()),
             };
@@ -632,7 +758,14 @@ impl App {
             argv.push(format!("+{line}"));
         }
         argv.push(file.clone());
-        self.pending_attached = Some(AttachedRequest { stage: None, argv });
+        let cwd = self
+            .run_cwd()
+            .unwrap_or_else(|| self.dirs.work_root.clone());
+        self.pending_attached = Some(AttachedRequest {
+            stage: None,
+            argv,
+            cwd,
+        });
     }
 }
 
@@ -689,7 +822,7 @@ pub async fn run(cfg: Config, dirs: RitualDirs) -> Result<()> {
 
     let mut app = App::new(cfg, dirs).context("loading project state")?;
     crate::agents_status::spawn_probe(&app.cfg, tx.clone());
-    let watcher = crate::watcher::spawn(app.dirs.project_root.clone(), tx.clone()).ok();
+    let watcher = crate::watcher::spawn(app.dirs.work_root.clone(), tx.clone()).ok();
 
     // Spinner/refresh tick.
     let tick_tx = tx.clone();
@@ -729,9 +862,8 @@ pub async fn run(cfg: Config, dirs: RitualDirs) -> Result<()> {
             if let Some(w) = &watcher {
                 w.paused.store(true, std::sync::atomic::Ordering::SeqCst);
             }
-            let cwd = app.dirs.project_root.clone();
             // std::process blocks; tell tokio so the worker thread is compensated.
-            let ok = tokio::task::block_in_place(|| term.run_attached(&req.argv, &cwd))?;
+            let ok = tokio::task::block_in_place(|| term.run_attached(&req.argv, &req.cwd))?;
             if let Some(w) = &watcher {
                 w.paused.store(false, std::sync::atomic::Ordering::SeqCst);
             }

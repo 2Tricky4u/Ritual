@@ -129,13 +129,51 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    // Multi-feature queue (needs-you first) above the pipeline.
+    let order = app.feature_order();
+    let features_h = if order.len() > 1 {
+        (order.len() as u16).min(4) + 1
+    } else {
+        0
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(features_h),
             Constraint::Length(PIPELINE.len() as u16 + 1),
             Constraint::Min(0),
         ])
         .split(inner);
+
+    if features_h > 0 {
+        let items: Vec<ListItem> = order
+            .iter()
+            .take(4)
+            .map(|slug| {
+                let selected = *slug == app.slug;
+                let needs = app.feature_needs_you(slug);
+                let marker = if selected { "▸" } else { " " };
+                let badge = if needs {
+                    Span::styled("! ", Style::default().fg(t.attention()))
+                } else {
+                    Span::raw("  ")
+                };
+                let style = if selected {
+                    Style::default()
+                        .fg(t.highlight())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.muted())
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!(" {marker} "), Style::default().fg(t.highlight())),
+                    badge,
+                    Span::styled(slug.clone(), style),
+                ]))
+            })
+            .collect();
+        f.render_widget(List::new(items), chunks[0]);
+    }
 
     // Pipeline list.
     let items: Vec<ListItem> = PIPELINE
@@ -161,7 +199,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             ]))
         })
         .collect();
-    f.render_widget(List::new(items), chunks[0]);
+    f.render_widget(List::new(items), chunks[1]);
 
     // Widgets: branch, agent auth, mcp bridge, check state.
     let claude = match &app.agents.claude {
@@ -219,7 +257,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         widget_line(t.icon_agent(), mcp),
         widget_line(t.icon_check(), check),
     ];
-    f.render_widget(Paragraph::new(lines), chunks[1]);
+    f.render_widget(Paragraph::new(lines), chunks[2]);
 }
 
 fn draw_main(f: &mut Frame, app: &App, area: Rect) {

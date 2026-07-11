@@ -156,31 +156,52 @@ impl State {
 }
 
 /// All `.ritual/` paths for one project.
+///
+/// `project_root` is where `.ritual/` lives — in a git-worktree setup that is
+/// always the MAIN repository root, so every worktree shares one state.
+/// `work_root` is where commands (check.sh, agents) actually run — the
+/// current checkout, which may be a worktree.
 #[derive(Debug, Clone)]
 pub struct RitualDirs {
     pub project_root: PathBuf,
+    pub work_root: PathBuf,
 }
 
 impl RitualDirs {
     pub fn new(project_root: impl Into<PathBuf>) -> Self {
+        let root = project_root.into();
         Self {
-            project_root: project_root.into(),
+            work_root: root.clone(),
+            project_root: root,
         }
     }
 
-    /// Walk up from cwd to find an existing `.ritual/` (or git root as fallback).
+    /// Walk up from cwd to find an existing `.ritual/`; in a linked worktree,
+    /// fall back to the main repository root (shared state across worktrees).
     pub fn discover(cwd: &Path) -> Self {
+        let work_root = git_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
         let mut dir = Some(cwd);
         while let Some(d) = dir {
             if d.join(".ritual").is_dir() {
-                return Self::new(d);
+                return Self {
+                    project_root: d.to_path_buf(),
+                    work_root,
+                };
             }
             dir = d.parent();
         }
-        if let Some(root) = git_root(cwd) {
-            return Self::new(root);
+        if let Some(main_root) = git_main_root(cwd)
+            && main_root.join(".ritual").is_dir()
+        {
+            return Self {
+                project_root: main_root,
+                work_root,
+            };
         }
-        Self::new(cwd)
+        Self {
+            project_root: work_root.clone(),
+            work_root,
+        }
     }
 
     pub fn root(&self) -> PathBuf {
@@ -234,6 +255,52 @@ pub fn branch_slug(branch: &str) -> String {
     } else {
         slug
     }
+}
+
+/// The MAIN repository root, even when `dir` is inside a linked worktree
+/// (`--git-common-dir` points at the main checkout's .git).
+pub fn git_main_root(dir: &Path) -> Option<PathBuf> {
+    let out = Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let common = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    let common_path = if Path::new(&common).is_absolute() {
+        PathBuf::from(common)
+    } else {
+        dir.join(common)
+    };
+    common_path.parent().map(|p| p.to_path_buf())
+}
+
+/// branch -> checkout dir for every worktree of this repo.
+pub fn worktrees(dir: &Path) -> Vec<(String, PathBuf)> {
+    let Some(out) = Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(dir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+    else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut result = Vec::new();
+    let mut current_path: Option<PathBuf> = None;
+    for line in text.lines() {
+        if let Some(p) = line.strip_prefix("worktree ") {
+            current_path = Some(PathBuf::from(p));
+        } else if let Some(b) = line.strip_prefix("branch refs/heads/")
+            && let Some(p) = current_path.take()
+        {
+            result.push((b.to_string(), p));
+        }
+    }
+    result
 }
 
 pub fn git_root(dir: &Path) -> Option<PathBuf> {

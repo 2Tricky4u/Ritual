@@ -29,6 +29,9 @@ pub enum Action {
     CheckFull,
     Refresh,
     OpenEditor,
+    FeatureNext,
+    FeaturePrev,
+    Takeover,
     RunStage(StageId),
 }
 
@@ -52,6 +55,13 @@ pub const ACTIONS: &[(&str, Action, &str)] = &[
     ("check-full", Action::CheckFull, "run full check.sh"),
     ("refresh", Action::Refresh, "refresh auth + artifacts"),
     ("open-editor", Action::OpenEditor, "open in $EDITOR"),
+    ("feature-next", Action::FeatureNext, "next feature"),
+    ("feature-prev", Action::FeaturePrev, "previous feature"),
+    (
+        "takeover",
+        Action::Takeover,
+        "take over run in claude (--resume)",
+    ),
 ];
 
 pub fn action_by_name(name: &str) -> Option<Action> {
@@ -151,6 +161,9 @@ impl Default for Keymap {
             ("C", "check-full"),
             ("r", "refresh"),
             ("e", "open-editor"),
+            ("]", "feature-next"),
+            ("[", "feature-prev"),
+            ("a", "takeover"),
         ];
         let map = defaults
             .iter()

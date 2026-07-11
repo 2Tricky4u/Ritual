@@ -29,6 +29,8 @@ pub struct FileConfig {
     pub notifications: Option<bool>,
     /// `[models]` table: stage label -> model override ("plan-review = \"opus\"").
     pub models: Option<HashMap<String, String>>,
+    /// Hard ceiling on any check.sh invocation (hung boards, wedged builds).
+    pub check_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +48,7 @@ pub struct Config {
     pub budget_daily_usd: Option<f64>,
     pub notifications: bool,
     pub models: HashMap<String, String>,
+    pub check_timeout_secs: u64,
 }
 
 impl Default for Config {
@@ -63,6 +66,7 @@ impl Default for Config {
             budget_daily_usd: None,
             notifications: true,
             models: HashMap::new(),
+            check_timeout_secs: 600,
         }
     }
 }
@@ -131,6 +135,9 @@ impl Config {
             }
             if let Some(models) = fc.models {
                 cfg.models.extend(models);
+            }
+            if let Some(t) = fc.check_timeout_secs {
+                cfg.check_timeout_secs = t;
             }
         }
 

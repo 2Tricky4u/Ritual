@@ -400,6 +400,69 @@ fn ci_mode_emits_junit_and_fails_on_blocking_findings() {
 }
 
 #[test]
+fn worktree_feature_shares_state_and_resolves_dirs() {
+    let tmp = setup_project();
+    // Commit so a worktree can be created.
+    std::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(tmp.path())
+        .status()
+        .unwrap();
+    std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "init",
+        ])
+        .current_dir(tmp.path())
+        .status()
+        .unwrap();
+
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["new", "Parallel", "Thing", "--worktree", "feat/parallel"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("worktree:"));
+
+    // The worktree checkout exists...
+    let wt = tmp.path().parent().unwrap().join(format!(
+        "{}-feat-parallel",
+        tmp.path().file_name().unwrap().to_string_lossy()
+    ));
+    assert!(wt.is_dir(), "worktree dir missing: {}", wt.display());
+
+    // ...and shares the MAIN repo's .ritual: status from inside the worktree
+    // sees the same state file.
+    assert!(!wt.join(".ritual").exists());
+    let out = Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(&wt)
+        .args(["status", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["features"]["feat-parallel"]["title"], "Parallel Thing");
+    assert_eq!(v["current_branch"], "feat/parallel");
+
+    // Cleanup the worktree dir (outside the tempdir root).
+    std::process::Command::new("git")
+        .args(["worktree", "remove", "--force"])
+        .arg(&wt)
+        .current_dir(tmp.path())
+        .status()
+        .unwrap();
+}
+
+#[test]
 fn run_unknown_stage_is_an_error() {
     let tmp = setup_project();
     Command::cargo_bin("ritual")

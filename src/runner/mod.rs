@@ -51,6 +51,8 @@ pub struct RunRequest {
     pub redact: bool,
     /// Reproducibility bundle collected by the caller (provenance::collect).
     pub repro: Option<crate::provenance::ReproBundle>,
+    /// Where the agent runs — the (work)tree being operated on.
+    pub cwd: PathBuf,
 }
 
 #[derive(Debug)]
@@ -91,7 +93,7 @@ pub async fn run_headless(
     let (bin, args) = req.argv.split_first().context("empty argv for agent run")?;
     let mut cmd = Command::new(bin);
     cmd.args(args)
-        .current_dir(&dirs.project_root)
+        .current_dir(&req.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

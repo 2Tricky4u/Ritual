@@ -54,7 +54,7 @@ fn cmd_line(bin: &str, args: &[&str], cwd: &Path) -> Option<String> {
 
 /// Best-effort collection — a missing tool yields None, never an error.
 pub fn collect(cfg: &Config, dirs: &RitualDirs) -> ReproBundle {
-    let root = &dirs.project_root;
+    let root = &dirs.work_root;
     let git_commit = cmd_line("git", &["rev-parse", "HEAD"], root);
     let git_dirty_diff_sha256 = cmd_line("git", &["diff", "HEAD"], root)
         .filter(|d| !d.is_empty())
