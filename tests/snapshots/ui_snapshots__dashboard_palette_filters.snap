@@ -1,6 +1,5 @@
 ---
 source: tests/ui_snapshots.rs
-assertion_line: 69
 expression: render(&app)
 ---
 "╭ detached ──────────────────╮╭ ritual ──────────────────────────────────────────────────╮"
@@ -24,4 +23,4 @@ expression: render(&app)
 "│                            ││                                                          │"
 "│                            ││                                                          │"
 "╰────────────────────────────╯╰──────────────────────────────────────────────────────────╯"
-" enter run · j/k move · tab panes · c check · e edit · x cancel · ? help · q quit         "
+" enter run · : commands · j/k move · tab panes · c check · ? help · q quit                "

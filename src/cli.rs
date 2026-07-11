@@ -54,6 +54,17 @@ pub enum Command {
         stage: String,
         /// Stage argument (plan path for plan-review, base ref for dual-review)
         arg: Option<String>,
+        /// Override the daily budget ceiling for this run
+        #[arg(long)]
+        force: bool,
+    },
+    /// Generate a Markdown report for a feature (spec, plan, findings, runs, costs)
+    Report {
+        /// Feature branch/slug (defaults to the current branch)
+        feature: Option<String>,
+        /// Also convert to PDF via pandoc
+        #[arg(long)]
+        pdf: bool,
     },
     /// Create/rename the feature for the current branch
     New {

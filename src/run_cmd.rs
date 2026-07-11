@@ -12,10 +12,24 @@ use crate::scaffold;
 use crate::stages::{self, Mode};
 use crate::state::{self, RitualDirs, StageId, StageStatus, State};
 
-pub fn execute(cfg: &Config, dirs: &RitualDirs, stage_str: &str, arg: Option<&str>) -> Result<()> {
+pub fn execute(
+    cfg: &Config,
+    dirs: &RitualDirs,
+    stage_str: &str,
+    arg: Option<&str>,
+    force: bool,
+) -> Result<()> {
     let stage = StageId::parse(stage_str)
         .with_context(|| format!("unknown stage '{stage_str}' (spec, plan, plan-review, tests-red, implement, dual-review)"))?;
     anyhow::ensure!(dirs.exists(), "no .ritual/ here — run `ritual init` first");
+
+    if let Some((spent, budget)) = budget_exceeded(cfg, dirs)
+        && !force
+    {
+        anyhow::bail!(
+            "daily budget reached: ${spent:.2} of ${budget:.2} spent today — rerun with --force to override"
+        );
+    }
 
     let branch =
         state::current_branch(&dirs.project_root).unwrap_or_else(|| "detached".to_string());
@@ -42,6 +56,13 @@ pub fn execute(cfg: &Config, dirs: &RitualDirs, stage_str: &str, arg: Option<&st
         Mode::Interactive => run_interactive(dirs, stage, cmd.argv, &mut st, &branch),
         Mode::Headless => run_headless(cfg, dirs, stage, cmd, &mut st, &branch, &slug, &title),
     }
+}
+
+/// Some((spent, budget)) when the daily ceiling is hit.
+pub fn budget_exceeded(cfg: &Config, dirs: &RitualDirs) -> Option<(f64, f64)> {
+    let budget = cfg.budget_daily_usd?;
+    let spent = crate::history::today_spend(&dirs.runs_dir());
+    (spent >= budget).then_some((spent, budget))
 }
 
 pub(crate) fn set_stage(
@@ -194,6 +215,7 @@ fn run_headless(
         stage: stage.label().into(),
         feature: title.into(),
         branch: branch.into(),
+        redact: cfg.redaction,
     };
 
     let rt = tokio::runtime::Runtime::new()?;
@@ -232,6 +254,24 @@ fn run_headless(
     st.save(dirs)?;
 
     crate::output::render_run_summary(cfg, &outcome.meta, &new_findings);
+    crate::notify::notify(
+        cfg.notifications,
+        &format!(
+            "ritual: {} {}",
+            stage.label(),
+            match new_status {
+                StageStatus::Done => "done",
+                StageStatus::NeedsAttention => "needs attention",
+                _ => "failed",
+            }
+        ),
+        &format!(
+            "{} — {} new findings, ${:.2}",
+            branch,
+            new_findings.len(),
+            outcome.meta.total_cost_usd.unwrap_or(0.0)
+        ),
+    );
     if !outcome.meta.permission_denials.is_empty() {
         println!(
             "  ⚠ permission denials: {} — tune allowedTools or permission mode",

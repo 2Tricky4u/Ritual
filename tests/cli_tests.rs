@@ -264,6 +264,90 @@ fn bad_keybinding_config_errors_cleanly() {
 }
 
 #[test]
+fn budget_ceiling_blocks_runs_unless_forced() {
+    let tmp = setup_project();
+    std::fs::create_dir_all(tmp.path().join(".ritual/features/main")).unwrap();
+    std::fs::write(tmp.path().join(".ritual/features/main/plan.md"), "# plan").unwrap();
+    std::fs::write(
+        tmp.path().join(".ritual/config.toml"),
+        "budget_daily_usd = 1.0\n",
+    )
+    .unwrap();
+    // A run from today that already spent past the ceiling.
+    let now = chrono::Utc::now().to_rfc3339();
+    std::fs::write(
+        tmp.path().join(".ritual/runs/20260711T000000Z-x.meta.json"),
+        format!(r#"{{"run_id":"r","stage":"plan-review","ok":true,"total_cost_usd":2.5,"started_at":"{now}"}}"#),
+    )
+    .unwrap();
+
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .env("FAKE_AGENT_DELAY", "0")
+        .args(["run", "plan-review"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("daily budget reached"));
+
+    // --force overrides.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .env("FAKE_AGENT_DELAY", "0")
+        .env(
+            "FAKE_AGENT_FINDINGS",
+            ".ritual/findings/20260711T210000Z-plan-review.json",
+        )
+        .args(["run", "plan-review", "--force"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn report_generates_markdown_with_redaction() {
+    let tmp = setup_project();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["new", "RepFeature"])
+        .assert()
+        .success();
+    std::fs::write(
+        tmp.path().join(".ritual/features/main/spec.md"),
+        "goal with token = \"supersecretvalue123\"",
+    )
+    .unwrap();
+    let out = Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("report")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let out = String::from_utf8_lossy(&out);
+    let path = out
+        .trim()
+        .strip_prefix("report: ")
+        .expect("report path printed");
+    let text = std::fs::read_to_string(tmp.path().join(path).canonicalize().unwrap_or(path.into()))
+        .or_else(|_| std::fs::read_to_string(path))
+        .unwrap();
+    assert!(text.contains("RepFeature"));
+    assert!(text.contains("## Pipeline"));
+    assert!(
+        !text.contains("supersecretvalue123"),
+        "secret leaked into report"
+    );
+}
+
+#[test]
 fn run_unknown_stage_is_an_error() {
     let tmp = setup_project();
     Command::cargo_bin("ritual")

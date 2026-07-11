@@ -522,7 +522,18 @@ fn draw_plan(f: &mut Frame, app: &App, area: Rect) {
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.cfg.theme;
     let left = app.status_msg.clone().unwrap_or_else(|| {
-        "enter run · j/k move · tab panes · c check · e edit · x cancel · ? help · q quit".into()
+        "enter run · : commands · j/k move · tab panes · c check · ? help · q quit".into()
+    });
+    let budget = app.cfg.budget_daily_usd.map(|b| {
+        let spent = app.today_spend();
+        let color = if spent >= b {
+            t.error()
+        } else if spent >= 0.75 * b {
+            t.warn()
+        } else {
+            t.muted()
+        };
+        (format!("${spent:.2}/${b:.2} "), color)
     });
     let running = app
         .running
@@ -536,13 +547,22 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(bar).style(Style::default().bg(t.bg_dark())),
         area,
     );
+    let mut right_spans: Vec<Span> = Vec::new();
+    if let Some((text, color)) = budget {
+        right_spans.push(Span::styled(text, Style::default().fg(color)));
+    }
     if !running.is_empty() {
-        let w = running.chars().count() as u16;
+        right_spans.push(Span::styled(running, Style::default().fg(t.info())));
+    }
+    if !right_spans.is_empty() {
+        let w: u16 = right_spans
+            .iter()
+            .map(|s| s.content.chars().count() as u16)
+            .sum();
         if w < area.width {
             let right = Rect::new(area.right() - w, area.y, w, 1);
             f.render_widget(
-                Paragraph::new(Span::styled(running, Style::default().fg(t.info())))
-                    .style(Style::default().bg(t.bg_dark())),
+                Paragraph::new(Line::from(right_spans)).style(Style::default().bg(t.bg_dark())),
                 right,
             );
         }
