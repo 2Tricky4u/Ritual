@@ -96,7 +96,11 @@ impl Redactor {
 /// (git shas, digests), uuids, and paths — common false positives.
 fn redact_entropy(line: &str) -> String {
     static CANDIDATE: OnceLock<Regex> = OnceLock::new();
-    let re = CANDIDATE.get_or_init(|| Regex::new(r"\b[A-Za-z0-9+/=_-]{40,}\b").unwrap());
+    // NOTE: no '/' in the class — file paths are long mixed-class tokens too
+    // (found live: `.ritual/findings/2026...-plan-review.json` got redacted).
+    // Slash-bearing base64 secrets are still caught by the structured
+    // patterns (bearer/assignment/vendor keys).
+    let re = CANDIDATE.get_or_init(|| Regex::new(r"\b[A-Za-z0-9+=_-]{40,}\b").unwrap());
     re.replace_all(line, |caps: &regex::Captures| {
         let s = caps.get(0).unwrap().as_str();
         let hexish = s.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
@@ -160,6 +164,14 @@ mod tests {
             one("the tokenizer splits words"),
             "the tokenizer splits words"
         );
+    }
+
+    #[test]
+    fn file_paths_are_not_entropy() {
+        // Regression: found live — the findings path was redacted in the
+        // run archive because '/' was in the entropy charset.
+        let line = r#""file_path": "/home/u/Documents/project/ritual/.ritual/findings/20260711T234357Z-plan-review.json""#;
+        assert_eq!(one(line), line);
     }
 
     #[test]
