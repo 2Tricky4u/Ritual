@@ -348,6 +348,58 @@ fn report_generates_markdown_with_redaction() {
 }
 
 #[test]
+fn ci_mode_emits_junit_and_fails_on_blocking_findings() {
+    let tmp = setup_project();
+    std::fs::create_dir_all(tmp.path().join(".ritual/features/main")).unwrap();
+    std::fs::write(tmp.path().join(".ritual/features/main/plan.md"), "# plan").unwrap();
+
+    // Canned finding is confirmed critical -> JUnit failure -> nonzero exit.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .env("FAKE_AGENT_DELAY", "0")
+        .env(
+            "FAKE_AGENT_FINDINGS",
+            ".ritual/findings/20260711T220000Z-plan-review.json",
+        )
+        .args(["run", "plan-review", "--ci"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("blocking finding"));
+
+    let ci_files: Vec<_> = std::fs::read_dir(tmp.path().join(".ritual/ci"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .collect();
+    assert_eq!(ci_files.len(), 1);
+    let xml = std::fs::read_to_string(ci_files[0].path()).unwrap();
+    assert!(xml.contains("<testsuite"));
+    assert!(xml.contains(r#"failures="1""#));
+    assert!(xml.contains("Canned test finding"));
+
+    // Chain + repro landed in the meta.
+    let meta_file = std::fs::read_dir(tmp.path().join(".ritual/runs"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_string_lossy().ends_with(".meta.json"))
+        .unwrap();
+    let meta = std::fs::read_to_string(meta_file.path()).unwrap();
+    assert!(meta.contains(r#""chain""#));
+    assert!(meta.contains(r#""repro""#));
+
+    // And verify-log confirms the chain.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("verify-log")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("chain intact"));
+}
+
+#[test]
 fn run_unknown_stage_is_an_error() {
     let tmp = setup_project();
     Command::cargo_bin("ritual")

@@ -57,6 +57,9 @@ pub enum Command {
         /// Override the daily budget ceiling for this run
         #[arg(long)]
         force: bool,
+        /// CI mode: emit JUnit XML to .ritual/ci/, exit nonzero on blocking findings
+        #[arg(long)]
+        ci: bool,
     },
     /// Generate a Markdown report for a feature (spec, plan, findings, runs, costs)
     Report {
@@ -71,4 +74,11 @@ pub enum Command {
         /// Feature title
         title: Vec<String>,
     },
+    /// Show the reproducibility bundle of a run and diff it against the current environment
+    Repro {
+        /// Run id (see `ritual history`)
+        run_id: String,
+    },
+    /// Verify the tamper-evident hash chain over all recorded runs
+    VerifyLog,
 }

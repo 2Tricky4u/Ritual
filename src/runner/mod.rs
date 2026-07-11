@@ -49,6 +49,8 @@ pub struct RunRequest {
     pub branch: String,
     /// Redact secrets before archiving/parsing (config `redaction`).
     pub redact: bool,
+    /// Reproducibility bundle collected by the caller (provenance::collect).
+    pub repro: Option<crate::provenance::ReproBundle>,
 }
 
 #[derive(Debug)]
@@ -82,6 +84,7 @@ pub async fn run_headless(
         agent: req.agent.label().into(),
         argv: req.argv.clone(),
         started_at: Some(Utc::now()),
+        repro: req.repro.clone(),
         ..Default::default()
     };
 
@@ -141,6 +144,11 @@ pub async fn run_headless(
     meta.finished_at = Some(Utc::now());
     meta.exit_code = status.code();
     meta.ok = status.success() && meta.error.is_none() && meta.completed_ok();
+
+    // Chain link: computed last, over the final archive + meta content.
+    let archive_bytes = tokio::fs::read(&archive_path).await.unwrap_or_default();
+    let prev = crate::provenance::last_link(&runs_dir);
+    meta.chain = crate::provenance::compute_link(&prev, &archive_bytes, &meta).ok();
 
     let meta_path = runs_dir.join(format!("{run_id}.meta.json"));
     tokio::fs::write(&meta_path, serde_json::to_string_pretty(&meta)?)

@@ -27,6 +27,8 @@ pub struct FileConfig {
     pub budget_daily_usd: Option<f64>,
     /// Desktop notifications on stage completion (default true).
     pub notifications: Option<bool>,
+    /// `[models]` table: stage label -> model override ("plan-review = \"opus\"").
+    pub models: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +45,7 @@ pub struct Config {
     pub redaction: bool,
     pub budget_daily_usd: Option<f64>,
     pub notifications: bool,
+    pub models: HashMap<String, String>,
 }
 
 impl Default for Config {
@@ -59,6 +62,7 @@ impl Default for Config {
             redaction: true,
             budget_daily_usd: None,
             notifications: true,
+            models: HashMap::new(),
         }
     }
 }
@@ -124,6 +128,9 @@ impl Config {
             }
             if let Some(n) = fc.notifications {
                 cfg.notifications = n;
+            }
+            if let Some(models) = fc.models {
+                cfg.models.extend(models);
             }
         }
 

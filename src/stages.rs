@@ -43,7 +43,7 @@ pub fn build(
         dirs.findings_dir().display().to_string(),
     );
 
-    let cmd = match stage {
+    let mut cmd = match stage {
         StageId::Spec => StageCommand {
             mode: Mode::Local,
             agent: AgentKind::Claude,
@@ -149,6 +149,13 @@ pub fn build(
             }
         }
     };
+    // Per-stage model routing ([models] config table).
+    if let Some(model) = cfg.models.get(stage.label())
+        && !cmd.argv.is_empty()
+    {
+        cmd.argv.push("--model".into());
+        cmd.argv.push(model.clone());
+    }
     Ok(cmd)
 }
 
