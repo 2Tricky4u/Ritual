@@ -1,8 +1,6 @@
-//! Parser for `codex exec --json` lines.
-//!
-//! IMPORTANT: unlike claude.rs these shapes are EXPECTED, not yet verified
-//! against live captures (codex fixtures land once `codex login` has run).
-//! Everything unrecognized falls through to Raw, so a mismatch degrades to
+//! Parser for `codex exec --json` lines. Event shapes verified against a
+//! live capture (tests/fixtures/codex_exec.jsonl, Codex CLI 0.144.1).
+//! Everything unrecognized falls through to Raw, so schema drift degrades to
 //! dimmed raw lines instead of breaking the stream.
 
 use serde_json::Value;
@@ -131,6 +129,27 @@ mod tests {
         assert!(matches!(&events[1], AgentEvent::Text { text } if text == "hi"));
         assert!(matches!(&events[2], AgentEvent::ToolUse { summary, .. } if summary == "ls"));
         assert!(matches!(&events[3], AgentEvent::Completed { ok: true, .. }));
+    }
+
+    #[test]
+    fn parses_real_captured_fixture() {
+        let text = std::fs::read_to_string(format!(
+            "{}/tests/fixtures/codex_exec.jsonl",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let events: Vec<_> = text.lines().flat_map(parse_line).collect();
+        assert!(events.iter().any(
+            |e| matches!(e, AgentEvent::SessionStart { session_id, .. } if !session_id.is_empty())
+        ));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::Text { text } if text == "ok"))
+        );
+        assert!(events.iter().any(
+            |e| matches!(e, AgentEvent::Completed { ok: true, usage: Some(u), .. } if u.output_tokens > 0)
+        ));
     }
 
     #[test]

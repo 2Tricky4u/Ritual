@@ -423,27 +423,60 @@ fn draw_greeter(f: &mut Frame, t: &Theme, area: Rect) {
             Style::default().fg(t.accent()).add_modifier(Modifier::BOLD),
         )));
     }
-    lines.push(Line::default());
     lines.push(Line::from(Span::styled(
         "s u m m o n  ·  r e v i e w  ·  v e r i f y",
         Style::default().fg(t.comment()),
     )));
     lines.push(Line::default());
-    lines.push(Line::default());
-    let buttons: [(&str, &str); 4] = [
-        ("enter", "run selected stage"),
-        (":", "command palette"),
-        ("a", "take over session"),
-        ("?", "keys"),
+
+    // Super-concise feature map: fixed-width rows so the centered block
+    // keeps a clean label column.
+    let guide: [(&str, &str); 8] = [
+        ("pipeline", "spec → plan → review → tests → impl → dual"),
+        ("runs", "daemons: quit freely, reattach · a takeover"),
+        ("findings", "Q → nvim quickfix · o open · e $EDITOR"),
+        ("money", "daily budget · per-run caps · --force"),
+        ("safety", "redaction · verify-log chain · repro"),
+        ("ci", "--ci → JUnit · --json + exit codes"),
+        ("parallel", "new --worktree · [ ] switch features"),
+        ("more", "report · bench · export · offline · cmds"),
     ];
-    for (key, desc) in buttons {
+    let label_w = guide
+        .iter()
+        .map(|(l, _)| l.chars().count())
+        .max()
+        .unwrap_or(0);
+    let desc_w = guide
+        .iter()
+        .map(|(_, d)| d.chars().count())
+        .max()
+        .unwrap_or(0);
+    for (label, desc) in guide {
+        let pad = desc_w - desc.chars().count();
         lines.push(Line::from(vec![
-            keycap(t, key),
-            Span::raw("  "),
-            Span::styled(desc.to_string(), Style::default().fg(t.muted())),
+            Span::styled(
+                format!("{label:>label_w$}  "),
+                Style::default()
+                    .fg(t.highlight())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{desc}{}", " ".repeat(pad)),
+                Style::default().fg(t.muted()),
+            ),
         ]));
-        lines.push(Line::default());
     }
+    lines.push(Line::default());
+    lines.push(Line::from(vec![
+        keycap(t, "enter"),
+        Span::styled(" run stage   ", Style::default().fg(t.comment())),
+        keycap(t, ":"),
+        Span::styled(" palette   ", Style::default().fg(t.comment())),
+        keycap(t, "?"),
+        Span::styled(" keys   ", Style::default().fg(t.comment())),
+        keycap(t, "q"),
+        Span::styled(" quit", Style::default().fg(t.comment())),
+    ]));
 
     let h = lines.len() as u16;
     let y = area.y + area.height.saturating_sub(h) / 2;
