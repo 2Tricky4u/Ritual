@@ -1,1 +1,5 @@
 /target
+# ritual
+.ritual/runs/
+.ritual/logs/
+.ritual/state.json
