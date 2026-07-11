@@ -59,6 +59,33 @@ fn dashboard_help_overlay() {
 }
 
 #[test]
+fn dashboard_ascii_mode() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_app(&tmp);
+    app.cfg.theme.icons = ritual::theme::IconSet::Ascii;
+    insta::assert_snapshot!(render(&app));
+}
+
+#[test]
+fn dashboard_running_with_budget() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".ritual/runs")).unwrap();
+    std::fs::write(
+        tmp.path().join(".ritual/runs/20260712T000000Z-x.meta.json"),
+        format!(
+            r#"{{"run_id":"r","stage":"plan-review","ok":true,"total_cost_usd":4.2,"started_at":"{}"}}"#,
+            chrono::Utc::now().to_rfc3339()
+        ),
+    )
+    .unwrap();
+    let mut app = setup_app(&tmp);
+    app.cfg.budget_daily_usd = Some(5.0);
+    app.running = Some(ritual::state::StageId::PlanReview);
+    app.check = ritual::ui::app::CheckState::Green;
+    insta::assert_snapshot!(render(&app));
+}
+
+#[test]
 fn dashboard_palette_filters() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = setup_app(&tmp);

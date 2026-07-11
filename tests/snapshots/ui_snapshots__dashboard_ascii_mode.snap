@@ -1,0 +1,26 @@
+---
+source: tests/ui_snapshots.rs
+expression: render(&app)
+---
+"                            │ [live]  findings    history    plan                         "
+" # PIPELINE ─────────────── │─────────────────────────────────────────────────────────────"
+"  ( ) spec                  │                                                             "
+"  ( ) plan                  │                                                             "
+"  ( ) plan-review           │                    █▀█ █ ▀█▀ █ █ ▄▀█ █                      "
+"  ( ) tests-red             │                    █▀▄ █  █  █▄█ █▀█ █▄▄                    "
+"  ( ) implement             │                                                             "
+"  ( ) dual-review           │         s u m m o n  ·  r e v i e w  ·  v e r i f y         "
+"                            │                                                             "
+" ai: AGENTS ─────────────── │                                                             "
+"  ai: claude …              │                  enter   run selected stage                 "
+"  ai: codex …               │                                                             "
+"  <> bridge …               │                     :   command palette                     "
+"  chk check ?               │                                                             "
+"                            │                    a   take over session                    "
+"  br: detached              │                                                             "
+"                            │                           ?   keys                          "
+"                            │                                                             "
+"                            │                                                             "
+"                            │                                                             "
+"                            │                                                             "
+" RITUAL  br: detached  detached                                                           "

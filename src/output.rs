@@ -31,12 +31,12 @@ fn hex(t: &Theme, c: (u8, u8, u8), s: &str) -> String {
 pub fn stage_icon(t: &Theme, status: StageStatus) -> String {
     let p = t.palette;
     match status {
-        StageStatus::Pending => hex(t, p.muted, t.icon_pending()),
+        StageStatus::Pending => hex(t, p.light_grey, t.icon_pending()),
         StageStatus::Running => hex(t, p.cyan, t.icon_running()),
         StageStatus::Done => hex(t, p.green, t.icon_done()),
         StageStatus::Failed => hex(t, p.red, t.icon_failed()),
         StageStatus::NeedsAttention => hex(t, p.yellow, t.icon_attention()),
-        StageStatus::Skipped => hex(t, p.muted, t.icon_skipped()),
+        StageStatus::Skipped => hex(t, p.light_grey, t.icon_skipped()),
     }
 }
 
@@ -50,7 +50,7 @@ pub fn render_status(cfg: &Config, features: &[(String, Feature)], current_branc
             "  {}",
             hex(
                 t,
-                p.muted,
+                p.light_grey,
                 "no features yet — run `ritual new <title>` or just start a branch"
             )
         );
@@ -60,26 +60,26 @@ pub fn render_status(cfg: &Config, features: &[(String, Feature)], current_branc
         let is_current = current_branch == Some(feature.branch.as_str());
         let branch = format!("{} {}", t.icon_branch(), feature.branch);
         let branch = if is_current {
-            hex(t, p.pink, &branch)
+            hex(t, p.baby_pink, &branch)
         } else {
-            hex(t, p.muted, &branch)
+            hex(t, p.light_grey, &branch)
         };
         println!(
             "  {} {}  {}",
-            hex(t, p.fg, &feature.title),
-            hex(t, p.muted, slug),
+            hex(t, p.white, &feature.title),
+            hex(t, p.light_grey, slug),
             branch
         );
         print!("    ");
         for (i, id) in PIPELINE.iter().enumerate() {
             let st = feature.stage(*id);
             if i > 0 {
-                print!("{}", hex(t, p.muted, "─"));
+                print!("{}", hex(t, p.light_grey, "─"));
             }
             print!(
                 "{} {}",
                 stage_icon(t, st.status),
-                hex(t, p.muted, id.label())
+                hex(t, p.light_grey, id.label())
             );
             print!(" ");
         }
@@ -105,7 +105,7 @@ pub fn render_findings(cfg: &Config, loaded: &[LoadedFindings], json: bool) {
             "{}",
             hex(
                 t,
-                p.muted,
+                p.light_grey,
                 "no findings recorded — run plan-review or dual-review first"
             )
         );
@@ -131,16 +131,16 @@ pub fn render_findings(cfg: &Config, loaded: &[LoadedFindings], json: bool) {
             sev,
             badge,
             hex(t, p.cyan, &f.location()),
-            hex(t, p.fg, &f.title),
+            hex(t, p.white, &f.title),
         );
         if !f.scenario.is_empty() {
-            println!("      {}", hex(t, p.muted, &f.scenario));
+            println!("      {}", hex(t, p.light_grey, &f.scenario));
         }
         println!(
             "      {}",
             hex(
                 t,
-                p.muted,
+                p.light_grey,
                 &format!(
                     "verdict: {}  action: {}  stage: {}",
                     f.verdict, f.action, stage
@@ -156,7 +156,7 @@ pub fn render_history(cfg: &Config, metas: &[RunMeta], summary: &DaySummary, lim
     println!("{}", hex(t, p.purple, "ritual — run history"));
     println!();
     if metas.is_empty() {
-        println!("  {}", hex(t, p.muted, "no runs yet"));
+        println!("  {}", hex(t, p.light_grey, "no runs yet"));
         return;
     }
     for m in metas.iter().take(limit) {
@@ -185,12 +185,12 @@ pub fn render_history(cfg: &Config, metas: &[RunMeta], summary: &DaySummary, lim
         println!(
             "  {} {}  {}  {}  {}  {}  {}",
             status,
-            hex(t, p.muted, &when),
-            hex(t, p.fg, &format!("{:<12}", m.stage)),
+            hex(t, p.light_grey, &when),
+            hex(t, p.white, &format!("{:<12}", m.stage)),
             hex(t, p.cyan, &format!("{:<8}", m.agent)),
             hex(t, p.orange, &format!("{cost:>8}")),
-            hex(t, p.muted, &format!("{tokens:>16}")),
-            hex(t, p.muted, &dur),
+            hex(t, p.light_grey, &format!("{tokens:>16}")),
+            hex(t, p.light_grey, &dur),
         );
     }
     println!();
@@ -198,7 +198,7 @@ pub fn render_history(cfg: &Config, metas: &[RunMeta], summary: &DaySummary, lim
         "  {}",
         hex(
             t,
-            p.muted,
+            p.light_grey,
             &format!(
                 "today: {} runs, ${:.2}, {} output tokens",
                 summary.runs, summary.cost_usd, summary.output_tokens
@@ -223,15 +223,15 @@ pub fn render_event(cfg: &Config, ev: &AgentEvent) {
                 "{} {}  {}",
                 hex(t, p.purple, t.icon_agent()),
                 hex(t, p.purple, model),
-                hex(t, p.muted, &servers.join(" "))
+                hex(t, p.light_grey, &servers.join(" "))
             );
         }
         AgentEvent::Thinking { text } => {
-            println!("  {}", hex(t, p.muted, &clip(text, 160)));
+            println!("  {}", hex(t, p.light_grey, &clip(text, 160)));
         }
         AgentEvent::Text { text } => {
             for line in text.lines() {
-                println!("  {}", hex(t, p.fg, line));
+                println!("  {}", hex(t, p.white, line));
             }
         }
         AgentEvent::ToolUse { name, summary } => {
@@ -239,11 +239,11 @@ pub fn render_event(cfg: &Config, ev: &AgentEvent) {
                 "  {} {} {}",
                 hex(t, p.cyan, "▸"),
                 hex(t, p.cyan, name),
-                hex(t, p.muted, summary)
+                hex(t, p.light_grey, summary)
             );
         }
         AgentEvent::ToolResult { is_error, summary } => {
-            let c = if *is_error { p.red } else { p.muted };
+            let c = if *is_error { p.red } else { p.light_grey };
             println!("    {} {}", hex(t, c, "↳"), hex(t, c, &clip(summary, 140)));
         }
         AgentEvent::RateLimit(info) => {
@@ -273,18 +273,18 @@ pub fn render_event(cfg: &Config, ev: &AgentEvent) {
             println!(
                 "{} {}",
                 hex(t, c, icon),
-                hex(t, p.muted, &format!("{cost} {turns} {dur}"))
+                hex(t, p.light_grey, &format!("{cost} {turns} {dur}"))
             );
         }
         AgentEvent::Stderr { line } => {
-            println!("  {}", hex(t, p.muted, &clip(line, 160)));
+            println!("  {}", hex(t, p.light_grey, &clip(line, 160)));
         }
         AgentEvent::Raw { value } => {
             let kind = value
                 .get("type")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("?");
-            println!("  {}", hex(t, p.muted, &format!("· {kind}")));
+            println!("  {}", hex(t, p.light_grey, &format!("· {kind}")));
         }
     }
 }
@@ -301,17 +301,17 @@ pub fn render_run_summary(cfg: &Config, meta: &RunMeta, new_findings: &[String])
     println!(
         "{} {} {}  {}",
         hex(t, c, t.icon_check()),
-        hex(t, p.fg, &meta.stage),
+        hex(t, p.white, &meta.stage),
         hex(t, c, verdict),
-        hex(t, p.muted, &meta.run_id)
+        hex(t, p.light_grey, &meta.run_id)
     );
     for f in new_findings {
         println!(
             "  {} {}",
-            hex(t, p.pink, t.icon_finding()),
+            hex(t, p.baby_pink, t.icon_finding()),
             hex(
                 t,
-                p.fg,
+                p.white,
                 &format!("findings: .ritual/findings/{f} — browse with `ritual findings`")
             )
         );
@@ -337,7 +337,7 @@ pub fn render_init(cfg: &Config, report: &InitReport) {
     if let Some(stack) = report.stack {
         println!(
             "  {} {}",
-            hex(t, p.muted, "detected stack:"),
+            hex(t, p.light_grey, "detected stack:"),
             hex(t, p.cyan, stack.label())
         );
     }
@@ -350,7 +350,7 @@ pub fn render_init(cfg: &Config, report: &InitReport) {
     if report.actions.is_empty() {
         println!(
             "  {}",
-            hex(t, p.muted, "nothing to do — already initialized")
+            hex(t, p.light_grey, "nothing to do — already initialized")
         );
     }
 }
