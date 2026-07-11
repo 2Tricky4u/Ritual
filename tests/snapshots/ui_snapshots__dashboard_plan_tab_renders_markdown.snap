@@ -1,0 +1,26 @@
+---
+source: tests/ui_snapshots.rs
+expression: render(&app)
+---
+"                            │   live    findings    history   plan                      "
+"  PIPELINE ──────────────── │─────────────────────────────────────────────────────────────"
+"  ○ spec                    │ 󰲡 The Plan                                                  "
+"  ○ plan                    │                                                             "
+"  ○ plan-review             │ Some bold intro with  inline code .                         "
+"  ○ tests-red               │                                                             "
+"  ○ implement               │  • first step                                               "
+"  ○ dual-review             │  • second step                                              "
+"                            │    • nested detail                                          "
+" 󰚩 AGENTS ───────────────── │                                                             "
+"  󰚩 claude …                │  rust                                                       "
+"  󰚩 codex …                 │   fn ritual() {}                                            "
+"  󱘖 bridge …                │                                                             "
+"   nvim —                   │ │ stage │ state │                                           "
+"   check ?                  │ ─────────────────                                           "
+"                            │ │ spec  │ done  │                                           "
+"   detached                 │                                                             "
+"                            │                                                             "
+"                            │                                                             "
+"                            │                                                             "
+"                            │                                                             "
+" RITUAL   detached  detached                                                          "

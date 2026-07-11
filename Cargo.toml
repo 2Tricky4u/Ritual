@@ -1,6 +1,6 @@
 [package]
 name = "ritual"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 
 [dependencies]
@@ -16,6 +16,7 @@ nix = { version = "0.31.3", features = ["signal", "process"] }
 notify = "8.2.0"
 notify-debouncer-full = "0.7.0"
 owo-colors = "4.3.0"
+pulldown-cmark = { version = "0.13.4", default-features = false, features = ["simd"] }
 ratatui = "0.30.2"
 regex = "1.13.0"
 serde = { version = "1.0.228", features = ["derive"] }

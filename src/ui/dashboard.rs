@@ -760,49 +760,33 @@ fn draw_plan(f: &mut Frame, app: &App, area: Rect) {
     let spec = std::fs::read_to_string(app.dirs.spec_file(&app.slug)).ok();
     let text = match (plan, spec) {
         (Some(p), _) => p,
-        (None, Some(s)) => format!("(no plan yet — spec below)\n\n{s}"),
+        (None, Some(s)) => format!("*(no plan yet — spec below)*\n\n{s}"),
         (None, None) => "no spec or plan yet — press enter on the spec stage".into(),
     };
 
-    // Markdown-lite: headings purple, bullets pink •, fenced code on one_bg.
-    let mut in_fence = false;
-    let mut lines: Vec<Line> = vec![Line::default()];
-    for raw in text.lines().take(area.height as usize) {
-        if raw.trim_start().starts_with("```") {
-            in_fence = !in_fence;
-            lines.push(Line::from(Span::styled(
-                raw.to_string(),
-                Style::default().fg(t.grey_fg()).bg(t.bg_row()),
-            )));
-        } else if in_fence {
-            lines.push(fill_row(
-                vec![Span::styled(
-                    raw.to_string(),
-                    Style::default().fg(t.muted()).bg(t.bg_row()),
-                )],
-                area.width,
-                t.bg_row(),
-            ));
-        } else if raw.starts_with('#') {
-            lines.push(Line::from(Span::styled(
-                raw.to_string(),
-                Style::default().fg(t.accent()).add_modifier(Modifier::BOLD),
-            )));
-        } else if let Some(rest) = raw.trim_start().strip_prefix("- ") {
-            let indent = raw.len() - raw.trim_start().len();
-            lines.push(Line::from(vec![
-                Span::raw(" ".repeat(indent)),
-                Span::styled("• ", Style::default().fg(t.highlight())),
-                Span::styled(rest.to_string(), Style::default().fg(t.fg())),
-            ]));
-        } else {
-            lines.push(Line::from(Span::styled(
-                raw.to_string(),
-                Style::default().fg(t.fg()),
-            )));
+    // Real markdown rendering (pulldown-cmark), themed; j/k scrolls.
+    let lines = crate::ui::markdown::render(&text, t, area.width);
+    let total = lines.len();
+    let max_scroll = total.saturating_sub(area.height as usize);
+    let offset = app.plan_scroll.min(max_scroll);
+    let visible: Vec<Line> = lines
+        .into_iter()
+        .skip(offset)
+        .take(area.height as usize)
+        .collect();
+    f.render_widget(Paragraph::new(visible).wrap(Wrap { trim: false }), area);
+
+    // Scroll hint in the top-right corner when there is more.
+    if total > area.height as usize {
+        let hint = format!(" {}/{} ", offset + 1, max_scroll + 1);
+        let w = hint.chars().count() as u16;
+        if w < area.width {
+            f.render_widget(
+                Paragraph::new(Span::styled(hint, Style::default().fg(t.grey_fg()))),
+                Rect::new(area.right() - w, area.y, w, 1),
+            );
         }
     }
-    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }
 
 // ---------------------------------------------------------------------------

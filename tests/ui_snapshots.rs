@@ -86,6 +86,20 @@ fn dashboard_running_with_budget() {
 }
 
 #[test]
+fn dashboard_plan_tab_renders_markdown() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".ritual/features/detached")).unwrap();
+    std::fs::write(
+        tmp.path().join(".ritual/features/detached/plan.md"),
+        "# The Plan\n\nSome **bold** intro with `inline code`.\n\n- first step\n- second step\n  - nested detail\n\n```rust\nfn ritual() {}\n```\n\n| stage | state |\n|---|---|\n| spec | done |\n",
+    )
+    .unwrap();
+    let mut app = setup_app(&tmp);
+    app.tab = Tab::Plan;
+    insta::assert_snapshot!(render(&app));
+}
+
+#[test]
 fn dashboard_palette_filters() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = setup_app(&tmp);

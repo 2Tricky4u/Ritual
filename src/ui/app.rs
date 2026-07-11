@@ -80,6 +80,7 @@ pub struct App {
     pub confirm_quit: bool,
     pub quit: bool,
     pub palette: Option<PaletteState>,
+    pub plan_scroll: usize,
 
     findings_before: Vec<String>,
     run_task: Option<JoinHandle<()>>,
@@ -124,6 +125,7 @@ impl App {
             confirm_quit: false,
             quit: false,
             palette: None,
+            plan_scroll: 0,
             findings_before: Vec::new(),
             run_task: None,
             current_run_id: None,
@@ -195,6 +197,7 @@ impl App {
         let idx = order.iter().position(|s| *s == self.slug).unwrap_or(0);
         let next = (idx as i32 + delta).rem_euclid(order.len() as i32) as usize;
         self.slug = order[next].clone();
+        self.plan_scroll = 0;
         if let Some(f) = self.state.features.get(&self.slug) {
             self.branch = f.branch.clone();
         }
@@ -399,6 +402,9 @@ impl App {
                 } else {
                     Some(next)
                 };
+            }
+            Tab::Plan => {
+                self.plan_scroll = (self.plan_scroll as i32 + delta).max(0) as usize;
             }
             _ => {
                 self.selected =
