@@ -32,8 +32,7 @@ pub fn execute(
         );
     }
 
-    let branch =
-        state::current_branch(&dirs.project_root).unwrap_or_else(|| "detached".to_string());
+    let branch = state::current_branch(&dirs.work_root).unwrap_or_else(|| "detached".to_string());
     let slug = state::branch_slug(&branch);
     let mut st = State::load(dirs)?;
     st.feature_for_branch_mut(&branch); // ensure the feature exists
@@ -144,7 +143,7 @@ fn run_interactive(
     let (bin, args) = argv.split_first().context("empty argv")?;
     let status = std::process::Command::new(bin)
         .args(args)
-        .current_dir(&dirs.project_root)
+        .current_dir(&dirs.work_root)
         .status()
         .with_context(|| format!("launching {bin}"))?;
 
@@ -162,7 +161,7 @@ fn run_interactive(
             }
         }
         StageId::TestsRed => {
-            if check_green(&dirs.project_root) {
+            if check_green(&dirs.work_root) {
                 // /tdd went all the way to green: tests-red AND implement done.
                 set_stage(st, branch, StageId::Implement, StageStatus::Done, None);
                 println!("check.sh green — tests-red and implement both done");
@@ -173,7 +172,7 @@ fn run_interactive(
             }
         }
         StageId::Implement => {
-            if check_green(&dirs.project_root) {
+            if check_green(&dirs.work_root) {
                 StageStatus::Done
             } else {
                 println!("check.sh still red — implement stays needs-attention");
@@ -218,6 +217,7 @@ fn run_headless(
         branch: branch.into(),
         redact: cfg.redaction,
         repro: Some(crate::provenance::collect(cfg, dirs)),
+        cwd: dirs.work_root.clone(),
     };
 
     let rt = tokio::runtime::Runtime::new()?;
@@ -322,18 +322,42 @@ fn mtime(p: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(p).and_then(|m| m.modified()).ok()
 }
 
-fn check_green(project_root: &Path) -> bool {
-    let check = project_root.join("check.sh");
+fn check_green(work_root: &Path) -> bool {
+    let check = work_root.join("check.sh");
     if !check.exists() {
         return false;
     }
-    std::process::Command::new("./check.sh")
-        .current_dir(project_root)
+    let mut cmd = std::process::Command::new("./check.sh");
+    cmd.current_dir(work_root)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .stderr(std::process::Stdio::null());
+    run_with_timeout(cmd, Config::default().check_timeout_secs)
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// Spawn, poll, and kill on deadline — a hung check.sh (wedged build, dead
+/// board on a HIL rig) must never wedge the pipeline. None = timeout/error.
+pub(crate) fn run_with_timeout(
+    mut cmd: std::process::Command,
+    secs: u64,
+) -> Option<std::process::ExitStatus> {
+    let mut child = cmd.spawn().ok()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(_) => return None,
+        }
+    }
 }
 
 fn list_findings(dir: &Path) -> Vec<String> {

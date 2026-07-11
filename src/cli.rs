@@ -73,6 +73,9 @@ pub enum Command {
     New {
         /// Feature title
         title: Vec<String>,
+        /// Create a git worktree + branch for this feature (parallel work)
+        #[arg(long, value_name = "BRANCH")]
+        worktree: Option<String>,
     },
     /// Show the reproducibility bundle of a run and diff it against the current environment
     Repro {
