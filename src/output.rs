@@ -6,12 +6,26 @@ use owo_colors::OwoColorize;
 use crate::config::Config;
 use crate::findings::LoadedFindings;
 use crate::history::{DaySummary, RunMeta};
+use crate::runner::events::AgentEvent;
 use crate::scaffold::InitReport;
 use crate::state::{Feature, PIPELINE, StageStatus};
 use crate::theme::Theme;
 
+/// Colors only when stdout is a real terminal and NO_COLOR is unset —
+/// piped output (scripts, tests) stays clean.
+fn colors_enabled() -> bool {
+    use std::io::IsTerminal;
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED
+        .get_or_init(|| std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal())
+}
+
 fn hex(t: &Theme, c: (u8, u8, u8), s: &str) -> String {
-    s.color(t.owo(c)).to_string()
+    if colors_enabled() {
+        s.color(t.owo(c)).to_string()
+    } else {
+        s.to_string()
+    }
 }
 
 pub fn stage_icon(t: &Theme, status: StageStatus) -> String {
@@ -191,6 +205,129 @@ pub fn render_history(cfg: &Config, metas: &[RunMeta], summary: &DaySummary, lim
             )
         )
     );
+}
+
+/// Live rendering of one agent event during `ritual run <stage>`.
+pub fn render_event(cfg: &Config, ev: &AgentEvent) {
+    let t = &cfg.theme;
+    let p = t.palette;
+    match ev {
+        AgentEvent::SessionStart {
+            model, mcp_servers, ..
+        } => {
+            let servers: Vec<String> = mcp_servers
+                .iter()
+                .map(|(n, s)| format!("{n}:{s}"))
+                .collect();
+            println!(
+                "{} {}  {}",
+                hex(t, p.purple, t.icon_agent()),
+                hex(t, p.purple, model),
+                hex(t, p.muted, &servers.join(" "))
+            );
+        }
+        AgentEvent::Thinking { text } => {
+            println!("  {}", hex(t, p.muted, &clip(text, 160)));
+        }
+        AgentEvent::Text { text } => {
+            for line in text.lines() {
+                println!("  {}", hex(t, p.fg, line));
+            }
+        }
+        AgentEvent::ToolUse { name, summary } => {
+            println!(
+                "  {} {} {}",
+                hex(t, p.cyan, "▸"),
+                hex(t, p.cyan, name),
+                hex(t, p.muted, summary)
+            );
+        }
+        AgentEvent::ToolResult { is_error, summary } => {
+            let c = if *is_error { p.red } else { p.muted };
+            println!("    {} {}", hex(t, c, "↳"), hex(t, c, &clip(summary, 140)));
+        }
+        AgentEvent::RateLimit(info) => {
+            if info.status.as_deref() != Some("allowed") {
+                println!("  {} rate limit: {:?}", hex(t, p.orange, "!"), info.status);
+            }
+        }
+        AgentEvent::Completed {
+            ok,
+            total_cost_usd,
+            num_turns,
+            duration_ms,
+            ..
+        } => {
+            let (c, icon) = if *ok {
+                (p.green, t.icon_done())
+            } else {
+                (p.red, t.icon_failed())
+            };
+            let cost = total_cost_usd
+                .map(|c| format!("${c:.3}"))
+                .unwrap_or_default();
+            let dur = duration_ms
+                .map(|d| format!("{:.1}s", d as f64 / 1000.0))
+                .unwrap_or_default();
+            let turns = num_turns.map(|n| format!("{n} turns")).unwrap_or_default();
+            println!(
+                "{} {}",
+                hex(t, c, icon),
+                hex(t, p.muted, &format!("{cost} {turns} {dur}"))
+            );
+        }
+        AgentEvent::Stderr { line } => {
+            println!("  {}", hex(t, p.muted, &clip(line, 160)));
+        }
+        AgentEvent::Raw { value } => {
+            let kind = value
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?");
+            println!("  {}", hex(t, p.muted, &format!("· {kind}")));
+        }
+    }
+}
+
+pub fn render_run_summary(cfg: &Config, meta: &RunMeta, new_findings: &[String]) {
+    let t = &cfg.theme;
+    let p = t.palette;
+    println!();
+    let (c, verdict) = if meta.ok {
+        (p.green, "ok")
+    } else {
+        (p.red, "failed")
+    };
+    println!(
+        "{} {} {}  {}",
+        hex(t, c, t.icon_check()),
+        hex(t, p.fg, &meta.stage),
+        hex(t, c, verdict),
+        hex(t, p.muted, &meta.run_id)
+    );
+    for f in new_findings {
+        println!(
+            "  {} {}",
+            hex(t, p.pink, t.icon_finding()),
+            hex(
+                t,
+                p.fg,
+                &format!("findings: .ritual/findings/{f} — browse with `ritual findings`")
+            )
+        );
+    }
+    if let Some(err) = &meta.error {
+        println!("  {}", hex(t, p.red, &clip(err, 300)));
+    }
+}
+
+fn clip(s: &str, max: usize) -> String {
+    let one_line = s.replace('\n', " ");
+    let mut out: String = one_line.chars().take(max).collect();
+    if one_line.chars().count() > max {
+        out.push('…');
+    }
+    out
 }
 
 pub fn render_init(cfg: &Config, report: &InitReport) {
