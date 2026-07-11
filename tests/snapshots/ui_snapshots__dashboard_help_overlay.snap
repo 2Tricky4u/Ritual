@@ -1,0 +1,26 @@
+---
+source: tests/ui_snapshots.rs
+expression: render(&app)
+---
+"╭ detached ──────────────────╮╭ ritual ──────────────────────────────────────────────────╮"
+"│ ▸ ○ spec                   ││ live · findings · history · plan                         │"
+"│   ○ plan                   ││                                                          │"
+"│   ○ plan-review            ││                                                          │"
+"│   ○ tests-red       ╭ keys ──────────────────────────────────────╮                     │"
+"│   ○ implement       │ enter     run selected stage / open finding│                     │"
+"│   ○ dual-review     │ j / k     navigate                         │                     │"
+"│                     │ tab, 1-4  switch pane                      │                     │"
+"│                     │ c / C     check.sh fast / full             │                     │"
+"│  detached           │ x         cancel running stage             │                     │"
+"│ 󰚩 codex …           │ e         open finding in $EDITOR          │ it — headless output│"
+"│  check ?            │ r         refresh findings/auth            │                     │"
+"│                     │ g / G     scroll top / follow              │                     │"
+"│                     │ q         quit                             │                     │"
+"│                     │                                            │                     │"
+"│                     │                                            │                     │"
+"│                     │                                            │                     │"
+"│                     ╰────────────────────────────────────────────╯                     │"
+"│                            ││                                                          │"
+"│                            ││                                                          │"
+"╰────────────────────────────╯╰──────────────────────────────────────────────────────────╯"
+" enter run · j/k move · tab panes · c check · e edit · x cancel · ? help · q quit         "

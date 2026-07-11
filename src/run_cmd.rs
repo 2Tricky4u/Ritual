@@ -44,7 +44,7 @@ pub fn execute(cfg: &Config, dirs: &RitualDirs, stage_str: &str, arg: Option<&st
     }
 }
 
-fn set_stage(
+pub(crate) fn set_stage(
     st: &mut State,
     branch: &str,
     stage: StageId,

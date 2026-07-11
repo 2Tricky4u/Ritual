@@ -1,21 +1,10 @@
-mod cli;
-mod config;
-mod findings;
-mod history;
-mod output;
-mod run_cmd;
-mod runner;
-mod scaffold;
-mod stages;
-mod state;
-mod theme;
-
 use anyhow::Result;
 use clap::Parser;
 
-use crate::cli::{Cli, Command};
-use crate::config::Config;
-use crate::state::{RitualDirs, State};
+use ritual::cli::{Cli, Command};
+use ritual::config::Config;
+use ritual::state::{self, RitualDirs, State};
+use ritual::{findings, history, output, run_cmd, scaffold, ui};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -24,11 +13,17 @@ fn main() -> Result<()> {
     let cfg = Config::load(&dirs.project_root, cli.theme.as_deref(), cli.ascii)?;
 
     match cli.command {
+        None => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            rt.block_on(ui::app::run(cfg, dirs))?;
+        }
         Some(Command::Init { force }) => {
             let report = scaffold::init(&dirs.project_root, force)?;
             output::render_init(&cfg, &report);
         }
-        Some(Command::Status) | None => {
+        Some(Command::Status) => {
             let state = State::load(&dirs)?;
             let features: Vec<_> = state
                 .features

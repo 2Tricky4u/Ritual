@@ -1,0 +1,26 @@
+---
+source: tests/ui_snapshots.rs
+expression: render(&app)
+---
+"╭ detached ──────────────────╮╭ ritual ──────────────────────────────────────────────────╮"
+"│ ▸ ○ spec                   ││ live · findings · history · plan                         │"
+"│   ○ plan                   ││▸ critical ◆both src/state.rs:42 Race in state save  [dual│"
+"│   ○ plan-review            ││  minor    ◇single src/x.rs:7 Long line  [dual-review:unco│"
+"│   ○ tests-red              ││                                                          │"
+"│   ○ implement              ││                                                          │"
+"│   ○ dual-review            ││                                                          │"
+"│                            ││                                                          │"
+"│                            ││                                                          │"
+"│  detached                  ││                                                          │"
+"│ 󰚩 codex …                  ││                                                          │"
+"│  check ?                   ││                                                          │"
+"│                            ││                                                          │"
+"│                            ││                                                          │"
+"│                            ││                                                          │"
+"│                            ││                                                          │"
+"│                            ││                                                          │"
+"│                            ││                                                          │"
+"│                            ││                                                          │"
+"│                            ││                                                          │"
+"╰────────────────────────────╯╰──────────────────────────────────────────────────────────╯"
+" enter run · j/k move · tab panes · c check · e edit · x cancel · ? help · q quit         "
