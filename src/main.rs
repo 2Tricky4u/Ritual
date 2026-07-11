@@ -112,6 +112,12 @@ fn main() -> Result<()> {
                 }
             }
         }
+        Some(Command::InternalSpawn { run_id }) => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            rt.block_on(ritual::runner::daemon_main(&dirs, &run_id))?;
+        }
         Some(Command::VerifyLog) => match ritual::provenance::verify_log(&dirs.runs_dir())? {
             ritual::provenance::VerifyOutcome::Ok { runs } => {
                 println!("chain intact: {runs} chained run(s) verified");

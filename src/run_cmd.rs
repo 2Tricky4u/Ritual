@@ -220,11 +220,18 @@ fn run_headless(
         cwd: dirs.work_root.clone(),
     };
 
+    // Daemonize, then follow along. Ctrl-C here leaves the run alive.
+    let run_id = runner::new_run_id(stage.label());
+    runner::spawn_detached(dirs, &req, &run_id)?;
+    println!("run {run_id} started (detached — survives this terminal)");
+
     let rt = tokio::runtime::Runtime::new()?;
     let outcome = rt.block_on(async {
         let (tx, mut rx) = mpsc::channel(256);
         let dirs2 = dirs.clone();
-        let handle = tokio::spawn(async move { runner::run_headless(&dirs2, req, tx).await });
+        let rid = run_id.clone();
+        let handle =
+            tokio::spawn(async move { runner::tail_run(&dirs2, req.agent, &rid, tx).await });
         while let Some(ev) = rx.recv().await {
             crate::output::render_event(cfg, &ev);
         }

@@ -15,7 +15,8 @@ use crate::history::RunMeta;
 use crate::runner::events::AgentEvent;
 use crate::state::RitualDirs;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AgentKind {
     Claude,
     // Constructed once direct `codex exec` stages land (post-fixture capture).
@@ -39,7 +40,7 @@ impl AgentKind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RunRequest {
     pub agent: AgentKind,
     pub argv: Vec<String>,
@@ -55,6 +56,195 @@ pub struct RunRequest {
     pub cwd: PathBuf,
 }
 
+/// Liveness sidecar written by the detached executor (`<run_id>.status`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RunStatus {
+    pub pid: u32,
+    pub stage: String,
+    pub branch: String,
+}
+
+/// Where a run stands, judged purely from the filesystem.
+#[derive(Debug)]
+pub enum RunState {
+    Running(RunStatus),
+    Finished(Box<RunMeta>),
+    /// No live pid and no meta — the daemon died before finishing.
+    Vanished,
+}
+
+pub fn new_run_id(stage: &str) -> String {
+    format!("{}-{}", Utc::now().format("%Y%m%dT%H%M%SZ"), stage)
+}
+
+fn status_path(dirs: &RitualDirs, run_id: &str) -> PathBuf {
+    dirs.runs_dir().join(format!("{run_id}.status"))
+}
+
+fn request_path(dirs: &RitualDirs, run_id: &str) -> PathBuf {
+    dirs.runs_dir().join(format!("{run_id}.request.json"))
+}
+
+pub fn pid_alive(pid: u32) -> bool {
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok()
+}
+
+/// Judge a run from its sidecar files.
+pub fn run_state(dirs: &RitualDirs, run_id: &str) -> RunState {
+    let meta_path = dirs.runs_dir().join(format!("{run_id}.meta.json"));
+    if let Ok(text) = std::fs::read_to_string(&meta_path)
+        && let Ok(meta) = serde_json::from_str::<RunMeta>(&text)
+    {
+        return RunState::Finished(Box::new(meta));
+    }
+    if let Ok(text) = std::fs::read_to_string(status_path(dirs, run_id))
+        && let Ok(status) = serde_json::from_str::<RunStatus>(&text)
+        && pid_alive(status.pid)
+    {
+        return RunState::Running(status);
+    }
+    RunState::Vanished
+}
+
+/// All runs that are currently alive (for TUI resurrection).
+pub fn live_runs(dirs: &RitualDirs) -> Vec<(String, RunStatus)> {
+    let Ok(rd) = std::fs::read_dir(dirs.runs_dir()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in rd.filter_map(|e| e.ok()) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(run_id) = name.strip_suffix(".status") else {
+            continue;
+        };
+        if let Ok(text) = std::fs::read_to_string(entry.path())
+            && let Ok(status) = serde_json::from_str::<RunStatus>(&text)
+            && pid_alive(status.pid)
+        {
+            out.push((run_id.to_string(), status));
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Detach a run: persist the request, re-exec `ritual _spawn <run_id>` in its
+/// own session. The daemon writes the same archive/meta files the inline
+/// runner always did — callers follow along with [`tail_run`].
+pub fn spawn_detached(dirs: &RitualDirs, req: &RunRequest, run_id: &str) -> Result<()> {
+    std::fs::create_dir_all(dirs.runs_dir())?;
+    std::fs::write(
+        request_path(dirs, run_id),
+        serde_json::to_string_pretty(req)?,
+    )?;
+
+    let exe = std::env::current_exe().context("resolving ritual binary")?;
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dirs.logs_dir().join("daemon.log"))
+        .ok();
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("_spawn")
+        .arg(run_id)
+        .current_dir(&dirs.project_root)
+        .stdin(Stdio::null())
+        .stdout(
+            log.as_ref()
+                .and_then(|f| f.try_clone().ok())
+                .map(Stdio::from)
+                .unwrap_or_else(Stdio::null),
+        )
+        .stderr(log.map(Stdio::from).unwrap_or_else(Stdio::null));
+    // New session: the daemon survives the TUI, the terminal, and SIGHUP.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            nix::unistd::setsid()
+                .map(|_| ())
+                .map_err(|e| std::io::Error::other(e.to_string()))
+        });
+    }
+    let mut child = cmd.spawn().context("spawning ritual _spawn daemon")?;
+    // Reap the direct child so it never lingers as a zombie under the TUI.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+/// Daemon side: load the persisted request and execute it. Events go nowhere
+/// — the archive on disk IS the stream.
+pub async fn daemon_main(dirs: &RitualDirs, run_id: &str) -> Result<()> {
+    let req: RunRequest = serde_json::from_str(
+        &std::fs::read_to_string(request_path(dirs, run_id))
+            .with_context(|| format!("no request file for {run_id}"))?,
+    )?;
+    let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
+    // Drain silently; senders in execute_run ignore failures anyway.
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    execute_run(dirs, req, run_id, tx).await.map(|_| ())
+}
+
+/// Follow a (possibly detached) run: replay the archive from the top, stream
+/// new lines as they land, finish when the meta appears or the daemon dies.
+pub async fn tail_run(
+    dirs: &RitualDirs,
+    agent: AgentKind,
+    run_id: &str,
+    tx: mpsc::Sender<AgentEvent>,
+) -> Result<RunOutcome> {
+    let archive_path = dirs.runs_dir().join(format!("{run_id}.jsonl"));
+    let mut offset: usize = 0;
+    let mut carry = String::new();
+    loop {
+        // Stream any new complete lines.
+        if let Ok(bytes) = tokio::fs::read(&archive_path).await
+            && bytes.len() > offset
+        {
+            let chunk = String::from_utf8_lossy(&bytes[offset..]).into_owned();
+            offset = bytes.len();
+            carry.push_str(&chunk);
+            while let Some(nl) = carry.find('\n') {
+                let line: String = carry.drain(..=nl).collect();
+                for ev in agent.parse(line.trim_end()) {
+                    let _ = tx.send(ev).await;
+                }
+            }
+        }
+        match run_state(dirs, run_id) {
+            RunState::Finished(meta) => {
+                return Ok(RunOutcome {
+                    meta: *meta,
+                    archive: archive_path,
+                });
+            }
+            RunState::Running(_) => {}
+            RunState::Vanished => {
+                // Grace: files may lag the process by a beat.
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                if let RunState::Finished(meta) = run_state(dirs, run_id) {
+                    return Ok(RunOutcome {
+                        meta: *meta,
+                        archive: archive_path,
+                    });
+                }
+                anyhow::bail!("run {run_id} vanished (daemon died before writing meta)");
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+/// SIGTERM the daemon's whole process group (daemon + agent).
+pub fn kill_run(dirs: &RitualDirs, run_id: &str) -> bool {
+    if let RunState::Running(status) = run_state(dirs, run_id) {
+        let pgid = nix::unistd::Pid::from_raw(-(status.pid as i32));
+        return nix::sys::signal::kill(pgid, nix::sys::signal::Signal::SIGTERM).is_ok();
+    }
+    false
+}
+
 #[derive(Debug)]
 pub struct RunOutcome {
     pub meta: RunMeta,
@@ -65,14 +255,27 @@ pub struct RunOutcome {
 /// Spawn a headless agent run. Events arrive on the returned channel; the
 /// raw stream is archived verbatim to `.ritual/runs/<run_id>.jsonl` BEFORE
 /// parsing, and a `<run_id>.meta.json` summary is written when it exits.
-pub async fn run_headless(
+pub async fn execute_run(
     dirs: &RitualDirs,
     req: RunRequest,
+    run_id: &str,
     tx: mpsc::Sender<AgentEvent>,
 ) -> Result<RunOutcome> {
-    let run_id = format!("{}-{}", Utc::now().format("%Y%m%dT%H%M%SZ"), req.stage);
+    let run_id = run_id.to_string();
     let runs_dir = dirs.runs_dir();
     tokio::fs::create_dir_all(&runs_dir).await?;
+
+    // Liveness sidecar for tailers/resurrection; removed once meta lands.
+    let status_file = status_path(dirs, &run_id);
+    let _ = std::fs::write(
+        &status_file,
+        serde_json::to_string(&RunStatus {
+            pid: std::process::id(),
+            stage: req.stage.clone(),
+            branch: req.branch.clone(),
+        })?,
+    );
+
     let archive_path = runs_dir.join(format!("{run_id}.jsonl"));
     let mut archive = tokio::fs::File::create(&archive_path)
         .await
@@ -97,8 +300,7 @@ pub async fn run_headless(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .process_group(0);
+        .kill_on_drop(true);
     for (k, v) in &req.env {
         cmd.env(k, v);
     }
@@ -156,6 +358,8 @@ pub async fn run_headless(
     tokio::fs::write(&meta_path, serde_json::to_string_pretty(&meta)?)
         .await
         .with_context(|| format!("writing {}", meta_path.display()))?;
+    let _ = std::fs::remove_file(&status_file);
+    let _ = std::fs::remove_file(request_path(dirs, &run_id));
 
     Ok(RunOutcome {
         meta,

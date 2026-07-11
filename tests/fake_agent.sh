@@ -15,6 +15,11 @@ if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then
   echo "Logged in using ChatGPT (fake)"
   exit 0
 fi
+# `<fake> --version` = provenance probe: answer instantly.
+if [ "${1:-}" = "--version" ]; then
+  echo "fake-agent 0.0.0"
+  exit 0
+fi
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fixture="${FAKE_AGENT_FIXTURE:-$dir/fixtures/claude_toolrich.jsonl}"
 delay="${FAKE_AGENT_DELAY:-0.05}"

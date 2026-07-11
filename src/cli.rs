@@ -84,4 +84,7 @@ pub enum Command {
     },
     /// Verify the tamper-evident hash chain over all recorded runs
     VerifyLog,
+    /// Internal: detached run executor (do not invoke by hand)
+    #[command(name = "_spawn", hide = true)]
+    InternalSpawn { run_id: String },
 }
