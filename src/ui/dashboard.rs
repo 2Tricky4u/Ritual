@@ -38,9 +38,57 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.show_help {
         draw_help(f, t);
     }
+    if app.palette.is_some() {
+        draw_palette(f, app);
+    }
     if app.confirm_quit {
         draw_confirm_quit(f, t);
     }
+}
+
+/// Command palette overlay: filter line + fuzzy-matched actions.
+fn draw_palette(f: &mut Frame, app: &App) {
+    let t = &app.cfg.theme;
+    let Some(p) = &app.palette else { return };
+    let matches = app.palette_filtered();
+    let height = (matches.len() as u16 + 3).clamp(4, 14);
+    let area = centered_rect(f.area(), 52, height);
+    f.render_widget(Clear, area);
+
+    let mut lines = vec![Line::from(vec![
+        Span::styled("› ", Style::default().fg(t.highlight())),
+        Span::styled(p.input.clone(), Style::default().fg(t.fg())),
+        Span::styled("▏", Style::default().fg(t.info())),
+    ])];
+    let visible = (height as usize).saturating_sub(3);
+    let first = p.selected.saturating_sub(visible.saturating_sub(1));
+    for (i, (label, _)) in matches.iter().enumerate().skip(first).take(visible) {
+        let (marker, style) = if i == p.selected {
+            (
+                "▸ ",
+                Style::default()
+                    .fg(t.highlight())
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            ("  ", Style::default().fg(t.fg()))
+        };
+        lines.push(Line::from(vec![
+            Span::styled(marker, Style::default().fg(t.highlight())),
+            Span::styled(label.clone(), style),
+        ]));
+    }
+    if matches.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  no matching command",
+            Style::default().fg(t.muted()),
+        )));
+    }
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(titled_block(t, "command", true).style(Style::default().bg(t.bg_dark()))),
+        area,
+    );
 }
 
 fn titled_block<'a>(t: &Theme, title: &'a str, focused: bool) -> Block<'a> {

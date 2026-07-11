@@ -22,7 +22,11 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Show the pipeline status for this project
-    Status,
+    Status {
+        /// Emit machine-readable JSON instead of styled output
+        #[arg(long)]
+        json: bool,
+    },
     /// Scaffold .ritual/, check.sh and CLAUDE.md in this project
     Init {
         /// Overwrite an existing check.sh
@@ -40,6 +44,9 @@ pub enum Command {
         /// Max runs to display
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        /// Emit machine-readable JSON instead of styled output
+        #[arg(long)]
+        json: bool,
     },
     /// Run a pipeline stage (plan-review, dual-review, ...)
     Run {

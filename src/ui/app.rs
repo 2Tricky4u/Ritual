@@ -10,6 +10,7 @@ use tokio::task::JoinHandle;
 use crate::config::Config;
 use crate::findings::LoadedFindings;
 use crate::history::RunMeta;
+use crate::keymap::{self, Action};
 use crate::runner::events::AgentEvent;
 use crate::runner::{self, RunOutcome, RunRequest};
 use crate::stages::{self, Mode};
@@ -77,10 +78,18 @@ pub struct App {
     pub status_msg: Option<String>,
     pub confirm_quit: bool,
     pub quit: bool,
+    pub palette: Option<PaletteState>,
 
     findings_before: Vec<String>,
     run_task: Option<JoinHandle<()>>,
     pending_attached: Option<AttachedRequest>,
+}
+
+/// Command palette state: typed filter + selection over matching entries.
+#[derive(Debug, Clone, Default)]
+pub struct PaletteState {
+    pub input: String,
+    pub selected: usize,
 }
 
 impl App {
@@ -112,10 +121,24 @@ impl App {
             status_msg: None,
             confirm_quit: false,
             quit: false,
+            palette: None,
             findings_before: Vec::new(),
             run_task: None,
             pending_attached: None,
         })
+    }
+
+    /// Palette entries matching the current filter, in stable order.
+    pub fn palette_filtered(&self) -> Vec<(String, Action)> {
+        let filter = self
+            .palette
+            .as_ref()
+            .map(|p| p.input.clone())
+            .unwrap_or_default();
+        keymap::palette_entries()
+            .into_iter()
+            .filter(|(label, _)| keymap::fuzzy_match(&filter, label))
+            .collect()
     }
 
     pub fn selected_stage(&self) -> StageId {
@@ -194,34 +217,87 @@ impl App {
             self.show_help = false;
             return;
         }
-        match key.code {
-            KeyCode::Char('q') => {
+        if self.palette.is_some() {
+            self.palette_input(key.code, tx);
+            return;
+        }
+        // Ctrl-C always quits, even if rebound away.
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.quit = true;
+            return;
+        }
+        if let Some(action) = self.cfg.keymap.resolve(key.code, key.modifiers) {
+            self.dispatch(action, tx);
+        }
+    }
+
+    /// Keys while the palette is open: type to filter, navigate, execute.
+    fn palette_input(&mut self, code: KeyCode, tx: &mpsc::Sender<AppMsg>) {
+        let matches = self.palette_filtered();
+        let Some(p) = self.palette.as_mut() else {
+            return;
+        };
+        match code {
+            KeyCode::Esc => self.palette = None,
+            KeyCode::Enter => {
+                let action = matches.get(p.selected.min(matches.len().saturating_sub(1)));
+                let action = action.map(|(_, a)| *a);
+                self.palette = None;
+                if let Some(a) = action {
+                    self.dispatch(a, tx);
+                }
+            }
+            KeyCode::Backspace => {
+                p.input.pop();
+                p.selected = 0;
+            }
+            KeyCode::Up => p.selected = p.selected.saturating_sub(1),
+            KeyCode::Down => {
+                if p.selected + 1 < matches.len() {
+                    p.selected += 1;
+                }
+            }
+            KeyCode::Char(c) => {
+                p.input.push(c);
+                p.selected = 0;
+            }
+            _ => {}
+        }
+    }
+
+    fn dispatch(&mut self, action: Action, tx: &mpsc::Sender<AppMsg>) {
+        match action {
+            Action::Quit => {
                 if self.running.is_some() {
                     self.confirm_quit = true;
                 } else {
                     self.quit = true;
                 }
             }
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.quit = true;
+            Action::Help => self.show_help = true,
+            Action::Palette => self.palette = Some(PaletteState::default()),
+            Action::NextTab => self.next_tab(),
+            Action::TabLive => self.tab = Tab::Live,
+            Action::TabFindings => self.tab = Tab::Findings,
+            Action::TabHistory => self.tab = Tab::History,
+            Action::TabPlan => self.tab = Tab::Plan,
+            Action::Down => self.nav(1),
+            Action::Up => self.nav(-1),
+            Action::ScrollTop => self.stream_scroll = Some(0),
+            Action::Follow => self.stream_scroll = None,
+            Action::Confirm => self.on_enter(tx),
+            Action::Cancel => self.cancel_run(),
+            Action::CheckFast => self.run_check(tx, true),
+            Action::CheckFull => self.run_check(tx, false),
+            Action::Refresh => self.refresh(tx),
+            Action::OpenEditor => self.open_editor(),
+            Action::RunStage(id) => {
+                if let Some(idx) = PIPELINE.iter().position(|s| *s == id) {
+                    self.selected = idx;
+                }
+                self.tab = Tab::Live;
+                self.on_enter(tx);
             }
-            KeyCode::Char('?') => self.show_help = true,
-            KeyCode::Tab => self.next_tab(),
-            KeyCode::Char('1') => self.tab = Tab::Live,
-            KeyCode::Char('2') => self.tab = Tab::Findings,
-            KeyCode::Char('3') => self.tab = Tab::History,
-            KeyCode::Char('4') => self.tab = Tab::Plan,
-            KeyCode::Char('j') | KeyCode::Down => self.nav(1),
-            KeyCode::Char('k') | KeyCode::Up => self.nav(-1),
-            KeyCode::Char('g') => self.stream_scroll = Some(0),
-            KeyCode::Char('G') => self.stream_scroll = None,
-            KeyCode::Enter => self.on_enter(tx),
-            KeyCode::Char('x') => self.cancel_run(),
-            KeyCode::Char('c') => self.run_check(tx, true),
-            KeyCode::Char('C') => self.run_check(tx, false),
-            KeyCode::Char('r') => self.refresh(tx),
-            KeyCode::Char('e') => self.open_editor(),
-            _ => {}
         }
     }
 

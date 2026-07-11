@@ -3,6 +3,7 @@ pub mod cli;
 pub mod config;
 pub mod findings;
 pub mod history;
+pub mod keymap;
 pub mod output;
 pub mod run_cmd;
 pub mod runner;

@@ -57,3 +57,14 @@ fn dashboard_help_overlay() {
     app.show_help = true;
     insta::assert_snapshot!(render(&app));
 }
+
+#[test]
+fn dashboard_palette_filters() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_app(&tmp);
+    app.palette = Some(ritual::ui::app::PaletteState {
+        input: "run".into(),
+        selected: 1,
+    });
+    insta::assert_snapshot!(render(&app));
+}
