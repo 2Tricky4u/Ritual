@@ -1,4 +1,5 @@
 pub mod agents_status;
+pub mod ci;
 pub mod cli;
 pub mod config;
 pub mod findings;
@@ -6,6 +7,7 @@ pub mod history;
 pub mod keymap;
 pub mod notify;
 pub mod output;
+pub mod provenance;
 pub mod redact;
 pub mod report;
 pub mod run_cmd;

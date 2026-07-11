@@ -12,7 +12,12 @@ const CHECK_MIXED: &str = include_str!("../templates/check-mixed.sh");
 pub const SPEC_TEMPLATE: &str = include_str!("../templates/spec-template.md");
 const CLAUDE_SNIPPET: &str = include_str!("../templates/claude-snippet.md");
 
-const GITIGNORE_ENTRIES: &[&str] = &[".ritual/runs/", ".ritual/logs/", ".ritual/state.json"];
+const GITIGNORE_ENTRIES: &[&str] = &[
+    ".ritual/runs/",
+    ".ritual/logs/",
+    ".ritual/ci/",
+    ".ritual/state.json",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stack {

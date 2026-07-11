@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 
 use ritual::cli::{Cli, Command};
@@ -65,9 +65,62 @@ fn main() -> Result<()> {
                 output::render_history(&cfg, &metas, &summary, limit);
             }
         }
-        Some(Command::Run { stage, arg, force }) => {
-            run_cmd::execute(&cfg, &dirs, &stage, arg.as_deref(), force)?;
+        Some(Command::Run {
+            stage,
+            arg,
+            force,
+            ci,
+        }) => {
+            run_cmd::execute(&cfg, &dirs, &stage, arg.as_deref(), force, ci)?;
         }
+        Some(Command::Repro { run_id }) => {
+            let metas = history::load_all(&dirs.runs_dir())?;
+            let meta = metas
+                .iter()
+                .find(|m| m.run_id == run_id)
+                .with_context(|| format!("no run '{run_id}' — see `ritual history`"))?;
+            let recorded = meta.repro.clone().unwrap_or_default();
+            println!("{}", serde_json::to_string_pretty(&recorded)?);
+            let current = ritual::provenance::collect(&cfg, &dirs);
+            if current == recorded {
+                println!("\nenvironment matches the recorded bundle");
+            } else {
+                println!("\nDIFFERS from current environment:");
+                if current.git_commit != recorded.git_commit {
+                    println!(
+                        "  git_commit: {:?} -> {:?}",
+                        recorded.git_commit, current.git_commit
+                    );
+                }
+                if current.claude_version != recorded.claude_version {
+                    println!(
+                        "  claude: {:?} -> {:?}",
+                        recorded.claude_version, current.claude_version
+                    );
+                }
+                if current.codex_version != recorded.codex_version {
+                    println!(
+                        "  codex: {:?} -> {:?}",
+                        recorded.codex_version, current.codex_version
+                    );
+                }
+                if current.skill_hashes != recorded.skill_hashes {
+                    println!("  skill files changed");
+                }
+                if current.config_snapshot != recorded.config_snapshot {
+                    println!("  config changed");
+                }
+            }
+        }
+        Some(Command::VerifyLog) => match ritual::provenance::verify_log(&dirs.runs_dir())? {
+            ritual::provenance::VerifyOutcome::Ok { runs } => {
+                println!("chain intact: {runs} chained run(s) verified");
+            }
+            ritual::provenance::VerifyOutcome::Broken { run_id, reason } => {
+                eprintln!("CHAIN BROKEN at {run_id}: {reason}");
+                std::process::exit(1);
+            }
+        },
         Some(Command::Report { feature, pdf }) => {
             let out = ritual::report::generate(&cfg, &dirs, feature.as_deref(), pdf)?;
             println!("report: {}", out.markdown.display());

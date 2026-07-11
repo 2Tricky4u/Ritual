@@ -18,6 +18,7 @@ pub fn execute(
     stage_str: &str,
     arg: Option<&str>,
     force: bool,
+    ci: bool,
 ) -> Result<()> {
     let stage = StageId::parse(stage_str)
         .with_context(|| format!("unknown stage '{stage_str}' (spec, plan, plan-review, tests-red, implement, dual-review)"))?;
@@ -54,7 +55,7 @@ pub fn execute(
     match cmd.mode {
         Mode::Local => run_spec_stage(dirs, &slug, &title, &mut st, &branch),
         Mode::Interactive => run_interactive(dirs, stage, cmd.argv, &mut st, &branch),
-        Mode::Headless => run_headless(cfg, dirs, stage, cmd, &mut st, &branch, &slug, &title),
+        Mode::Headless => run_headless(cfg, dirs, stage, cmd, &mut st, &branch, &title, ci),
     }
 }
 
@@ -200,8 +201,8 @@ fn run_headless(
     cmd: stages::StageCommand,
     st: &mut State,
     branch: &str,
-    _slug: &str,
     title: &str,
+    ci: bool,
 ) -> Result<()> {
     let findings_before = list_findings(&dirs.findings_dir());
 
@@ -216,6 +217,7 @@ fn run_headless(
         feature: title.into(),
         branch: branch.into(),
         redact: cfg.redaction,
+        repro: Some(crate::provenance::collect(cfg, dirs)),
     };
 
     let rt = tokio::runtime::Runtime::new()?;
@@ -252,6 +254,35 @@ fn run_headless(
         Some(outcome.meta.run_id.clone()),
     );
     st.save(dirs)?;
+
+    // CI mode: JUnit XML from the findings this run produced.
+    if ci {
+        let parsed: Vec<crate::findings::FindingsFile> = new_findings
+            .iter()
+            .filter_map(|name| {
+                std::fs::read_to_string(dirs.findings_dir().join(name))
+                    .ok()
+                    .and_then(|t| serde_json::from_str(&t).ok())
+            })
+            .collect();
+        let refs: Vec<&crate::findings::FindingsFile> = parsed.iter().collect();
+        let junit = crate::ci::write_junit(
+            &dirs.root().join("ci"),
+            &outcome.meta.run_id,
+            stage.label(),
+            &refs,
+            !outcome.meta.ok,
+        )?;
+        println!(
+            "junit: {} ({} tests, {} failures)",
+            junit.path.display(),
+            junit.tests,
+            junit.failures
+        );
+        if junit.failures > 0 {
+            anyhow::bail!("{} blocking finding(s) — see JUnit report", junit.failures);
+        }
+    }
 
     crate::output::render_run_summary(cfg, &outcome.meta, &new_findings);
     crate::notify::notify(

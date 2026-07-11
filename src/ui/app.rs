@@ -416,7 +416,7 @@ impl App {
             .get(&self.slug)
             .map(|f| f.title.clone())
             .unwrap_or_default();
-        let req = RunRequest {
+        let mut req = RunRequest {
             agent: cmd.agent,
             argv: cmd.argv,
             env: cmd.env,
@@ -424,11 +424,20 @@ impl App {
             feature: title,
             branch: self.branch.clone(),
             redact: self.cfg.redaction,
+            repro: None,
         };
         let dirs = self.dirs.clone();
+        let cfg = self.cfg.clone();
         let tx_events = tx.clone();
         let tx_done = tx.clone();
         self.run_task = Some(tokio::spawn(async move {
+            // Provenance collection shells out (git, --version) — keep it off
+            // the UI thread and off the async executor.
+            let dirs_probe = dirs.clone();
+            req.repro =
+                tokio::task::spawn_blocking(move || crate::provenance::collect(&cfg, &dirs_probe))
+                    .await
+                    .ok();
             let (etx, mut erx) = mpsc::channel::<AgentEvent>(256);
             let forward = tokio::spawn(async move {
                 while let Some(ev) = erx.recv().await {

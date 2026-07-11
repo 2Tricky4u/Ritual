@@ -46,6 +46,12 @@ pub struct RunMeta {
     pub permission_denials: Vec<serde_json::Value>,
     #[serde(default)]
     pub error: Option<String>,
+    /// Reproducibility bundle (git commit, tool versions, skill hashes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repro: Option<crate::provenance::ReproBundle>,
+    /// Tamper-evident chain link (see provenance::verify_log).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<crate::provenance::Chain>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
