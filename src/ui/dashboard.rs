@@ -324,10 +324,15 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         CheckState::Green => ("check green".into(), t.ok()),
         CheckState::Red { .. } => ("check RED".into(), t.error()),
     };
+    let nvim = match &app.agents.nvim {
+        Some(_) => ("nvim ok".to_string(), t.ok()),
+        None => ("nvim —".to_string(), t.comment()),
+    };
     for (icon, (text, color)) in [
         (t.icon_agent(), claude),
         (t.icon_agent(), codex),
         (t.icon_bridge(), bridge),
+        (t.icon_nvim(), nvim),
         (t.icon_check(), check),
     ] {
         let spans = vec![
@@ -962,6 +967,8 @@ fn draw_help(f: &mut Frame, t: &Theme) {
             "tools",
             &[
                 (":", "command palette"),
+                ("o", "open in running nvim"),
+                ("Q", "findings → nvim quickfix"),
                 ("e", "open in $EDITOR"),
                 ("r", "refresh"),
             ],

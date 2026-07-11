@@ -35,6 +35,8 @@ pub struct FileConfig {
     pub offline: Option<bool>,
     /// Terminal background shows through the main pane (chadrc parity).
     pub transparency: Option<bool>,
+    /// Explicit nvim server socket ($NVIM / XDG discovery otherwise).
+    pub nvim_server: Option<String>,
     /// `[commands]` table: name -> shell template with {{branch}}, {{run_id}},
     /// {{finding.file}}, {{finding.line}} placeholders (lazygit-style).
     pub commands: Option<HashMap<String, String>>,
@@ -58,6 +60,7 @@ pub struct Config {
     pub check_timeout_secs: u64,
     pub offline: bool,
     pub commands: Vec<(String, String)>,
+    pub nvim_server: Option<String>,
 }
 
 impl Default for Config {
@@ -78,6 +81,7 @@ impl Default for Config {
             check_timeout_secs: 600,
             offline: false,
             commands: Vec::new(),
+            nvim_server: None,
         }
     }
 }
@@ -156,6 +160,9 @@ impl Config {
             }
             if let Some(t) = fc.transparency {
                 transparency = t;
+            }
+            if let Some(n) = fc.nvim_server {
+                cfg.nvim_server = Some(n);
             }
             if let Some(commands) = fc.commands {
                 for (name, template) in commands {

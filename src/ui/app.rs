@@ -363,6 +363,8 @@ impl App {
             Action::FeatureNext => self.select_feature(1),
             Action::FeaturePrev => self.select_feature(-1),
             Action::Takeover => self.takeover(),
+            Action::NvimOpen => self.nvim_open(),
+            Action::NvimQuickfix => self.nvim_quickfix(),
             Action::Custom(i) => self.run_custom(i, tx),
             Action::RunStage(id) => {
                 if let Some(idx) = PIPELINE.iter().position(|s| *s == id) {
@@ -898,6 +900,87 @@ impl App {
         self.reload_artifacts();
         crate::agents_status::spawn_probe(&self.cfg, tx.clone());
         self.status_msg = Some("refreshed".into());
+    }
+
+    /// The finding under the cursor, if any (Findings tab or last selection).
+    fn selected_finding_ref(&self) -> Option<crate::findings::Finding> {
+        crate::findings::aggregate(&self.findings)
+            .get(self.selected_finding)
+            .map(|(_, f)| f.clone())
+    }
+
+    /// `o`: open the selected finding in a RUNNING nvim (no TUI suspend).
+    /// Falls back to the attached $EDITOR flow when no server is found.
+    fn nvim_open(&mut self) {
+        let Some(finding) = self.selected_finding_ref() else {
+            self.status_msg = Some("no finding selected".into());
+            return;
+        };
+        let Some(file) = finding.file.clone() else {
+            self.status_msg = Some("finding has no file location".into());
+            return;
+        };
+        let server = self
+            .agents
+            .nvim
+            .clone()
+            .or_else(|| crate::nvim::discover(self.cfg.nvim_server.as_deref()));
+        let Some(server) = server else {
+            self.status_msg = Some("no running nvim found — falling back to $EDITOR".into());
+            self.open_editor();
+            return;
+        };
+        let cwd = self
+            .run_cwd()
+            .unwrap_or_else(|| self.dirs.work_root.clone());
+        let path = cwd.join(&file);
+        match crate::nvim::open_at(&server, &path, finding.line) {
+            Ok(()) => {
+                self.status_msg = Some(format!(
+                    " nvim: {}{}",
+                    file,
+                    finding.line.map(|l| format!(":{l}")).unwrap_or_default()
+                ));
+            }
+            Err(e) => self.status_msg = Some(format!("nvim: {e:#}")),
+        }
+    }
+
+    /// `Q`: push every located finding into the remote nvim quickfix list.
+    fn nvim_quickfix(&mut self) {
+        let server = self
+            .agents
+            .nvim
+            .clone()
+            .or_else(|| crate::nvim::discover(self.cfg.nvim_server.as_deref()));
+        let Some(server) = server else {
+            self.status_msg = Some("no running nvim found (start nvim or set nvim_server)".into());
+            return;
+        };
+        let cwd = self
+            .run_cwd()
+            .unwrap_or_else(|| self.dirs.work_root.clone());
+        let entries: Vec<crate::nvim::QfEntry> = crate::findings::aggregate(&self.findings)
+            .into_iter()
+            .filter_map(|(_, f)| {
+                let file = f.file.as_ref()?;
+                Some(crate::nvim::QfEntry {
+                    file: cwd.join(file).display().to_string(),
+                    line: f.line.unwrap_or(1),
+                    text: format!(
+                        "{}{}: {} [{}]",
+                        f.severity.label(),
+                        if f.cross_confirmed() { " ◆both" } else { "" },
+                        f.title,
+                        f.verdict
+                    ),
+                })
+            })
+            .collect();
+        match crate::nvim::send_quickfix(&server, &entries, "ritual findings") {
+            Ok(n) => self.status_msg = Some(format!(" {n} finding(s) → nvim quickfix")),
+            Err(e) => self.status_msg = Some(format!("nvim: {e:#}")),
+        }
     }
 
     fn open_editor(&mut self) {
