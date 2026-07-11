@@ -37,6 +37,8 @@ A fast, eldritch-themed TUI that drives a **multi-LLM coding workflow**: Claude 
 
 **One-key takeover** — `a` reattaches the selected stage's recorded session interactively (`claude --resume <session-id>`).
 
+**nvim remote control** — ritual drives your *running* nvim (no suspend, no nested editors): `o` opens the selected finding at file:line in it, `Q` pushes all located findings into its quickfix list (`:copen` included). Discovery: `$NVIM` → newest `$XDG_RUNTIME_DIR/nvim.*.0` socket → `nvim_server` config; the sidebar shows ` nvim ok` when one is found. Falls back to attached `$EDITOR` when nvim isn't running.
+
 **Bench + export** — `ritual bench plan-review --runs 5 [--golden expected.json]` scores repeated runs (findings, cross-confirmation, golden recall, cost) for model/prompt comparison; `ritual export` emits OTLP-JSON spans from run history for any OpenTelemetry collector.
 
 **Reports** — `ritual report [--pdf]`: one Markdown document per feature (pipeline state, spec, plan, findings table, runs, spend), redacted, pandoc-converted when available.
@@ -76,6 +78,7 @@ redaction = true
 notifications = true
 check_timeout_secs = 600      # hung build / dead HIL board can't wedge the loop
 offline = false               # true = skip all cloud auth preflights
+# nvim_server = "/run/user/1000/nvim.12345.0"   # explicit socket (auto-discovered otherwise)
 
 [keys]                        # rebind any action
 check-full = "F"
@@ -105,7 +108,7 @@ blame = "git log --oneline -3 -- {{finding.file}}"
 
 ## Keys (defaults — all rebindable)
 
-`enter` run/open · `:` palette · `j/k` move · `tab` `1-4` panes · `[` `]` features · `a` takeover · `c/C` check fast/full · `x` cancel · `e` editor · `r` refresh · `g/G` scroll/follow · `?` help · `q` quit
+`enter` run/open · `:` palette · `j/k` move · `tab` `1-4` panes · `[` `]` features · `a` takeover · `o` open in nvim · `Q` findings → quickfix · `c/C` check fast/full · `x` cancel · `e` editor · `r` refresh · `g/G` scroll/follow · `?` help · `q` quit
 
 ## Design notes
 

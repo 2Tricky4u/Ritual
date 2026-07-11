@@ -13,6 +13,8 @@ pub struct AgentsStatus {
     pub codex_cli_ok: Option<bool>,
     /// (server name, connected) from `claude mcp list`.
     pub mcp_codex_connected: Option<bool>,
+    /// Live nvim server socket, when one is discoverable.
+    pub nvim: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -66,8 +68,12 @@ fn probe_mcp_codex(cfg: &Config) -> Option<bool> {
 /// Fire all probes on a blocking thread; one message when done.
 pub fn spawn_probe(cfg: &Config, tx: mpsc::Sender<AppMsg>) {
     if cfg.offline {
-        // Air-gapped: report all-unknown instead of probing cloud auth.
-        let _ = tx.try_send(AppMsg::AgentsStatus(Box::default()));
+        // Air-gapped: skip cloud probes; nvim is local and still useful.
+        let status = AgentsStatus {
+            nvim: crate::nvim::discover(cfg.nvim_server.as_deref()),
+            ..Default::default()
+        };
+        let _ = tx.try_send(AppMsg::AgentsStatus(Box::new(status)));
         return;
     }
     let cfg = cfg.clone();
@@ -76,6 +82,7 @@ pub fn spawn_probe(cfg: &Config, tx: mpsc::Sender<AppMsg>) {
             claude: probe_claude_auth(&cfg),
             codex_cli_ok: probe_codex_cli(&cfg),
             mcp_codex_connected: probe_mcp_codex(&cfg),
+            nvim: crate::nvim::discover(cfg.nvim_server.as_deref()),
         };
         let _ = tx.blocking_send(AppMsg::AgentsStatus(Box::new(status)));
     });

@@ -32,6 +32,8 @@ pub enum Action {
     FeatureNext,
     FeaturePrev,
     Takeover,
+    NvimOpen,
+    NvimQuickfix,
     RunStage(StageId),
     /// User-defined [commands] entry by index (palette-only).
     Custom(usize),
@@ -63,6 +65,12 @@ pub const ACTIONS: &[(&str, Action, &str)] = &[
         "takeover",
         Action::Takeover,
         "take over run in claude (--resume)",
+    ),
+    ("nvim-open", Action::NvimOpen, "open in running nvim"),
+    (
+        "nvim-quickfix",
+        Action::NvimQuickfix,
+        "send findings to nvim quickfix",
     ),
 ];
 
@@ -166,6 +174,8 @@ impl Default for Keymap {
             ("]", "feature-next"),
             ("[", "feature-prev"),
             ("a", "takeover"),
+            ("o", "nvim-open"),
+            ("Q", "nvim-quickfix"),
         ];
         let map = defaults
             .iter()

@@ -8,6 +8,7 @@ pub mod findings;
 pub mod history;
 pub mod keymap;
 pub mod notify;
+pub mod nvim;
 pub mod output;
 pub mod provenance;
 pub mod redact;

@@ -265,6 +265,9 @@ impl Theme {
     pub fn icon_bridge(&self) -> &'static str {
         self.pick("󱘖", "<>")
     }
+    pub fn icon_nvim(&self) -> &'static str {
+        self.pick("", "nv")
+    }
     pub fn icon_prompt(&self) -> &'static str {
         self.pick("", ">")
     }
