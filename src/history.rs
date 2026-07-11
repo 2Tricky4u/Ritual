@@ -105,6 +105,13 @@ pub struct DaySummary {
     pub latest_rate_limit: Option<RateLimitInfo>,
 }
 
+/// Today's recorded spend for a project (budget preflights, status bar).
+pub fn today_spend(runs_dir: &Path) -> f64 {
+    load_all(runs_dir)
+        .map(|metas| today_summary(&metas).cost_usd)
+        .unwrap_or(0.0)
+}
+
 /// Rollup for "today" (UTC) plus the most recent rate-limit info seen at all.
 pub fn today_summary(metas: &[RunMeta]) -> DaySummary {
     let today = Utc::now().date_naive();

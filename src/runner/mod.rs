@@ -47,6 +47,8 @@ pub struct RunRequest {
     pub stage: String,
     pub feature: String,
     pub branch: String,
+    /// Redact secrets before archiving/parsing (config `redaction`).
+    pub redact: bool,
 }
 
 #[derive(Debug)]
@@ -102,21 +104,28 @@ pub async fn run_headless(
     let stdout = child.stdout.take().context("no stdout")?;
     let stderr = child.stderr.take().context("no stderr")?;
 
-    // stderr -> events, concurrently with stdout.
+    // stderr -> events, concurrently with stdout (own redactor state).
     let tx_err = tx.clone();
+    let redact_stderr = req.redact;
     let stderr_task = tokio::spawn(async move {
+        let mut redactor = crate::redact::Redactor::new(redact_stderr);
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             if line.trim().is_empty() {
                 continue;
             }
+            let line = redactor.line(&line);
             let _ = tx_err.send(AgentEvent::Stderr { line }).await;
         }
     });
 
+    // Redaction happens BEFORE the archive write: the file on disk must be
+    // safe to commit/share. Parsing consumes the same redacted line, so the
+    // UI can never display what the archive doesn't contain.
+    let mut redactor = crate::redact::Redactor::new(req.redact);
     let mut lines = BufReader::new(stdout).lines();
     while let Some(line) = lines.next_line().await? {
-        // Archive verbatim first — schema drift must never lose data.
+        let line = redactor.line(&line);
         archive.write_all(line.as_bytes()).await?;
         archive.write_all(b"\n").await?;
         for ev in req.agent.parse(&line) {

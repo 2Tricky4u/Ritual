@@ -145,6 +145,11 @@ impl App {
         PIPELINE[self.selected.min(PIPELINE.len() - 1)]
     }
 
+    /// Today's spend from loaded metas (status-bar budget segment).
+    pub fn today_spend(&self) -> f64 {
+        crate::history::today_summary(&self.metas).cost_usd
+    }
+
     pub fn stage_status(&self, id: StageId) -> StageStatus {
         self.state
             .features
@@ -391,6 +396,13 @@ impl App {
         cmd: stages::StageCommand,
         tx: &mpsc::Sender<AppMsg>,
     ) {
+        if let Some((spent, budget)) = crate::run_cmd::budget_exceeded(&self.cfg, &self.dirs) {
+            self.status_msg = Some(format!(
+                "daily budget reached (${spent:.2}/${budget:.2}) — `ritual run {} --force` to override",
+                stage.label()
+            ));
+            return;
+        }
         self.findings_before = list_dir(&self.dirs.findings_dir());
         self.stream.clear();
         self.stream_scroll = None;
@@ -411,6 +423,7 @@ impl App {
             stage: stage.label().into(),
             feature: title,
             branch: self.branch.clone(),
+            redact: self.cfg.redaction,
         };
         let dirs = self.dirs.clone();
         let tx_events = tx.clone();
@@ -448,6 +461,24 @@ impl App {
                 } else {
                     StageStatus::Done
                 };
+                crate::notify::notify(
+                    self.cfg.notifications,
+                    &format!(
+                        "ritual: {} {}",
+                        stage.label(),
+                        match status {
+                            StageStatus::Done => "done",
+                            StageStatus::NeedsAttention => "needs attention",
+                            _ => "failed",
+                        }
+                    ),
+                    &format!(
+                        "{} — {} new findings, ${:.2}",
+                        self.branch,
+                        new_findings.len(),
+                        out.meta.total_cost_usd.unwrap_or(0.0)
+                    ),
+                );
                 self.status_msg = Some(match status {
                     StageStatus::Done => format!(
                         "{} done — {} new findings file(s), ${:.3}",

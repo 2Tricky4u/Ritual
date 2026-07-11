@@ -65,8 +65,15 @@ fn main() -> Result<()> {
                 output::render_history(&cfg, &metas, &summary, limit);
             }
         }
-        Some(Command::Run { stage, arg }) => {
-            run_cmd::execute(&cfg, &dirs, &stage, arg.as_deref())?;
+        Some(Command::Run { stage, arg, force }) => {
+            run_cmd::execute(&cfg, &dirs, &stage, arg.as_deref(), force)?;
+        }
+        Some(Command::Report { feature, pdf }) => {
+            let out = ritual::report::generate(&cfg, &dirs, feature.as_deref(), pdf)?;
+            println!("report: {}", out.markdown.display());
+            if let Some(p) = out.pdf {
+                println!("pdf:    {}", p.display());
+            }
         }
         Some(Command::New { title }) => {
             let title = title.join(" ");

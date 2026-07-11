@@ -21,6 +21,12 @@ pub struct FileConfig {
     pub budget_dual_review_usd: Option<f64>,
     /// `[keys]` table: action name -> chord ("check-full = \"F\"").
     pub keys: Option<HashMap<String, String>>,
+    /// Redact secrets from archives/streams/reports (default true).
+    pub redaction: Option<bool>,
+    /// Daily spend ceiling across all runs in this project (USD).
+    pub budget_daily_usd: Option<f64>,
+    /// Desktop notifications on stage completion (default true).
+    pub notifications: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -34,6 +40,9 @@ pub struct Config {
     pub budget_plan_review_usd: f64,
     pub budget_dual_review_usd: f64,
     pub keymap: Keymap,
+    pub redaction: bool,
+    pub budget_daily_usd: Option<f64>,
+    pub notifications: bool,
 }
 
 impl Default for Config {
@@ -47,6 +56,9 @@ impl Default for Config {
             budget_plan_review_usd: 5.0,
             budget_dual_review_usd: 10.0,
             keymap: Keymap::default(),
+            redaction: true,
+            budget_daily_usd: None,
+            notifications: true,
         }
     }
 }
@@ -103,6 +115,15 @@ impl Config {
             }
             if let Some(keys) = fc.keys {
                 key_overrides.extend(keys); // later layers win per-action
+            }
+            if let Some(r) = fc.redaction {
+                cfg.redaction = r;
+            }
+            if let Some(b) = fc.budget_daily_usd {
+                cfg.budget_daily_usd = Some(b);
+            }
+            if let Some(n) = fc.notifications {
+                cfg.notifications = n;
             }
         }
 
