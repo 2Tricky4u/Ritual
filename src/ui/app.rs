@@ -83,6 +83,7 @@ pub struct App {
 
     findings_before: Vec<String>,
     run_task: Option<JoinHandle<()>>,
+    current_run_id: Option<String>,
     pending_attached: Option<AttachedRequest>,
 }
 
@@ -125,6 +126,7 @@ impl App {
             palette: None,
             findings_before: Vec::new(),
             run_task: None,
+            current_run_id: None,
             pending_attached: None,
         })
     }
@@ -537,6 +539,8 @@ impl App {
         };
         let dirs = self.dirs.clone();
         let cfg = self.cfg.clone();
+        let run_id = runner::new_run_id(stage.label());
+        self.current_run_id = Some(run_id.clone());
         let tx_events = tx.clone();
         let tx_done = tx.clone();
         self.run_task = Some(tokio::spawn(async move {
@@ -547,6 +551,12 @@ impl App {
                 tokio::task::spawn_blocking(move || crate::provenance::collect(&cfg, &dirs_probe))
                     .await
                     .ok();
+            // Detach, then follow the archive: the run survives the TUI.
+            let agent = req.agent;
+            if let Err(e) = runner::spawn_detached(&dirs, &req, &run_id) {
+                let _ = tx_done.send(AppMsg::RunExited(Box::new(Err(e)))).await;
+                return;
+            }
             let (etx, mut erx) = mpsc::channel::<AgentEvent>(256);
             let forward = tokio::spawn(async move {
                 while let Some(ev) = erx.recv().await {
@@ -555,7 +565,85 @@ impl App {
                     }
                 }
             });
-            let outcome = runner::run_headless(&dirs, req, etx).await;
+            let outcome = runner::tail_run(&dirs, agent, &run_id, etx).await;
+            let _ = forward.await;
+            let _ = tx_done.send(AppMsg::RunExited(Box::new(outcome))).await;
+        }));
+    }
+
+    /// Stages stuck in Running whose run actually finished (launcher died
+    /// mid-tail) get finalized from the on-disk meta; runs that vanished
+    /// entirely become needs-attention.
+    pub fn reconcile_stale_runs(&mut self) {
+        let mut fixes: Vec<(String, StageId, StageStatus)> = Vec::new();
+        for (_, feature) in self.state.features.iter() {
+            for (stage_id, sstate) in feature.stages.iter() {
+                if sstate.status != StageStatus::Running {
+                    continue;
+                }
+                let Some(run_id) = sstate.runs.last() else {
+                    // Interactive stage interrupted before any run recorded.
+                    fixes.push((
+                        feature.branch.clone(),
+                        *stage_id,
+                        StageStatus::NeedsAttention,
+                    ));
+                    continue;
+                };
+                match runner::run_state(&self.dirs, run_id) {
+                    runner::RunState::Running(_) => {} // resurrection reattaches
+                    runner::RunState::Finished(meta) => {
+                        let status = if meta.ok {
+                            StageStatus::NeedsAttention // finished unwatched: human confirms
+                        } else {
+                            StageStatus::Failed
+                        };
+                        fixes.push((feature.branch.clone(), *stage_id, status));
+                    }
+                    runner::RunState::Vanished => {
+                        fixes.push((feature.branch.clone(), *stage_id, StageStatus::Failed));
+                    }
+                }
+            }
+        }
+        for (branch, stage, status) in fixes {
+            crate::run_cmd::set_stage(&mut self.state, &branch, stage, status, None);
+        }
+        let _ = self.state.save(&self.dirs);
+    }
+
+    /// Reattach to a still-running detached run (crash/reboot resurrection).
+    pub fn resume_run(
+        &mut self,
+        run_id: String,
+        status: runner::RunStatus,
+        tx: &mpsc::Sender<AppMsg>,
+    ) {
+        let Some(stage) = StageId::parse(&status.stage) else {
+            return;
+        };
+        self.branch = status.branch.clone();
+        self.slug = state::branch_slug(&status.branch);
+        self.running = Some(stage);
+        self.current_run_id = Some(run_id.clone());
+        self.tab = Tab::Live;
+        self.status_msg = Some(format!(
+            "reattached to running {} ({run_id})",
+            stage.label()
+        ));
+        let dirs = self.dirs.clone();
+        let tx_events = tx.clone();
+        let tx_done = tx.clone();
+        self.run_task = Some(tokio::spawn(async move {
+            let (etx, mut erx) = mpsc::channel::<AgentEvent>(256);
+            let forward = tokio::spawn(async move {
+                while let Some(ev) = erx.recv().await {
+                    if tx_events.send(AppMsg::Agent(Box::new(ev))).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            let outcome = runner::tail_run(&dirs, runner::AgentKind::Claude, &run_id, etx).await;
             let _ = forward.await;
             let _ = tx_done.send(AppMsg::RunExited(Box::new(outcome))).await;
         }));
@@ -669,12 +757,23 @@ impl App {
     }
 
     fn cancel_run(&mut self) {
+        let Some(run_id) = self.current_run_id.take() else {
+            self.status_msg = Some("no active run".into());
+            return;
+        };
+        // The run is a detached process group — kill it there, then stop
+        // the local tail.
+        let killed = runner::kill_run(&self.dirs, &run_id);
         if let Some(task) = self.run_task.take() {
-            task.abort(); // kill_on_drop(true) takes the child down with it
-            if let Some(stage) = self.running.take() {
-                self.set_stage(stage, StageStatus::Failed, None);
-                self.status_msg = Some(format!("{} cancelled", stage.label()));
-            }
+            task.abort();
+        }
+        if let Some(stage) = self.running.take() {
+            self.set_stage(stage, StageStatus::Failed, None);
+            self.status_msg = Some(format!(
+                "{} cancelled{}",
+                stage.label(),
+                if killed { "" } else { " (daemon already gone)" }
+            ));
         }
     }
 
@@ -822,6 +921,13 @@ pub async fn run(cfg: Config, dirs: RitualDirs) -> Result<()> {
 
     let mut app = App::new(cfg, dirs).context("loading project state")?;
     crate::agents_status::spawn_probe(&app.cfg, tx.clone());
+
+    // Finalize stages whose runs completed while nobody was watching, then
+    // reattach to any run that is still alive.
+    app.reconcile_stale_runs();
+    if let Some((run_id, status)) = crate::runner::live_runs(&app.dirs).into_iter().next_back() {
+        app.resume_run(run_id, status, &tx);
+    }
     let watcher = crate::watcher::spawn(app.dirs.work_root.clone(), tx.clone()).ok();
 
     // Spinner/refresh tick.

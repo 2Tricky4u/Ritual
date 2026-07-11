@@ -463,6 +463,65 @@ fn worktree_feature_shares_state_and_resolves_dirs() {
 }
 
 #[test]
+fn detached_run_survives_the_launcher() {
+    let tmp = setup_project();
+    std::fs::create_dir_all(tmp.path().join(".ritual/features/main")).unwrap();
+    std::fs::write(tmp.path().join(".ritual/features/main/plan.md"), "# plan").unwrap();
+
+    // Slow fake agent: the launcher gets killed mid-run; the daemon must
+    // finish alone and write the meta.
+    let mut launcher = std::process::Command::new(assert_cmd::cargo::cargo_bin("ritual"))
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .env("FAKE_AGENT_DELAY", "0.3")
+        .env(
+            "FAKE_AGENT_FINDINGS",
+            ".ritual/findings/20260712T000000Z-plan-review.json",
+        )
+        .args(["run", "plan-review"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+
+    // Give it time to daemonize, then kill the launcher hard.
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    launcher.kill().unwrap();
+    launcher.wait().unwrap();
+
+    // The daemon keeps going: meta.json appears within a few seconds.
+    let runs = tmp.path().join(".ritual/runs");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let meta_written = loop {
+        let found = std::fs::read_dir(&runs)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .any(|e| e.file_name().to_string_lossy().ends_with(".meta.json"))
+            })
+            .unwrap_or(false);
+        if found {
+            break true;
+        }
+        if std::time::Instant::now() > deadline {
+            break false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    };
+    assert!(meta_written, "daemon did not survive launcher death");
+
+    // Sidecars cleaned up after completion.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let leftovers: Vec<_> = std::fs::read_dir(&runs)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".status") || n.ends_with(".request.json"))
+        .collect();
+    assert!(leftovers.is_empty(), "sidecars left behind: {leftovers:?}");
+}
+
+#[test]
 fn run_unknown_stage_is_an_error() {
     let tmp = setup_project();
     Command::cargo_bin("ritual")
