@@ -1,0 +1,6 @@
+{"type":"system","subtype":"init","session_id":"fake-session","model":"claude-test","mcp_servers":[{"name":"codex","status":"connected"}]}
+this line is not json at all — stderr bleed or corruption
+{"type":"totally_unknown_event","payload":{"nested":true},"session_id":"fake-session"}
+{"type":"assistant","message":{"content":[{"type":"future_block_kind","data":"???"}]},"session_id":"fake-session"}
+{"truncated json line without closing
+{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5},"num_turns":1,"duration_ms":1200,"session_id":"fake-session","permission_denials":[]}
