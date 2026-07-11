@@ -197,6 +197,12 @@ pub async fn tail_run(
     let archive_path = dirs.runs_dir().join(format!("{run_id}.jsonl"));
     let mut offset: usize = 0;
     let mut carry = String::new();
+    // The daemon needs a beat to exec and write its .status sidecar; until
+    // we've seen it alive once (or the startup window passes), a missing
+    // sidecar means "still starting", not "vanished".
+    const STARTUP_GRACE: std::time::Duration = std::time::Duration::from_secs(20);
+    let started = std::time::Instant::now();
+    let mut seen_running = false;
     loop {
         // Stream any new complete lines.
         if let Ok(bytes) = tokio::fs::read(&archive_path).await
@@ -219,17 +225,21 @@ pub async fn tail_run(
                     archive: archive_path,
                 });
             }
-            RunState::Running(_) => {}
+            RunState::Running(_) => seen_running = true,
             RunState::Vanished => {
-                // Grace: files may lag the process by a beat.
-                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-                if let RunState::Finished(meta) = run_state(dirs, run_id) {
-                    return Ok(RunOutcome {
-                        meta: *meta,
-                        archive: archive_path,
-                    });
+                if !seen_running && started.elapsed() < STARTUP_GRACE {
+                    // Daemon still booting — keep polling.
+                } else {
+                    // Meta may lag the process death by a beat.
+                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                    if let RunState::Finished(meta) = run_state(dirs, run_id) {
+                        return Ok(RunOutcome {
+                            meta: *meta,
+                            archive: archive_path,
+                        });
+                    }
+                    anyhow::bail!("run {run_id} vanished (daemon died before writing meta)");
                 }
-                anyhow::bail!("run {run_id} vanished (daemon died before writing meta)");
             }
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -412,5 +422,63 @@ impl RunMeta {
     /// (killed, crashed) is not ok even when the exit code is 0.
     fn completed_ok(&self) -> bool {
         self.duration_ms.is_some() || self.usage.is_some() || self.total_cost_usd.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: tail_run must not declare a run vanished while the daemon
+    /// is still booting (status sidecar appears late). Found live during the
+    /// first real cross-model run.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tail_survives_slow_daemon_startup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        std::fs::create_dir_all(dirs.runs_dir()).unwrap();
+        let run_id = "20260712T000000Z-slow";
+
+        let runs = dirs.runs_dir();
+        let rid = run_id.to_string();
+        std::thread::spawn(move || {
+            // Daemon "boots" slowly: sidecar + archive arrive after 800ms.
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            std::fs::write(
+                runs.join(format!("{rid}.status")),
+                format!(
+                    r#"{{"pid":{},"stage":"slow","branch":"main"}}"#,
+                    std::process::id() // our own pid: definitely alive
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                runs.join(format!("{rid}.jsonl")),
+                "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"duration_ms\":5,\"session_id\":\"s\"}\n",
+            )
+            .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            let meta = crate::history::RunMeta {
+                run_id: rid.clone(),
+                stage: "slow".into(),
+                ok: true,
+                ..Default::default()
+            };
+            std::fs::write(
+                runs.join(format!("{rid}.meta.json")),
+                serde_json::to_string(&meta).unwrap(),
+            )
+            .unwrap();
+            let _ = std::fs::remove_file(runs.join(format!("{rid}.status")));
+        });
+
+        let (tx, mut rx) = mpsc::channel(16);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let outcome = tail_run(&dirs, AgentKind::Claude, run_id, tx)
+            .await
+            .unwrap();
+        drain.await.unwrap();
+        assert!(outcome.meta.ok);
+        assert_eq!(outcome.meta.stage, "slow");
     }
 }
