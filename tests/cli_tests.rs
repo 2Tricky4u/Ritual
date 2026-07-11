@@ -113,13 +113,14 @@ fn run_plan_review_e2e_with_fake_agent() {
         .success()
         .stdout(predicate::str::contains("plan-review"));
 
-    // Findings browser shows the canned finding.
+    // Findings browser shows the canned finding — which is a confirmed
+    // critical, so the scriptability contract demands exit code 1.
     Command::cargo_bin("ritual")
         .unwrap()
         .current_dir(tmp.path())
         .arg("findings")
         .assert()
-        .success()
+        .code(1)
         .stdout(predicate::str::contains("Canned test finding"));
 }
 
@@ -165,6 +166,101 @@ fn run_fails_cleanly_when_agent_fails() {
 
     let state = std::fs::read_to_string(tmp.path().join(".ritual/state.json")).unwrap();
     assert!(state.contains(r#""status": "failed""#));
+}
+
+#[test]
+fn status_json_is_machine_readable() {
+    let tmp = setup_project();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["new", "JsonFeature"])
+        .assert()
+        .success();
+    let out = Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["status", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
+    assert_eq!(v["current_branch"], "main");
+    assert_eq!(v["features"]["main"]["title"], "JsonFeature");
+}
+
+#[test]
+fn findings_exit_code_contract() {
+    let tmp = setup_project();
+    // Non-blocking finding: exit 0.
+    std::fs::write(
+        tmp.path()
+            .join(".ritual/findings/20260711T000000Z-dual-review.json"),
+        r#"{"ritual_findings":1,"stage":"dual-review","findings":[
+            {"id":1,"severity":"major","title":"meh","verdict":"confirmed"}]}"#,
+    )
+    .unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("findings")
+        .assert()
+        .success();
+
+    // Confirmed critical: exit 1.
+    std::fs::write(
+        tmp.path()
+            .join(".ritual/findings/20260711T000001Z-dual-review.json"),
+        r#"{"ritual_findings":1,"stage":"dual-review","findings":[
+            {"id":1,"severity":"critical","title":"bad","verdict":"confirmed"}]}"#,
+    )
+    .unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("findings")
+        .assert()
+        .code(1);
+}
+
+#[test]
+fn history_json_is_array() {
+    let tmp = setup_project();
+    std::fs::write(
+        tmp.path().join(".ritual/runs/20260711T000000Z-x.meta.json"),
+        r#"{"run_id":"r1","stage":"plan-review","ok":true}"#,
+    )
+    .unwrap();
+    let out = Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["history", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
+    assert_eq!(v[0]["run_id"], "r1");
+}
+
+#[test]
+fn bad_keybinding_config_errors_cleanly() {
+    let tmp = setup_project();
+    std::fs::write(
+        tmp.path().join(".ritual/config.toml"),
+        "[keys]\n\"summon-shoggoth\" = \"s\"\n",
+    )
+    .unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("status")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown action"));
 }
 
 #[test]

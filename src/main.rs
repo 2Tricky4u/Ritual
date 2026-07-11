@@ -23,24 +23,47 @@ fn main() -> Result<()> {
             let report = scaffold::init(&dirs.project_root, force)?;
             output::render_init(&cfg, &report);
         }
-        Some(Command::Status) => {
+        Some(Command::Status { json }) => {
             let state = State::load(&dirs)?;
-            let features: Vec<_> = state
-                .features
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
             let branch = state::current_branch(&dirs.project_root);
-            output::render_status(&cfg, &features, branch.as_deref());
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "current_branch": branch,
+                        "features": state.features,
+                    }))?
+                );
+            } else {
+                let features: Vec<_> = state
+                    .features
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                output::render_status(&cfg, &features, branch.as_deref());
+            }
         }
         Some(Command::Findings { json }) => {
             let loaded = findings::load_all(&dirs.findings_dir())?;
             output::render_findings(&cfg, &loaded, json);
+            // Scriptability contract: confirmed critical findings -> exit 1.
+            let blocking = loaded
+                .iter()
+                .flat_map(|l| &l.file.findings)
+                .any(|f| f.severity == findings::Severity::Critical && f.verdict == "confirmed");
+            if blocking {
+                std::process::exit(1);
+            }
         }
-        Some(Command::History { limit }) => {
+        Some(Command::History { limit, json }) => {
             let metas = history::load_all(&dirs.runs_dir())?;
-            let summary = history::today_summary(&metas);
-            output::render_history(&cfg, &metas, &summary, limit);
+            if json {
+                let capped: Vec<_> = metas.iter().take(limit).collect();
+                println!("{}", serde_json::to_string_pretty(&capped)?);
+            } else {
+                let summary = history::today_summary(&metas);
+                output::render_history(&cfg, &metas, &summary, limit);
+            }
         }
         Some(Command::Run { stage, arg }) => {
             run_cmd::execute(&cfg, &dirs, &stage, arg.as_deref())?;

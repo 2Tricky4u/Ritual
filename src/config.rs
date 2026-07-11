@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+use crate::keymap::Keymap;
 use crate::theme::{IconSet, Theme};
 
 /// Layered config: defaults <- ~/.config/ritual/config.toml
@@ -17,6 +19,8 @@ pub struct FileConfig {
     pub codex_cmd: Option<String>,
     pub budget_plan_review_usd: Option<f64>,
     pub budget_dual_review_usd: Option<f64>,
+    /// `[keys]` table: action name -> chord ("check-full = \"F\"").
+    pub keys: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -29,6 +33,7 @@ pub struct Config {
     pub codex_cmd: Vec<String>,
     pub budget_plan_review_usd: f64,
     pub budget_dual_review_usd: f64,
+    pub keymap: Keymap,
 }
 
 impl Default for Config {
@@ -41,6 +46,7 @@ impl Default for Config {
             codex_cmd: vec!["codex".into()],
             budget_plan_review_usd: 5.0,
             budget_dual_review_usd: 10.0,
+            keymap: Keymap::default(),
         }
     }
 }
@@ -57,6 +63,7 @@ impl Config {
         let mut cfg = Config::default();
         let mut theme_name = cfg.theme_name.clone();
         let mut icons = IconSet::Nerd;
+        let mut key_overrides: HashMap<String, String> = HashMap::new();
 
         let mut layers: Vec<PathBuf> = Vec::new();
         if let Some(dir) = dirs::config_dir() {
@@ -94,6 +101,9 @@ impl Config {
             if let Some(b) = fc.budget_dual_review_usd {
                 cfg.budget_dual_review_usd = b;
             }
+            if let Some(keys) = fc.keys {
+                key_overrides.extend(keys); // later layers win per-action
+            }
         }
 
         // Env overrides (also the test seam).
@@ -115,6 +125,7 @@ impl Config {
         cfg.theme = Theme::by_name(&theme_name, icons)
             .with_context(|| format!("unknown theme '{theme_name}' (eldritch, tokyonight)"))?;
         cfg.theme_name = theme_name;
+        cfg.keymap = Keymap::default().with_overrides(&key_overrides)?;
         Ok(cfg)
     }
 }
