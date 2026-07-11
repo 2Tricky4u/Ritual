@@ -10,6 +10,11 @@
 #   FAKE_AGENT_EXIT     exit code (default: 0)
 #   FAKE_AGENT_FINDINGS if set, write a canned findings file there before exiting
 set -u
+# `<fake> login status` = the codex auth preflight: always "logged in".
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then
+  echo "Logged in using ChatGPT (fake)"
+  exit 0
+fi
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fixture="${FAKE_AGENT_FIXTURE:-$dir/fixtures/claude_toolrich.jsonl}"
 delay="${FAKE_AGENT_DELAY:-0.05}"

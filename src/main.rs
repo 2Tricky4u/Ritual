@@ -3,7 +3,10 @@ mod config;
 mod findings;
 mod history;
 mod output;
+mod run_cmd;
+mod runner;
 mod scaffold;
+mod stages;
 mod state;
 mod theme;
 
@@ -45,10 +48,7 @@ fn main() -> Result<()> {
             output::render_history(&cfg, &metas, &summary, limit);
         }
         Some(Command::Run { stage, arg }) => {
-            anyhow::bail!(
-                "`ritual run {stage}{}` lands in M2 (runner milestone)",
-                arg.map(|a| format!(" {a}")).unwrap_or_default()
-            );
+            run_cmd::execute(&cfg, &dirs, &stage, arg.as_deref())?;
         }
         Some(Command::New { title }) => {
             let title = title.join(" ");

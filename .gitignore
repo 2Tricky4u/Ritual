@@ -3,3 +3,4 @@
 .ritual/runs/
 .ritual/logs/
 .ritual/state.json
+.cargo/
