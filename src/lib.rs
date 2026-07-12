@@ -1,6 +1,7 @@
 pub mod agents_status;
 pub mod bench;
 pub mod ci;
+pub mod clean;
 pub mod cli;
 pub mod config;
 pub mod export;

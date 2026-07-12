@@ -321,6 +321,72 @@ pub fn render_run_summary(cfg: &Config, meta: &RunMeta, new_findings: &[String])
     }
 }
 
+pub fn render_clean(cfg: &Config, report: &crate::clean::CleanReport) {
+    let t = &cfg.theme;
+    let p = t.palette;
+    let verb = if report.dry_run {
+        "would delete"
+    } else {
+        "deleted"
+    };
+    println!(
+        "{}",
+        hex(
+            t,
+            p.purple,
+            &format!(
+                "ritual clean{}",
+                if report.dry_run { " (dry run)" } else { "" }
+            )
+        )
+    );
+    for id in &report.deleted_groups {
+        println!("  {} {verb} {id}", hex(t, p.red, "✗"));
+    }
+    // Keep the noise down: summarize kept runs by reason.
+    let mut by_reason: std::collections::BTreeMap<&str, usize> = Default::default();
+    for (_, why) in &report.kept {
+        *by_reason.entry(why.label()).or_default() += 1;
+    }
+    for (why, n) in by_reason {
+        println!("  {} kept {n} ({why})", hex(t, p.green, "✓"));
+    }
+    for (id, err) in &report.failures {
+        println!("  {} FAILED {id}: {err}", hex(t, p.red, "!"));
+    }
+    for n in &report.notices {
+        println!("  {}", hex(t, p.yellow, n));
+    }
+    if let Some(cp) = &report.checkpoint {
+        println!(
+            "  {}",
+            hex(
+                t,
+                p.light_grey,
+                &format!(
+                    "checkpoint{}: {} chained run(s) attested up to {}",
+                    if report.dry_run { " (would write)" } else { "" },
+                    cp.pruned_runs,
+                    cp.as_of_run_id
+                )
+            )
+        );
+    }
+    println!(
+        "  {}",
+        hex(
+            t,
+            p.light_grey,
+            &format!(
+                "{} group(s) {verb}, {} kept, {} failure(s)",
+                report.deleted_groups.len(),
+                report.kept.len(),
+                report.failures.len()
+            )
+        )
+    );
+}
+
 fn clip(s: &str, max: usize) -> String {
     let one_line = s.replace('\n', " ");
     let mut out: String = one_line.chars().take(max).collect();

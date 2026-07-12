@@ -814,6 +814,82 @@ fn repro_unknown_run_is_an_error() {
 }
 
 #[test]
+fn clean_prunes_with_checkpoint_and_chain_stays_verifiable() {
+    let tmp = setup_project();
+    std::fs::create_dir_all(tmp.path().join(".ritual/features/main")).unwrap();
+    std::fs::write(tmp.path().join(".ritual/features/main/plan.md"), "# plan").unwrap();
+    let runs = tmp.path().join(".ritual/runs");
+    std::fs::create_dir_all(&runs).unwrap();
+
+    // Seed three AGED chained runs directly (real fake-agent runs are always
+    // today-dated and today-protection would keep them all).
+    let mut prev = ritual::provenance::GENESIS.to_string();
+    for i in 1..=3 {
+        let id = format!("20260701T00000{i}Z-old");
+        let archive = runs.join(format!("{id}.jsonl"));
+        std::fs::write(&archive, format!("line-{i}\n")).unwrap();
+        let mut meta = ritual::history::RunMeta {
+            run_id: id.clone(),
+            stage: "plan-review".into(),
+            ok: true,
+            started_at: Some(chrono::Utc::now() - chrono::Duration::days(3)),
+            ..Default::default()
+        };
+        let chain =
+            ritual::provenance::compute_link(&prev, &std::fs::read(&archive).unwrap(), &meta)
+                .unwrap();
+        prev = chain.this.clone();
+        meta.chain = Some(chain);
+        std::fs::write(
+            runs.join(format!("{id}.meta.json")),
+            serde_json::to_string(&meta).unwrap(),
+        )
+        .unwrap();
+    }
+
+    // Prune down to 1: two chained runs go, a checkpoint covers them.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["clean", "--keep", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2 group(s) deleted"));
+    assert!(runs.join("checkpoint.json").exists());
+
+    // verify-log reports the checkpoint and stays intact.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("verify-log")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("chain intact: checkpoint("));
+
+    // A NEW real run chains onto the survivor and everything still verifies.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .env("FAKE_AGENT_DELAY", "0")
+        .env(
+            "FAKE_AGENT_FINDINGS",
+            ".ritual/findings/20260712T170000Z-plan-review.json",
+        )
+        .args(["run", "plan-review"])
+        .assert()
+        .success();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("verify-log")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2 run(s) verified"));
+}
+
+#[test]
 fn verify_log_detects_a_tampered_archive() {
     let tmp = project_with_one_run();
     // Sanity: the fresh chain verifies.

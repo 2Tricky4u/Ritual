@@ -101,6 +101,16 @@ pub enum Command {
         #[arg(long)]
         out: Option<std::path::PathBuf>,
     },
+    /// Prune old run artifacts (protects live, state-referenced, and today's
+    /// runs; chained runs are covered by a tamper-evident checkpoint)
+    Clean {
+        /// How many recent finished runs to keep (protected runs don't count)
+        #[arg(long, default_value_t = 50)]
+        keep: usize,
+        /// Print what would be deleted/kept without touching anything
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Chat one message to Claude to author/edit this feature's spec (or plan)
     Chat {
         /// The instruction, e.g. `ritual chat "tighten the goal to one sentence"`
