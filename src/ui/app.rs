@@ -675,11 +675,15 @@ impl App {
             ));
             return;
         }
-        self.findings_before = list_dir(&self.dirs.findings_dir());
-        // Refresh the review memory the dual-review skill reads.
+        // Pre-review gates run BEFORE the findings snapshot so their artifacts
+        // don't count as the agent run's own output.
         if stage == StageId::DualReview {
             let _ = crate::lessons::refresh(&self.dirs);
+            if let Some(msg) = crate::secrets::preflight(&self.cfg, &self.dirs) {
+                self.status_msg = Some(msg);
+            }
         }
+        self.findings_before = list_dir(&self.dirs.findings_dir());
         self.stream.clear();
         self.stream_scroll = None;
         self.tab = Tab::Live;

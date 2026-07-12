@@ -51,6 +51,18 @@ pub struct FileConfig {
     pub gh_cmd: Option<String>,
     /// `[mutants]` table: the mutation-kill gate (`ritual mutants`).
     pub mutants: Option<MutantsFileConfig>,
+    /// `[secrets]` table: the gitleaks gate over changed files.
+    pub secrets: Option<SecretsFileConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct SecretsFileConfig {
+    /// Auto-scan changed files before dual-review (default true; silently
+    /// skipped when gitleaks isn't installed).
+    pub enabled: Option<bool>,
+    /// gitleaks argv override, default "gitleaks".
+    pub gitleaks_cmd: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -98,6 +110,8 @@ pub struct Config {
     pub mutants_cmd: Vec<String>,
     pub mutants_timeout_secs: u64,
     pub mutants_enabled: bool,
+    pub secrets_enabled: bool,
+    pub gitleaks_cmd: Vec<String>,
 }
 
 impl Default for Config {
@@ -126,6 +140,8 @@ impl Default for Config {
             mutants_cmd: vec!["cargo".into(), "mutants".into()],
             mutants_timeout_secs: 300,
             mutants_enabled: false,
+            secrets_enabled: true,
+            gitleaks_cmd: vec!["gitleaks".into()],
         }
     }
 }
@@ -240,6 +256,14 @@ impl Config {
                     cfg.mutants_enabled = e;
                 }
             }
+            if let Some(s) = fc.secrets {
+                if let Some(e) = s.enabled {
+                    cfg.secrets_enabled = e;
+                }
+                if let Some(c) = s.gitleaks_cmd {
+                    cfg.gitleaks_cmd = split_cmd(&c)?;
+                }
+            }
         }
 
         // Env overrides (also the test seam).
@@ -254,6 +278,9 @@ impl Config {
         }
         if let Ok(c) = std::env::var("RITUAL_MUTANTS_CMD") {
             cfg.mutants_cmd = split_cmd(&c)?;
+        }
+        if let Ok(c) = std::env::var("RITUAL_GITLEAKS_CMD") {
+            cfg.gitleaks_cmd = split_cmd(&c)?;
         }
 
         // CLI flags win.

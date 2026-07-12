@@ -236,6 +236,66 @@ fn mutants_turns_survivors_into_findings() {
 }
 
 #[test]
+fn secrets_gate_blocks_until_dismissed() {
+    let tmp = setup_project();
+    let fake = format!("{}/tests/fake_gitleaks.sh", env!("CARGO_MANIFEST_DIR"));
+    // An untracked file is exactly the agent-wrote-a-.env attack surface.
+    std::fs::write(tmp.path().join("leaky.py"), "x = 1\napi_key = \"h\"\n").unwrap();
+
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_GITLEAKS_CMD", &fake)
+        .arg("secrets")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("1 leak(s)"))
+        .stdout(predicate::str::contains(".gitleaksignore"));
+
+    // The hit is a critical/confirmed finding -> the findings contract blocks.
+    let path = std::fs::read_dir(tmp.path().join(".ritual/findings"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_string_lossy().ends_with("-secrets.json"))
+        .expect("secrets findings file")
+        .path();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("secret: generic-api-key"));
+    assert!(
+        text.contains(r#""file": "leaky.py""#),
+        "stage prefix stripped: {text}"
+    );
+    assert!(text.contains(r#""fingerprint": "leaky.py:generic-api-key:2""#));
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("findings")
+        .assert()
+        .code(1);
+
+    // A human dismissing it unblocks the contract.
+    let dismissed = text.replace(r#""action": "pending""#, r#""action": "dismissed""#);
+    std::fs::write(&path, dismissed).unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("findings")
+        .assert()
+        .success();
+
+    // Clean scan exits zero.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_GITLEAKS_CMD", &fake)
+        .env("FAKE_GITLEAKS_EXIT", "0")
+        .arg("secrets")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no secrets found"));
+}
+
+#[test]
 fn costs_rolls_up_per_stage_with_cache_rates() {
     let tmp = setup_project();
     std::fs::create_dir_all(tmp.path().join(".ritual/runs")).unwrap();

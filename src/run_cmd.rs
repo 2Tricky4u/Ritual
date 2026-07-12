@@ -305,12 +305,16 @@ fn run_headless(
     title: &str,
     ci: bool,
 ) -> Result<()> {
-    let findings_before = list_findings(&dirs.findings_dir());
-
-    // Refresh the review memory the dual-review skill reads (pure fs, cheap).
+    // Pre-review gates run BEFORE the findings snapshot so their artifacts
+    // don't count as the agent run's own output: refresh the review memory
+    // the dual-review skill reads, then the gitleaks pass over changed files.
     if stage == StageId::DualReview {
         let _ = crate::lessons::refresh(dirs);
+        if let Some(msg) = crate::secrets::preflight(cfg, dirs) {
+            println!("{msg}");
+        }
     }
+    let findings_before = list_findings(&dirs.findings_dir());
 
     set_stage(st, branch, stage, StageStatus::Running, None);
     st.save(dirs)?;

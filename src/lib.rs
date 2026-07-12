@@ -21,6 +21,7 @@ pub mod report;
 pub mod run_cmd;
 pub mod runner;
 pub mod scaffold;
+pub mod secrets;
 pub mod spec;
 pub mod stages;
 pub mod state;

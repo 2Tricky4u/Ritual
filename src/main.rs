@@ -117,6 +117,36 @@ fn main() -> Result<()> {
                 }
             }
         }
+        Some(Command::Secrets) => {
+            anyhow::ensure!(
+                ritual::secrets::available(&cfg),
+                "`{}` not runnable — install gitleaks (pacman -S gitleaks)",
+                cfg.gitleaks_cmd.join(" ")
+            );
+            let r = ritual::secrets::scan(&cfg, &dirs)?;
+            if r.scanned_files == 0 {
+                println!("no changed files to scan");
+            } else if r.leaks == 0 {
+                println!(
+                    "{} changed file(s) scanned — no secrets found",
+                    r.scanned_files
+                );
+            } else {
+                println!(
+                    "{} leak(s) in {} changed file(s) → {}",
+                    r.leaks,
+                    r.scanned_files,
+                    r.findings_path
+                        .as_deref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default()
+                );
+                println!(
+                    "critical findings block CI until dismissed (d) or fingerprinted in .gitleaksignore"
+                );
+                std::process::exit(1);
+            }
+        }
         Some(Command::Costs { json }) => {
             let metas = history::load_all(&dirs.runs_dir())?;
             if json {
