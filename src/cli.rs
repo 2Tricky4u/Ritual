@@ -135,6 +135,10 @@ pub enum Command {
         /// Write to a file instead of stdout
         #[arg(long)]
         out: Option<std::path::PathBuf>,
+        /// Emit IETF draft-sharif-agent-audit-trail records (JCS-canonical,
+        /// SHA-256 hash-chained JSONL) instead of OTLP spans
+        #[arg(long)]
+        audit_trail: bool,
     },
     /// Check every workflow prerequisite (agents, auth, MCP, skills, hooks,
     /// check.sh, disk); exits nonzero on hard failures

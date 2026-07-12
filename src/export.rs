@@ -27,13 +27,53 @@ pub fn otlp_json(dirs: &RitualDirs, out: Option<&std::path::Path>) -> Result<()>
             attr_str("ritual.agent", &m.agent),
             attr_str("ritual.branch", &m.branch),
             attr_bool("ritual.ok", m.ok),
+            // OTel GenAI semconv (Development, 2026): gen_ai.provider.name is
+            // the current attribute — gen_ai.system is deprecated.
+            attr_str("gen_ai.operation.name", "invoke_agent"),
+            attr_str(
+                "gen_ai.provider.name",
+                match m.agent.as_str() {
+                    "claude" => "anthropic",
+                    "codex" => "openai",
+                    other => other,
+                },
+            ),
+            attr_str("gen_ai.agent.name", &format!("ritual:{}", m.stage)),
         ];
+        if let Some(model) = &m.model {
+            attributes.push(attr_str("gen_ai.response.model", model));
+        }
+        // The requested model rides in the recorded argv (--model X).
+        if let Some(i) = m.argv.iter().position(|a| a == "--model")
+            && let Some(req_model) = m.argv.get(i + 1)
+        {
+            attributes.push(attr_str("gen_ai.request.model", req_model));
+        }
+        if let Some(sid) = &m.session_id {
+            attributes.push(attr_str("gen_ai.conversation.id", sid));
+        }
         if let Some(c) = m.total_cost_usd {
             attributes.push(attr_f64("ritual.cost_usd", c));
+        }
+        if let Some(n) = m.num_turns {
+            attributes.push(attr_i64("ritual.num_turns", n as i64));
         }
         if let Some(u) = &m.usage {
             attributes.push(attr_i64("ritual.tokens.output", u.output_tokens as i64));
             attributes.push(attr_i64("ritual.tokens.input", u.input_tokens as i64));
+            attributes.push(attr_i64(
+                "gen_ai.usage.output_tokens",
+                u.output_tokens as i64,
+            ));
+            attributes.push(attr_i64("gen_ai.usage.input_tokens", u.input_tokens as i64));
+            attributes.push(attr_i64(
+                "ritual.tokens.cache_read",
+                u.cache_read_input_tokens as i64,
+            ));
+            attributes.push(attr_i64(
+                "ritual.tokens.cache_creation",
+                u.cache_creation_input_tokens as i64,
+            ));
         }
         let span = serde_json::json!({
             "resourceSpans": [{
@@ -62,6 +102,104 @@ pub fn otlp_json(dirs: &RitualDirs, out: Option<&std::path::Path>) -> Result<()>
     }
     eprintln!("{} span(s) exported", metas.len());
     Ok(())
+}
+
+/// `ritual export --audit-trail` — one draft-sharif-agent-audit-trail-00
+/// record per finished run, oldest first, hash-chained: `prev_hash(N)` =
+/// SHA-256 over the RFC 8785 (JCS) canonicalization of record N-1. With
+/// default features serde_json already IS canonical for this value domain
+/// (BTreeMap-backed objects = sorted keys, minimal escapes, plain integers),
+/// so `canonical()` below is a real JCS for what we emit.
+pub fn audit_trail(dirs: &RitualDirs, out: Option<&std::path::Path>) -> Result<()> {
+    let mut metas = history::load_all(&dirs.runs_dir())?;
+    metas.reverse(); // chain runs oldest -> newest
+
+    let mut lines = Vec::new();
+    let mut prev: Option<serde_json::Value> = None;
+    for m in &metas {
+        let record_id = synth_uuid(&m.run_id);
+        let session_id = m
+            .session_id
+            .as_deref()
+            .filter(|s| is_uuid(s))
+            .map(str::to_string)
+            .unwrap_or_else(|| synth_uuid(m.session_id.as_deref().unwrap_or(&m.run_id)));
+        let agent_version = m.repro.as_ref().and_then(|r| match m.agent.as_str() {
+            "claude" => r.claude_version.clone(),
+            "codex" => r.codex_version.clone(),
+            _ => None,
+        });
+        let mut record = serde_json::json!({
+            "record_id": record_id,
+            "timestamp": m.started_at.or(m.finished_at)
+                .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                .unwrap_or_else(|| "1970-01-01T00:00:00Z".into()),
+            "agent_id": format!("urn:ritual:agent:{}", if m.agent.is_empty() { "unknown" } else { &m.agent }),
+            "agent_version": agent_version.unwrap_or_else(|| "unknown".into()),
+            "session_id": session_id,
+            "action_type": format!("stage.{}", m.stage),
+            "action_detail": {
+                "feature": m.feature,
+                "branch": m.branch,
+                "run_id": m.run_id,
+                "exit_code": m.exit_code,
+            },
+            "outcome": if m.ok { "success" } else { "failure" },
+            "trust_level": "L2",
+            "parent_record_id": prev.as_ref().map(|p| p["record_id"].clone()).unwrap_or(serde_json::Value::Null),
+            "prev_hash": prev.as_ref().map(|p| serde_json::Value::String(sha256_hex(canonical(p).as_bytes()))).unwrap_or(serde_json::Value::Null),
+        });
+        // Optional members the draft defines and we actually have.
+        if let Some(model) = &m.model {
+            record["model_id"] = serde_json::json!(model);
+        }
+        if let Some(c) = m.total_cost_usd {
+            record["cost_estimate"] = serde_json::json!(c);
+        }
+        if let Some(d) = m.duration_ms {
+            record["latency_ms"] = serde_json::json!(d);
+        }
+        lines.push(canonical(&record));
+        prev = Some(record);
+    }
+
+    let text = lines.join("\n") + "\n";
+    match out {
+        Some(p) => std::fs::write(p, text)?,
+        None => print!("{text}"),
+    }
+    eprintln!("{} audit record(s) exported", metas.len());
+    Ok(())
+}
+
+/// RFC 8785 canonical form for OUR value domain (see audit_trail docs).
+fn canonical(v: &serde_json::Value) -> String {
+    serde_json::to_string(v).unwrap_or_default()
+}
+
+/// Deterministic UUIDv4-formatted id from a seed (version/variant bits set).
+fn synth_uuid(seed: &str) -> String {
+    let hex = sha256_hex(seed.as_bytes());
+    let mut c: Vec<char> = hex[..32].chars().collect();
+    c[12] = '4';
+    c[16] = ['8', '9', 'a', 'b'][(c[16].to_digit(16).unwrap_or(0) & 0b11) as usize];
+    let s: String = c.into_iter().collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &s[0..8],
+        &s[8..12],
+        &s[12..16],
+        &s[16..20],
+        &s[20..32]
+    )
+}
+
+fn is_uuid(s: &str) -> bool {
+    s.len() == 36
+        && s.chars().enumerate().all(|(i, ch)| match i {
+            8 | 13 | 18 | 23 => ch == '-',
+            _ => ch.is_ascii_hexdigit(),
+        })
 }
 
 fn attr_str(key: &str, v: &str) -> serde_json::Value {
@@ -154,6 +292,130 @@ mod tests {
         );
         // End time must reflect finished_at, not equal start.
         assert_ne!(span["startTimeUnixNano"], span["endTimeUnixNano"]);
+    }
+
+    #[test]
+    fn gen_ai_semconv_attributes_ride_along() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runs = tmp.path().join(".ritual/runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        write_meta(
+            &runs,
+            "20260711T000000Z-g.meta.json",
+            r#"{"run_id":"g1","stage":"dual-review","agent":"claude","ok":true,
+                "model":"claude-fable-5","session_id":"s-123","num_turns":7,
+                "argv":["claude","-p","x","--model","opus"],
+                "usage":{"input_tokens":10,"output_tokens":5,
+                         "cache_read_input_tokens":90,"cache_creation_input_tokens":2}}"#,
+        );
+        let lines = export_to_string(&tmp);
+        let span = first_span(&lines[0]);
+        assert_eq!(
+            attr(span, "gen_ai.operation.name").unwrap()["stringValue"],
+            "invoke_agent"
+        );
+        assert_eq!(
+            attr(span, "gen_ai.provider.name").unwrap()["stringValue"],
+            "anthropic"
+        );
+        assert_eq!(
+            attr(span, "gen_ai.response.model").unwrap()["stringValue"],
+            "claude-fable-5"
+        );
+        assert_eq!(
+            attr(span, "gen_ai.request.model").unwrap()["stringValue"],
+            "opus",
+            "requested model recovered from recorded argv"
+        );
+        assert_eq!(
+            attr(span, "gen_ai.conversation.id").unwrap()["stringValue"],
+            "s-123"
+        );
+        assert_eq!(
+            attr(span, "gen_ai.usage.input_tokens").unwrap()["intValue"],
+            "10"
+        );
+        assert_eq!(
+            attr(span, "ritual.tokens.cache_read").unwrap()["intValue"],
+            "90"
+        );
+        assert_eq!(attr(span, "ritual.num_turns").unwrap()["intValue"], "7");
+    }
+
+    #[test]
+    fn audit_trail_chains_records_with_jcs_sha256() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runs = tmp.path().join(".ritual/runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        for (i, ok) in [(1, true), (2, true), (3, false)] {
+            write_meta(
+                &runs,
+                &format!("20260711T00000{i}Z-r.meta.json"),
+                &format!(
+                    r#"{{"run_id":"run-{i}","stage":"plan-review","agent":"claude","ok":{ok},
+                        "feature":"F","branch":"main","exit_code":0,"duration_ms":1200,
+                        "total_cost_usd":0.5,"model":"claude-fable-5",
+                        "started_at":"2026-07-11T00:00:0{i}Z"}}"#
+                ),
+            );
+        }
+        let dirs = RitualDirs::new(tmp.path());
+        let out = tmp.path().join("audit.jsonl");
+        audit_trail(&dirs, Some(&out)).unwrap();
+        let records: Vec<Value> = std::fs::read_to_string(&out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(records.len(), 3);
+
+        // Oldest first; the genesis record has null links.
+        assert_eq!(records[0]["action_detail"]["run_id"], "run-1");
+        assert!(records[0]["prev_hash"].is_null());
+        assert!(records[0]["parent_record_id"].is_null());
+
+        // Mandatory draft members present with the exact names.
+        for r in &records {
+            for key in [
+                "record_id",
+                "timestamp",
+                "agent_id",
+                "agent_version",
+                "session_id",
+                "action_type",
+                "action_detail",
+                "outcome",
+                "trust_level",
+                "parent_record_id",
+                "prev_hash",
+            ] {
+                assert!(!r[key].is_null() || key == "prev_hash" || key == "parent_record_id");
+            }
+            let id = r["record_id"].as_str().unwrap();
+            assert!(is_uuid(id), "not uuid-shaped: {id}");
+            assert_eq!(id.as_bytes()[14], b'4', "version nibble");
+        }
+        assert_eq!(records[2]["outcome"], "failure");
+        assert_eq!(records[1]["parent_record_id"], records[0]["record_id"]);
+
+        // The chain verifies: prev_hash(N) == sha256(JCS(record N-1)).
+        for i in 1..records.len() {
+            let expect = sha256_hex(canonical(&records[i - 1]).as_bytes());
+            assert_eq!(
+                records[i]["prev_hash"].as_str().unwrap(),
+                expect,
+                "broken link at {i}"
+            );
+        }
+
+        // Records are emitted in canonical (sorted-key) form on disk.
+        let first_line = std::fs::read_to_string(&out)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .to_string();
+        assert_eq!(first_line, canonical(&records[0]));
     }
 
     #[test]
