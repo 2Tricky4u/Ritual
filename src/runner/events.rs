@@ -107,4 +107,18 @@ mod tests {
         let out = summarize(&json!("ααααα"), 3);
         assert_eq!(out, "ααα…");
     }
+
+    #[test]
+    fn summarize_flattens_deeply_nested_structures() {
+        let v = json!({"a": {"b": [1, {"c": "line\nbreak"}]}, "e": null});
+        let out = summarize(&v, 200);
+        // Nested values arrive JSON-escaped — never a literal newline.
+        assert!(!out.contains('\n'), "always a single line: {out}");
+        assert!(out.contains("\"c\""));
+        // A TOP-LEVEL string keeps its newlines -> visible ⏎ markers.
+        assert!(summarize(&json!("a\nb"), 50).contains("⏎"));
+        let capped = summarize(&v, 10);
+        assert_eq!(capped.chars().count(), 11, "10 chars + ellipsis");
+        assert!(capped.ends_with('…'));
+    }
 }
