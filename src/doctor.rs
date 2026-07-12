@@ -173,6 +173,26 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
         });
     }
 
+    // -- secrets gate -------------------------------------------------------------
+    out.push(if !cfg.secrets_enabled {
+        check("secrets", CheckStatus::Skipped, "disabled in [secrets]")
+    } else if crate::secrets::available(cfg) {
+        check(
+            "secrets",
+            CheckStatus::Pass,
+            "gitleaks scans changed files before dual-review",
+        )
+    } else {
+        check(
+            "secrets",
+            CheckStatus::Warn,
+            format!(
+                "`{}` not runnable — gate silently skipped (pacman -S gitleaks)",
+                cfg.gitleaks_cmd.join(" ")
+            ),
+        )
+    });
+
     // -- invariants constitution -----------------------------------------------
     out.push(match crate::stages::meaningful_invariants(dirs) {
         Some(_) => check(

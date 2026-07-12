@@ -61,6 +61,9 @@ pub enum Command {
         #[arg(long)]
         base: Option<String>,
     },
+    /// Scan changed files (tracked + untracked) for leaked secrets via
+    /// gitleaks; hits become critical findings and exit nonzero
+    Secrets,
     /// Per-stage cost analytics: today / 7 days / all time, cache-hit rates,
     /// daily-budget gauge
     Costs {
