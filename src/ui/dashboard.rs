@@ -912,7 +912,8 @@ fn draw_findings(f: &mut Frame, app: &App, area: Rect) {
     }
     let mut lines: Vec<Line> = vec![Line::default()];
     let per_finding = 3usize; // row + scenario + spacer
-    let visible = (area.height as usize / per_finding).max(1);
+    // Reserve one line: the selected finding may add a snippet row.
+    let visible = ((area.height as usize).saturating_sub(1) / per_finding).max(1);
     let first = app
         .selected_finding
         .saturating_sub(visible.saturating_sub(1));
@@ -970,6 +971,22 @@ fn draw_findings(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(t.comment()),
             ),
         ]));
+        // The anchored source excerpt, selected finding only (first line).
+        if selected && let Some(snippet) = &finding.snippet {
+            let one = snippet.lines().next().unwrap_or_default().trim_end();
+            let more = if snippet.lines().nth(1).is_some() {
+                " …"
+            } else {
+                ""
+            };
+            lines.push(Line::from(vec![
+                Span::raw("   "),
+                Span::styled(
+                    format!("▏ {one}{more}"),
+                    Style::default().fg(t.comment()).add_modifier(Modifier::DIM),
+                ),
+            ]));
+        }
         lines.push(Line::default());
     }
     f.render_widget(Paragraph::new(lines), area);

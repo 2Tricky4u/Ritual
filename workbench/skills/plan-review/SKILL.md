@@ -49,10 +49,11 @@ If the project working directory contains a `.ritual/` directory: after producin
   "findings": [
     {"id": 1, "severity": "critical|major|minor", "title": "<one-sentence finding>",
      "file": null, "line": null, "plan_step": "<the plan step it targets>",
+     "snippet": "<verbatim plan/source excerpt when one anchors the finding, else omit>",
      "scenario": "<concrete failure scenario>", "sources": ["codex"],
      "verdict": "accepted|rebutted|unresolved", "action": "<what changed in the plan, or 'none'>"}
   ]
 }
 ```
 
-Use `null` for unknown fields. Include every finding from the exchange (accepted, rebutted, and unresolved). An empty `findings: []` file is valid when Codex found nothing. This section must not change the human-visible output or the procedure above. If `.ritual/` does not exist, skip this section entirely.
+Keep `title` under 80 characters; when a finding targets existing code, set `file`+`line` to the exact line and copy `snippet` verbatim (anchored findings get acted on). Use `null` for unknown fields. Include every finding from the exchange (accepted, rebutted, and unresolved). An empty `findings: []` file is valid when Codex found nothing. This section must not change the human-visible output or the procedure above. If `.ritual/` does not exist, skip this section entirely.
