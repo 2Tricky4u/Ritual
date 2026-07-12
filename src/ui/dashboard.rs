@@ -673,12 +673,12 @@ fn draw_greeter(f: &mut Frame, t: &Theme, area: Rect) {
         ("pipeline", "spec → plan → review → tests → impl → dual"),
         ("chat", "s — chat to write/edit the spec or plan live"),
         ("runs", "daemons: quit freely, reattach · a takeover"),
-        ("findings", "Q → nvim quickfix · o open · e $EDITOR"),
+        ("findings", "f fix · d dismiss · Q quickfix · o nvim"),
         ("money", "daily budget · per-run caps · --force"),
         ("safety", "redaction · verify-log chain · repro"),
         ("ci", "--ci → JUnit · --json + exit codes"),
         ("parallel", "new --worktree · [ ] switch features"),
-        ("more", "report · bench · export · offline · cmds"),
+        ("more", "ps · attach · doctor · clean · pr-comment"),
         ("guide", "5 — the detailed guide & tips, in-app"),
     ];
     let label_w = guide
@@ -1248,7 +1248,7 @@ fn draw_palette(f: &mut Frame, app: &App) {
 }
 
 fn draw_help(f: &mut Frame, t: &Theme) {
-    let groups: [(&str, &[(&str, &str)]); 4] = [
+    let groups: [(&str, &[(&str, &str)]); 5] = [
         (
             "navigate",
             &[
@@ -1266,6 +1266,14 @@ fn draw_help(f: &mut Frame, t: &Theme) {
                 ("a", "take over session"),
                 ("x", "cancel run"),
                 ("c/C", "check fast / full"),
+            ],
+        ),
+        (
+            "findings",
+            &[
+                ("f", "mark fixed (toggle)"),
+                ("d", "dismiss (toggle)"),
+                ("v", "show/hide resolved"),
             ],
         ),
         (

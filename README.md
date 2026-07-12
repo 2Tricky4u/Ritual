@@ -19,11 +19,17 @@ A fast, eldritch-themed TUI that drives a **multi-LLM coding workflow**: Claude 
  enter run · : commands · j/k move · ? help          $1.42/$5.00  ⠹ plan-review
 ```
 
-## Features (v0.2)
+## Features (v0.4)
 
 **The pipeline** — per-branch stages `spec → plan → plan-review → tests-red → implement → dual-review`; one-key launch; headless stages stream live; interactive stages hand you a real attached `claude` session and resume the TUI on exit.
 
-**Chat to author the spec/plan** (`s`) — a split view with the live document on the left and a conversation on the right: type an instruction and Claude edits `spec.md` (or `plan.md`) in place while you watch, scopable to the whole doc or one `##` section (`Tab` to switch). Each message acts on the current file — the document is the memory. Also headless: `ritual chat "<msg>" [--plan] [--section …]`. Powered by the tailored `/spec` skill.
+**Chat to author the spec/plan** (`s`) — a split view with the live document on the left (focused section highlighted in place) and a conversation on the right: type an instruction and Claude edits `spec.md` (or `plan.md`) in place while you watch, scopable to the whole doc or one `##` section (`Tab` to switch — a missing plan is *drafted from the spec*). `Ctrl+Z` undo/redo (persisted snapshot), `Ctrl+X` cancel, `Alt+Enter` multi-line, messages queue while an edit runs. The agent is hard-scoped at the permission layer: it can read the project but write only the targeted document. Also headless: `ritual chat "<msg>" [--plan] [--section …]`.
+
+**Findings lifecycle** — on the findings tab, `f` marks fixed and `d` dismisses (write-through to the JSON; `v` shows/hides resolved). The exit-code/CI contract follows: a confirmed critical blocks until resolved. `ritual pr-comment [N] [--inline]` posts the open findings to the branch's GitHub PR, redacted.
+
+**Run control from anywhere** — `ritual ps` lists live daemons, `ritual attach <run-id>` streams one into any terminal (`--kill` stops it). `ritual doctor [--deep]` checks agents, auth, MCP wiring, skills drift, hooks, check.sh, and disk pressure. `ritual clean [--keep N] [--dry-run]` prunes old run artifacts — live/state-referenced/today's runs protected, pruned chained runs attested by a tamper-evident **checkpoint** so `verify-log` never breaks.
+
+**Reproducible workbench** — the whole multi-LLM setup (13 skills incl. `/spec` and the optional `/consensus`, the code-reviewer agent, both hooks) is vendored in `workbench/` and installed by `ritual init --skills`. An optional third-model **consensus tier** (`[consensus] enabled`, pal MCP + Gemini) lets plan-review escalate one contested finding for arbitration.
 
 **Runs are daemons** — every headless run detaches (`setsid`) and survives the TUI, the terminal, and reboots of your session. The raw event stream is archived to `.ritual/runs/*.jsonl` *before* parsing; the TUI is just a tailer. Restart `ritual` and it reattaches to live runs and reconciles anything that finished while you were away. Cancel kills the whole process group.
 
@@ -110,7 +116,7 @@ blame = "git log --oneline -3 -- {{finding.file}}"
 
 ## Keys (defaults — all rebindable)
 
-`enter` run/open · `s` chat: edit spec/plan · `:` palette · `j/k` move · `tab` `1-5` panes (`5` = in-app guide & tips) · `[` `]` features · `a` takeover · `o` open in nvim · `Q` findings → quickfix · `c/C` check fast/full · `x` cancel · `e` editor · `r` refresh · `g/G` scroll/follow · `?` help · `q` quit
+`enter` run/open · `s` chat: edit spec/plan · `:` palette · `j/k` move · `tab` `1-5` panes (`5` = in-app guide & tips) · `f/d/v` finding fix/dismiss/show-resolved · `[` `]` features · `a` takeover · `o` open in nvim · `Q` findings → quickfix · `c/C` check fast/full · `x` cancel · `e` editor · `r` refresh · `g/G` scroll/follow · `?` help · `q` quit — in chat: `Ctrl+Z` undo · `Ctrl+X` cancel · `Alt+Enter` newline
 
 ## Design notes
 

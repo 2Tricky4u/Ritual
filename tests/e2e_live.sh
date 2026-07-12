@@ -164,10 +164,58 @@ ok "bad keybinding rejected"  1 "unknown action" -- bash -c "cd '$PROJ' && \
 rm -f "$PROJ/.ritual/config.toml"
 ok "unknown stage errors"     1 "unknown stage" -- bash -c "cd '$PROJ' && '$RITUAL' run shoggoth"
 
+echo "── ps / attach ──────────────────────────────────────────────────────"
+ok "ps with nothing live"     0 "no live runs" -- bash -c "cd '$PROJ' && '$RITUAL' ps"
+RID_LAST="$(cd "$PROJ" && "$RITUAL" history --json | jq -r '.[0].run_id')"
+ok "attach finished run"      0 "-"          -- bash -c "cd '$PROJ' && '$RITUAL' attach '$RID_LAST'"
+ok "attach unknown errors"    1 "no such run" -- bash -c "cd '$PROJ' && '$RITUAL' attach nope"
+
+echo "── clean (today-protection) ─────────────────────────────────────────"
+# Every run so far is today-dated: clean must protect them all.
+ok "clean dry-run"            0 "0 group(s) would delete" -- bash -c "cd '$PROJ' && '$RITUAL' clean --keep 0 --dry-run"
+ok "clean keeps today's runs" 0 "started today" -- bash -c "cd '$PROJ' && '$RITUAL' clean --keep 0"
+ok "verify-log still intact"  0 "chain intact" -- bash -c "cd '$PROJ' && '$RITUAL' verify-log"
+
+echo "── workbench install + doctor ───────────────────────────────────────"
+CLAUDE_HOME="$ROOT/claude-home"
+ok "init --skills installs"   0 "workbench →" -- bash -c "cd '$PROJ' && \
+  RITUAL_CLAUDE_HOME='$CLAUDE_HOME' '$RITUAL' init --skills"
+exists "spec skill installed" "$CLAUDE_HOME/skills/spec/SKILL.md"
+printf '{"hooks":{"PostToolUse":[{"hooks":[{"command":"check-on-edit.sh"}]}]}}\n' > "$CLAUDE_HOME/settings.json"
+ok "doctor healthy"           0 "0 failure(s)" -- bash -c "cd '$PROJ' && \
+  RITUAL_CLAUDE_HOME='$CLAUDE_HOME' RITUAL_CLAUDE_CMD='$FAKE' RITUAL_CODEX_CMD='$FAKE' \
+  '$RITUAL' doctor"
+
+echo "── pr-comment (fake gh) ─────────────────────────────────────────────"
+FAKE_GH="$HOME/Documents/project/ritual/tests/fake_gh.sh"
+cat > "$PROJ/.ritual/findings/20260712T200000Z-dual-review.json" <<'EOF'
+{"ritual_findings":1,"stage":"dual-review","branch":"main",
+ "findings":[{"id":1,"severity":"major","title":"live driver finding",
+              "file":"src/x.rs","line":1,"scenario":"s","sources":["claude"],
+              "verdict":"confirmed","action":"pending"}]}
+EOF
+ok "pr-comment posts"         0 "posted summary comment on #7" -- bash -c "cd '$PROJ' && \
+  RITUAL_GH_CMD='$FAKE_GH' FAKE_GH_LOG_DIR='$ROOT' '$RITUAL' pr-comment"
+ok "body reached gh"          0 "live driver finding" -- grep "live driver finding" "$ROOT/gh-stdin.log"
+
+if [ "${RITUAL_LIVE_SMOKE:-0}" = "1" ]; then
+  echo "── LIVE doc-chat scoping smoke (real claude, ~cents) ────────────────"
+  # Validates the dontAsk + Edit(//abs) permission syntax against the real
+  # CLI: the /spec skill must succeed in editing ONLY the target doc.
+  ok "live chat edits spec"   0 "spec updated" -- bash -c "cd '$PROJ' && \
+    '$RITUAL' chat 'replace the Goal section body with exactly: smoke test goal' --section Goal --force"
+  ok "live edit landed"       0 "smoke test goal" -- grep "smoke test goal" "$PROJ/.ritual/features/main/spec.md"
+fi
+
 echo "── tamper detection ─────────────────────────────────────────────────"
 ARCHIVE="$(ls "$PROJ/.ritual/runs/"*plan-review.jsonl | head -1)"
 printf 'tampered!\n' > "$ARCHIVE"
 ok "verify-log detects tamper" 1 "CHAIN BROKEN" -- bash -c "cd '$PROJ' && '$RITUAL' verify-log"
+# All runs are today-protected here, so clean must delete nothing even with
+# --keep 0 (the broken-chain refusal path is covered by unit tests with aged
+# runs — live runs are always today-dated).
+ok "clean deletes nothing (broken chain + today)" 0 "0 group(s) deleted" -- bash -c "cd '$PROJ' && \
+  '$RITUAL' clean --keep 0"
 
 echo "── worktree parallelism ─────────────────────────────────────────────"
 git -C "$PROJ" add -A
