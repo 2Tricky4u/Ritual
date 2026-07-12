@@ -109,6 +109,13 @@ pub enum Command {
         #[arg(long)]
         out: Option<std::path::PathBuf>,
     },
+    /// Check every workflow prerequisite (agents, auth, MCP, skills, hooks,
+    /// check.sh, disk); exits nonzero on hard failures
+    Doctor {
+        /// Also run `./check.sh fast`
+        #[arg(long)]
+        deep: bool,
+    },
     /// List live detached runs (pipeline stages and chat edits)
     Ps,
     /// Follow a live detached run from this terminal (or --kill it)
