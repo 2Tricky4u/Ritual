@@ -59,3 +59,52 @@ pub fn summarize(value: &Value, max: usize) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn string_values_lose_their_quotes() {
+        // A JSON string is summarized as its content, not its quoted form.
+        assert_eq!(summarize(&json!("hello"), 80), "hello");
+    }
+
+    #[test]
+    fn non_string_values_stringify() {
+        assert_eq!(summarize(&json!({"a": 1}), 80), r#"{"a":1}"#);
+        assert_eq!(summarize(&json!([1, 2, 3]), 80), "[1,2,3]");
+    }
+
+    #[test]
+    fn newlines_become_return_glyphs_not_literal_breaks() {
+        let out = summarize(&json!("line1\nline2"), 80);
+        assert_eq!(out, "line1 ⏎ line2");
+        assert!(!out.contains('\n'));
+    }
+
+    #[test]
+    fn overlong_input_is_truncated_with_ellipsis() {
+        let long = "x".repeat(200);
+        let out = summarize(&json!(long), 10);
+        // 10 kept chars + the ellipsis marker.
+        assert_eq!(out.chars().count(), 11);
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn exactly_max_is_not_truncated() {
+        let s = "1234567890";
+        let out = summarize(&json!(s), 10);
+        assert_eq!(out, s);
+        assert!(!out.ends_with('…'));
+    }
+
+    #[test]
+    fn truncation_counts_chars_not_bytes() {
+        // Multi-byte chars must not be split mid-codepoint or miscounted.
+        let out = summarize(&json!("ααααα"), 3);
+        assert_eq!(out, "ααα…");
+    }
+}

@@ -76,3 +76,121 @@ fn attr_f64(key: &str, v: f64) -> serde_json::Value {
 fn attr_i64(key: &str, v: i64) -> serde_json::Value {
     serde_json::json!({"key": key, "value": {"intValue": v.to_string()}})
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+
+    fn write_meta(runs: &std::path::Path, name: &str, json: &str) {
+        std::fs::write(runs.join(name), json).unwrap();
+    }
+
+    /// Find an OTLP attribute by key inside a span's attribute array.
+    fn attr<'a>(span: &'a Value, key: &str) -> Option<&'a Value> {
+        span["attributes"]
+            .as_array()?
+            .iter()
+            .find(|a| a["key"] == key)
+            .map(|a| &a["value"])
+    }
+
+    fn export_to_string(dir: &tempfile::TempDir) -> Vec<Value> {
+        let dirs = RitualDirs::new(dir.path());
+        let out = dir.path().join("spans.jsonl");
+        otlp_json(&dirs, Some(&out)).unwrap();
+        std::fs::read_to_string(&out)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    fn first_span(line: &Value) -> &Value {
+        &line["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+    }
+
+    #[test]
+    fn empty_project_exports_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".ritual/runs")).unwrap();
+        assert!(export_to_string(&tmp).is_empty());
+    }
+
+    #[test]
+    fn one_run_becomes_one_valid_otlp_span() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runs = tmp.path().join(".ritual/runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        write_meta(
+            &runs,
+            "20260711T000000Z-a.meta.json",
+            r#"{"run_id":"r1","stage":"plan-review","agent":"claude","branch":"main",
+                "ok":true,"total_cost_usd":1.25,
+                "usage":{"input_tokens":100,"output_tokens":40},
+                "started_at":"2026-07-11T00:00:00Z","finished_at":"2026-07-11T00:01:00Z"}"#,
+        );
+        let lines = export_to_string(&tmp);
+        assert_eq!(lines.len(), 1);
+        let span = first_span(&lines[0]);
+
+        // OTLP id widths: trace = 32 hex, span = 16 hex.
+        assert_eq!(span["traceId"].as_str().unwrap().len(), 32);
+        assert_eq!(span["spanId"].as_str().unwrap().len(), 16);
+        assert_eq!(span["name"], "ritual:plan-review");
+        assert_eq!(span["status"]["code"], 1); // ok
+        assert_eq!(
+            attr(span, "ritual.stage").unwrap()["stringValue"],
+            "plan-review"
+        );
+        assert_eq!(attr(span, "ritual.agent").unwrap()["stringValue"], "claude");
+        assert_eq!(attr(span, "ritual.ok").unwrap()["boolValue"], true);
+        assert_eq!(attr(span, "ritual.cost_usd").unwrap()["doubleValue"], 1.25);
+        // intValue is stringified per the OTLP JSON encoding.
+        assert_eq!(
+            attr(span, "ritual.tokens.output").unwrap()["intValue"],
+            "40"
+        );
+        // End time must reflect finished_at, not equal start.
+        assert_ne!(span["startTimeUnixNano"], span["endTimeUnixNano"]);
+    }
+
+    #[test]
+    fn failed_run_maps_to_error_status_code() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runs = tmp.path().join(".ritual/runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        write_meta(
+            &runs,
+            "20260711T000000Z-b.meta.json",
+            r#"{"run_id":"r2","stage":"dual-review","ok":false}"#,
+        );
+        let lines = export_to_string(&tmp);
+        let span = first_span(&lines[0]);
+        assert_eq!(span["status"]["code"], 2); // error
+        assert_eq!(attr(span, "ritual.ok").unwrap()["boolValue"], false);
+    }
+
+    #[test]
+    fn distinct_runs_get_distinct_trace_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runs = tmp.path().join(".ritual/runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        write_meta(
+            &runs,
+            "20260711T000000Z-a.meta.json",
+            r#"{"run_id":"alpha","stage":"plan-review","ok":true}"#,
+        );
+        write_meta(
+            &runs,
+            "20260711T000001Z-b.meta.json",
+            r#"{"run_id":"beta","stage":"plan-review","ok":true}"#,
+        );
+        let lines = export_to_string(&tmp);
+        assert_eq!(lines.len(), 2);
+        let t0 = first_span(&lines[0])["traceId"].as_str().unwrap();
+        let t1 = first_span(&lines[1])["traceId"].as_str().unwrap();
+        assert_ne!(t0, t1);
+    }
+}
