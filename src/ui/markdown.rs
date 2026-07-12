@@ -22,10 +22,19 @@ struct Inline {
     quote_depth: usize,
 }
 
+/// Rendered document plus a source map: `src[i]` is the 0-based SOURCE line
+/// that produced output line `i` (None for spacers/dividers). Callers use it
+/// to highlight/scroll to a source-line range (chat's section focus).
+pub struct Rendered {
+    pub lines: Vec<Line<'static>>,
+    pub src: Vec<Option<usize>>,
+}
+
 struct Renderer<'t> {
     t: &'t Theme,
     width: u16,
     lines: Vec<Line<'static>>,
+    src: Vec<Option<usize>>,
     spans: Vec<Span<'static>>,
     inline: Inline,
     in_code_block: bool,
@@ -33,7 +42,12 @@ struct Renderer<'t> {
     lists: Vec<Option<u64>>,
     // table collection
     table: Option<Vec<Vec<String>>>,
+    table_src: Option<usize>,
     in_table_head: bool,
+    /// Source line of the event currently being processed.
+    cur_src: Option<usize>,
+    /// Source line latched for the in-progress `spans` buffer.
+    line_src: Option<usize>,
 }
 
 impl<'t> Renderer<'t> {
@@ -68,23 +82,40 @@ impl<'t> Renderer<'t> {
         style
     }
 
+    /// Every finished Line goes through here so `lines` and `src` stay in
+    /// lockstep — THE invariant of the source map.
+    fn push_line(&mut self, line: Line<'static>, src: Option<usize>) {
+        self.lines.push(line);
+        self.src.push(src);
+    }
+
+    /// Span pushes latch the current source line for the in-progress buffer.
+    fn push_span(&mut self, span: Span<'static>) {
+        if self.line_src.is_none() {
+            self.line_src = self.cur_src;
+        }
+        self.spans.push(span);
+    }
+
     fn flush(&mut self) {
         if !self.spans.is_empty() {
             let spans = std::mem::take(&mut self.spans);
-            self.lines.push(Line::from(spans));
+            let src = self.line_src.take();
+            self.push_line(Line::from(spans), src);
         }
+        self.line_src = None;
     }
 
     fn blank(&mut self) {
         self.flush();
         if !matches!(self.lines.last(), Some(l) if l.spans.is_empty()) && !self.lines.is_empty() {
-            self.lines.push(Line::default());
+            self.push_line(Line::default(), None);
         }
     }
 
     fn quote_prefix(&mut self) {
         for _ in 0..self.inline.quote_depth {
-            self.spans.push(Span::styled(
+            self.push_span(Span::styled(
                 "▍ ".to_string(),
                 Style::default().fg(self.t.accent()),
             ));
@@ -93,17 +124,22 @@ impl<'t> Renderer<'t> {
 
     fn push_text(&mut self, text: &str) {
         if self.in_code_block {
-            // Code blocks: one bg-banded row per line.
-            for line in text.split('\n') {
+            // Code blocks: one bg-banded row per line, each mapped to its own
+            // source line (the chunk's start + offset).
+            let start = self.cur_src;
+            for (i, line) in text.split('\n').enumerate() {
                 if line.is_empty() && text.ends_with('\n') {
                     continue;
                 }
                 let content = format!("  {line}");
                 let pad = (self.width as usize).saturating_sub(content.chars().count());
-                self.lines.push(Line::from(Span::styled(
-                    format!("{content}{}", " ".repeat(pad)),
-                    Style::default().fg(self.t.muted()).bg(self.t.bg_row()),
-                )));
+                self.push_line(
+                    Line::from(Span::styled(
+                        format!("{content}{}", " ".repeat(pad)),
+                        Style::default().fg(self.t.muted()).bg(self.t.bg_row()),
+                    )),
+                    start.map(|s| s + i),
+                );
             }
             return;
         }
@@ -118,8 +154,7 @@ impl<'t> Renderer<'t> {
         if self.spans.is_empty() && self.inline.quote_depth > 0 {
             self.quote_prefix();
         }
-        self.spans
-            .push(Span::styled(text.to_string(), self.style()));
+        self.push_span(Span::styled(text.to_string(), self.style()));
     }
 
     fn list_indent(&self) -> String {
@@ -130,6 +165,9 @@ impl<'t> Renderer<'t> {
         if rows.is_empty() {
             return;
         }
+        // Rows map to the table's start line + offset (header divider counts
+        // as the delimiter row) — close enough for focus banding.
+        let table_src = self.table_src.take();
         let t = self.t;
         let cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
         let mut widths = vec![0usize; cols];
@@ -157,38 +195,58 @@ impl<'t> Renderer<'t> {
                     Style::default().fg(t.divider()),
                 ));
             }
-            self.lines.push(Line::from(spans));
+            let row_src = table_src.map(|s| s + ri + usize::from(ri > 0));
+            self.push_line(Line::from(spans), row_src);
             if ri == 0 {
                 let total: usize = widths.iter().map(|w| w + 3).sum::<usize>() + 1;
-                self.lines.push(Line::from(Span::styled(
-                    "─".repeat(total.min(self.width as usize)),
-                    Style::default().fg(t.divider()),
-                )));
+                self.push_line(
+                    Line::from(Span::styled(
+                        "─".repeat(total.min(self.width as usize)),
+                        Style::default().fg(t.divider()),
+                    )),
+                    table_src.map(|s| s + 1),
+                );
             }
         }
     }
 }
 
-/// Render a markdown document to themed lines. Pure; caller windows/scrolls.
-pub fn render(text: &str, t: &Theme, width: u16) -> Vec<Line<'static>> {
+/// Render a markdown document to themed lines plus a source-line map.
+/// Pure; caller windows/scrolls.
+pub fn render(text: &str, t: &Theme, width: u16) -> Rendered {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TASKLISTS);
 
+    // Byte offset -> 0-based source line.
+    let line_starts: Vec<usize> = std::iter::once(0)
+        .chain(text.bytes().enumerate().filter_map(
+            |(i, b)| {
+                if b == b'\n' { Some(i + 1) } else { None }
+            },
+        ))
+        .collect();
+    let byte_to_line = |off: usize| line_starts.partition_point(|&s| s <= off).saturating_sub(1);
+
     let mut r = Renderer {
         t,
         width,
         lines: Vec::new(),
+        src: Vec::new(),
         spans: Vec::new(),
         inline: Inline::default(),
         in_code_block: false,
         lists: Vec::new(),
         table: None,
+        table_src: None,
         in_table_head: false,
+        cur_src: None,
+        line_src: None,
     };
 
-    for event in Parser::new_ext(text, options) {
+    for (event, range) in Parser::new_ext(text, options).into_offset_iter() {
+        r.cur_src = Some(byte_to_line(range.start));
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
                 r.blank();
@@ -205,8 +263,7 @@ pub fn render(text: &str, t: &Theme, width: u16) -> Vec<Line<'static>> {
                 } else {
                     t.highlight()
                 };
-                r.spans
-                    .push(Span::styled(format!("{icon} "), Style::default().fg(color)));
+                r.push_span(Span::styled(format!("{icon} "), Style::default().fg(color)));
             }
             Event::End(TagEnd::Heading(..)) => {
                 r.inline.heading = None;
@@ -231,12 +288,16 @@ pub fn render(text: &str, t: &Theme, width: u16) -> Vec<Line<'static>> {
                 if let CodeBlockKind::Fenced(lang) = &kind
                     && !lang.is_empty()
                 {
-                    r.lines.push(Line::from(Span::styled(
-                        format!(" {lang}"),
-                        Style::default()
-                            .fg(t.grey_fg())
-                            .add_modifier(Modifier::ITALIC),
-                    )));
+                    let src = r.cur_src;
+                    r.push_line(
+                        Line::from(Span::styled(
+                            format!(" {lang}"),
+                            Style::default()
+                                .fg(t.grey_fg())
+                                .add_modifier(Modifier::ITALIC),
+                        )),
+                        src,
+                    );
                 }
                 r.in_code_block = true;
             }
@@ -266,8 +327,8 @@ pub fn render(text: &str, t: &Theme, width: u16) -> Vec<Line<'static>> {
                     }
                     _ => Span::styled("• ".to_string(), Style::default().fg(t.highlight())),
                 };
-                r.spans.push(Span::raw(indent));
-                r.spans.push(marker);
+                r.push_span(Span::raw(indent));
+                r.push_span(marker);
             }
             Event::End(TagEnd::Item) => r.flush(),
             Event::TaskListMarker(checked) => {
@@ -288,8 +349,7 @@ pub fn render(text: &str, t: &Theme, width: u16) -> Vec<Line<'static>> {
                         t.muted(),
                     )
                 };
-                r.spans
-                    .push(Span::styled(glyph.to_string(), Style::default().fg(color)));
+                r.push_span(Span::styled(glyph.to_string(), Style::default().fg(color)));
             }
             Event::Start(Tag::Emphasis) => r.inline.italic = true,
             Event::End(TagEnd::Emphasis) => r.inline.italic = false,
@@ -302,6 +362,7 @@ pub fn render(text: &str, t: &Theme, width: u16) -> Vec<Line<'static>> {
             Event::Start(Tag::Table(_)) => {
                 r.blank();
                 r.table = Some(Vec::new());
+                r.table_src = r.cur_src;
             }
             Event::End(TagEnd::Table) => {
                 if let Some(rows) = r.table.take() {
@@ -338,16 +399,24 @@ pub fn render(text: &str, t: &Theme, width: u16) -> Vec<Line<'static>> {
             Event::HardBreak => r.flush(),
             Event::Rule => {
                 r.blank();
-                r.lines.push(Line::from(Span::styled(
-                    "─".repeat(width as usize),
-                    Style::default().fg(t.divider()),
-                )));
+                let src = r.cur_src;
+                r.push_line(
+                    Line::from(Span::styled(
+                        "─".repeat(width as usize),
+                        Style::default().fg(t.divider()),
+                    )),
+                    src,
+                );
             }
             _ => {}
         }
     }
     r.flush();
-    r.lines
+    debug_assert_eq!(r.lines.len(), r.src.len());
+    Rendered {
+        lines: r.lines,
+        src: r.src,
+    }
 }
 
 #[cfg(test)]
@@ -370,7 +439,7 @@ mod tests {
     fn renders_headings_lists_code_and_inline() {
         let t = Theme::default();
         let md = "# Title\n\nSome **bold** and `code`.\n\n- alpha\n- beta\n  - nested\n\n1. one\n2. two\n\n```rust\nfn main() {}\n```\n";
-        let lines = render(md, &t, 60);
+        let lines = render(md, &t, 60).lines;
         let texts = text_of(&lines);
         let joined = texts.join("\n");
         assert!(joined.contains("Title"));
@@ -398,7 +467,7 @@ mod tests {
     fn renders_tables_and_tasks() {
         let t = Theme::default();
         let md = "| a | b |\n|---|---|\n| 1 | 2 |\n\n- [x] done thing\n- [ ] todo thing\n";
-        let lines = render(md, &t, 60);
+        let lines = render(md, &t, 60).lines;
         let joined = text_of(&lines).join("\n");
         assert!(joined.contains("│ a"), "{joined}");
         assert!(joined.contains("│ 1"));
@@ -410,10 +479,57 @@ mod tests {
     fn quotes_and_rules() {
         let t = Theme::default();
         let md = "> wisdom here\n\n---\n\nafter\n";
-        let lines = render(md, &t, 20);
+        let lines = render(md, &t, 20).lines;
         let joined = text_of(&lines).join("\n");
         assert!(joined.contains("▍ wisdom here"));
         assert!(joined.contains("────"));
         assert!(joined.contains("after"));
+    }
+
+    /// Output index of the first line whose text contains `needle`.
+    fn find(lines: &[Line], needle: &str) -> usize {
+        text_of(lines)
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no output line contains {needle:?}"))
+    }
+
+    #[test]
+    fn source_map_stays_in_lockstep_and_points_home() {
+        let t = Theme::default();
+        // Source lines:      0        1 2         3 4        5 6      7 8
+        let md = "# Title\n\n## Alpha\n\nbody a\n\n```rust\nfn x() {}\n```\n\n## Beta\nbody b\n";
+        let r = render(md, &t, 60);
+        assert_eq!(r.lines.len(), r.src.len(), "map out of lockstep");
+
+        assert_eq!(r.src[find(&r.lines, "Title")], Some(0));
+        assert_eq!(r.src[find(&r.lines, "Alpha")], Some(2));
+        assert_eq!(r.src[find(&r.lines, "body a")], Some(4));
+        // Code interior maps to its own source line (7).
+        assert_eq!(r.src[find(&r.lines, "fn x()")], Some(7));
+        assert_eq!(r.src[find(&r.lines, "Beta")], Some(10));
+        assert_eq!(r.src[find(&r.lines, "body b")], Some(11));
+        // Spacer lines carry no source.
+        assert!(
+            r.lines
+                .iter()
+                .zip(&r.src)
+                .any(|(l, s)| l.spans.is_empty() && s.is_none())
+        );
+    }
+
+    #[test]
+    fn source_map_covers_the_other_test_docs() {
+        // Lockstep invariant on every doc the other tests exercise.
+        let t = Theme::default();
+        for md in [
+            "# Title\n\nSome **bold** and `code`.\n\n- alpha\n- beta\n  - nested\n\n1. one\n2. two\n\n```rust\nfn main() {}\n```\n",
+            "| a | b |\n|---|---|\n| 1 | 2 |\n\n- [x] done thing\n- [ ] todo thing\n",
+            "> wisdom here\n\n---\n\nafter\n",
+            "",
+        ] {
+            let r = render(md, &t, 40);
+            assert_eq!(r.lines.len(), r.src.len(), "lockstep broken for {md:?}");
+        }
     }
 }
