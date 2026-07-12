@@ -31,6 +31,9 @@ pub struct FileConfig {
     pub notifications: Option<bool>,
     /// `[models]` table: stage label -> model override ("plan-review = \"opus\"").
     pub models: Option<HashMap<String, String>>,
+    /// Fallback model(s) for headless claude runs, comma-separated — retryable
+    /// API errors (overload) switch instead of failing the run.
+    pub fallback_model: Option<String>,
     /// Hard ceiling on any check.sh invocation (hung boards, wedged builds).
     pub check_timeout_secs: Option<u64>,
     /// Air-gapped mode: skip cloud auth preflights/probes entirely.
@@ -72,6 +75,7 @@ pub struct Config {
     pub budget_daily_usd: Option<f64>,
     pub notifications: bool,
     pub models: HashMap<String, String>,
+    pub fallback_model: Option<String>,
     pub check_timeout_secs: u64,
     pub offline: bool,
     pub commands: Vec<(String, String)>,
@@ -96,6 +100,7 @@ impl Default for Config {
             budget_daily_usd: None,
             notifications: true,
             models: HashMap::new(),
+            fallback_model: None,
             check_timeout_secs: 600,
             offline: false,
             commands: Vec::new(),
@@ -174,6 +179,9 @@ impl Config {
             }
             if let Some(models) = fc.models {
                 cfg.models.extend(models);
+            }
+            if let Some(f) = fc.fallback_model {
+                cfg.fallback_model = Some(f);
             }
             if let Some(t) = fc.check_timeout_secs {
                 cfg.check_timeout_secs = t;
@@ -262,6 +270,22 @@ mod tests {
         .unwrap();
         let cfg = Config::load(tmp.path(), None, false).unwrap();
         assert!(cfg.consensus_enabled);
+    }
+
+    #[test]
+    fn fallback_model_parses() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".ritual")).unwrap();
+        std::fs::write(
+            tmp.path().join(".ritual/config.toml"),
+            "fallback_model = \"claude-sonnet-5,claude-haiku-4-5\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load(tmp.path(), None, false).unwrap();
+        assert_eq!(
+            cfg.fallback_model.as_deref(),
+            Some("claude-sonnet-5,claude-haiku-4-5")
+        );
     }
 
     #[test]

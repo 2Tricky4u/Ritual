@@ -142,6 +142,10 @@ pub fn doc_chat_command(
         cmd.argv.push("--model".into());
         cmd.argv.push(model.clone());
     }
+    if let Some(fb) = &cfg.fallback_model {
+        cmd.argv.push("--fallback-model".into());
+        cmd.argv.push(fb.clone());
+    }
     cmd
 }
 
@@ -273,6 +277,16 @@ pub fn build(
         cmd.argv.push("--model".into());
         cmd.argv.push(model.clone());
     }
+    // Overload resilience: headless claude runs retry on a fallback model
+    // instead of dying to a 529 hours into a review (interactive runs can
+    // negotiate with the user; codex has no such flag).
+    if let Some(fb) = &cfg.fallback_model
+        && cmd.mode == Mode::Headless
+        && cmd.agent == AgentKind::Claude
+    {
+        cmd.argv.push("--fallback-model".into());
+        cmd.argv.push(fb.clone());
+    }
     Ok(cmd)
 }
 
@@ -336,6 +350,42 @@ mod tests {
     fn plan_review_requires_plan_file() {
         let (_tmp, cfg, dirs) = setup();
         assert!(build(StageId::PlanReview, &cfg, &dirs, "feat-x", None).is_err());
+    }
+
+    #[test]
+    fn fallback_model_reaches_headless_claude_only() {
+        let (_tmp, mut cfg, dirs) = setup();
+        std::fs::create_dir_all(dirs.feature_dir("s")).unwrap();
+        std::fs::write(dirs.plan_file("s"), "# plan").unwrap();
+
+        // Off by default.
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None).unwrap();
+        assert!(!cmd.argv.contains(&"--fallback-model".to_string()));
+
+        cfg.fallback_model = Some("claude-sonnet-5".into());
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None).unwrap();
+        let i = cmd
+            .argv
+            .iter()
+            .position(|a| a == "--fallback-model")
+            .expect("headless claude gains the flag");
+        assert_eq!(cmd.argv[i + 1], "claude-sonnet-5");
+
+        // Interactive stages negotiate with the user — no fallback flag.
+        let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None).unwrap();
+        assert!(!cmd.argv.contains(&"--fallback-model".to_string()));
+
+        // Doc-chat is headless claude too.
+        let cmd = doc_chat_command(
+            &cfg,
+            &dirs.spec_file("s"),
+            DocKind::Spec,
+            &Scope::Whole,
+            "msg",
+            "",
+            None,
+        );
+        assert!(cmd.argv.contains(&"--fallback-model".to_string()));
     }
 
     #[test]
