@@ -706,6 +706,7 @@ impl App {
             redact: self.cfg.redaction,
             repro: None,
             cwd: run_cwd,
+            wrapper: stages::wrapper_argv(&self.cfg, cmd.mode),
         };
         let dirs = self.dirs.clone();
         let cfg = self.cfg.clone();
@@ -1097,6 +1098,7 @@ impl App {
             redact: self.cfg.redaction,
             repro: None, // chat edits are frequent + small — skip provenance
             cwd: run_cwd,
+            wrapper: stages::wrapper_argv(&self.cfg, cmd.mode),
         };
         let dirs = self.dirs.clone();
         let run_id = runner::new_run_id(&stage_label);

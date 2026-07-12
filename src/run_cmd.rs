@@ -329,6 +329,7 @@ fn run_headless(
         redact: cfg.redaction,
         repro: Some(crate::provenance::collect(cfg, dirs)),
         cwd: dirs.work_root.clone(),
+        wrapper: stages::wrapper_argv(cfg, cmd.mode),
     };
 
     // Daemonize, then follow along. Ctrl-C here leaves the run alive.
@@ -496,6 +497,7 @@ pub fn run_doc_chat(
         redact: cfg.redaction,
         repro: None, // chat edits are frequent + small — skip provenance probes
         cwd: dirs.work_root.clone(),
+        wrapper: stages::wrapper_argv(cfg, cmd.mode),
     };
     let run_id = runner::new_run_id(&stage_label);
     runner::spawn_detached(dirs, &req, &run_id)?;

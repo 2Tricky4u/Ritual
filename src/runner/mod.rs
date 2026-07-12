@@ -54,6 +54,12 @@ pub struct RunRequest {
     pub repro: Option<crate::provenance::ReproBundle>,
     /// Where the agent runs — the (work)tree being operated on.
     pub cwd: PathBuf,
+    /// Sandbox argv prefix (e.g. `srt --settings …`) prepended at spawn.
+    /// Supervisor-owned and persisted per-run: the agent can't edit it, and
+    /// resumed daemons keep the exact wrapper they started with. Empty = none.
+    /// `#[serde(default)]` keeps pre-0.5 request.json files loading.
+    #[serde(default)]
+    pub wrapper: Vec<String>,
 }
 
 /// Liveness sidecar written by the detached executor (`<run_id>.status`).
@@ -320,13 +326,17 @@ pub async fn execute_run(
         feature: req.feature.clone(),
         branch: req.branch.clone(),
         agent: req.agent.label().into(),
-        argv: req.argv.clone(),
+        // The EFFECTIVE argv, wrapper included — repro must see the sandbox.
+        argv: req.wrapper.iter().chain(req.argv.iter()).cloned().collect(),
         started_at: Some(Utc::now()),
         repro: req.repro.clone(),
         ..Default::default()
     };
 
-    let (bin, args) = req.argv.split_first().context("empty argv for agent run")?;
+    // The one spawn chokepoint: every run (pipeline, chat, bench, resume)
+    // funnels through here, so the sandbox wrapper covers them all.
+    let full: Vec<&String> = req.wrapper.iter().chain(req.argv.iter()).collect();
+    let (bin, args) = full.split_first().context("empty argv for agent run")?;
     let mut cmd = Command::new(bin);
     cmd.args(args)
         .current_dir(&req.cwd)
@@ -492,6 +502,7 @@ mod tests {
             redact: true,
             repro: None,
             cwd: tmp.path().to_path_buf(),
+            wrapper: vec![],
         };
         std::fs::write(
             request_path(&dirs, "r1"),
@@ -503,6 +514,17 @@ mod tests {
         assert_eq!(loaded.stage, "plan-review");
         // Missing file -> None, never an error.
         assert!(load_request(&dirs, "nope").is_none());
+
+        // A pre-0.5 request.json (no `wrapper` field) must still resurrect.
+        std::fs::write(
+            request_path(&dirs, "r0"),
+            r#"{"agent":"claude","argv":["claude","-p","x"],"env":[],
+                "stage":"dual-review","feature":"F","branch":"main",
+                "redact":true,"repro":null,"cwd":"/tmp"}"#,
+        )
+        .unwrap();
+        let old = load_request(&dirs, "r0").expect("pre-0.5 request loads");
+        assert!(old.wrapper.is_empty());
     }
 
     /// Regression: tail_run must not declare a run vanished while the daemon

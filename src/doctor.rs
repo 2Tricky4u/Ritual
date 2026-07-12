@@ -173,6 +173,44 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
         });
     }
 
+    // -- sandbox wrapper ----------------------------------------------------------
+    if cfg.sandbox_enabled {
+        out.push(if cfg.sandbox_wrapper.is_empty() {
+            check(
+                "sandbox",
+                CheckStatus::Fail,
+                "[sandbox] enabled but no wrapper configured — see docs/srt-settings.example.json",
+            )
+        } else if which(&cfg.sandbox_wrapper[0]) {
+            check(
+                "sandbox",
+                CheckStatus::Pass,
+                format!(
+                    "headless runs wrapped in `{}`",
+                    cfg.sandbox_wrapper.join(" ")
+                ),
+            )
+        } else {
+            check(
+                "sandbox",
+                CheckStatus::Fail,
+                format!(
+                    "wrapper `{}` not on PATH — headless runs would fail to spawn",
+                    cfg.sandbox_wrapper[0]
+                ),
+            )
+        });
+        for dep in ["bwrap", "socat"] {
+            if !which(dep) {
+                out.push(check(
+                    "sandbox",
+                    CheckStatus::Warn,
+                    format!("`{dep}` missing (pacman -S bubblewrap socat ripgrep) — srt needs it"),
+                ));
+            }
+        }
+    }
+
     // -- secrets gate -------------------------------------------------------------
     out.push(if !cfg.secrets_enabled {
         check("secrets", CheckStatus::Skipped, "disabled in [secrets]")
@@ -247,6 +285,15 @@ fn is_executable(p: &Path) -> bool {
     std::fs::metadata(p)
         .map(|m| m.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
+}
+
+/// PATH lookup (absolute/relative paths checked directly).
+fn which(bin: &str) -> bool {
+    if bin.contains('/') {
+        return is_executable(Path::new(bin));
+    }
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|d| is_executable(&d.join(bin))))
 }
 
 /// Installed skills vs the vendored set (hash compare).
