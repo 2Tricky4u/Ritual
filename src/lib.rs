@@ -3,6 +3,7 @@ pub mod bench;
 pub mod ci;
 pub mod clean;
 pub mod cli;
+pub mod coderabbit;
 pub mod config;
 pub mod doctor;
 pub mod export;

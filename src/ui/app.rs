@@ -682,6 +682,14 @@ impl App {
             if let Some(msg) = crate::secrets::preflight(&self.cfg, &self.dirs) {
                 self.status_msg = Some(msg);
             }
+            // Cloud review can take minutes — run it off the event loop; its
+            // findings file lands via the .ritual watcher when done.
+            if self.cfg.coderabbit_enabled {
+                let (cfg, dirs) = (self.cfg.clone(), self.dirs.clone());
+                std::thread::spawn(move || {
+                    let _ = crate::coderabbit::preflight(&cfg, &dirs);
+                });
+            }
         }
         self.findings_before = list_dir(&self.dirs.findings_dir());
         self.stream.clear();

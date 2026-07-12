@@ -35,6 +35,10 @@ If `${RITUAL_INVARIANTS_FILE:-.ritual/invariants.md}` exists and contains bullet
 
 If `.ritual/lessons.md` exists, Read it before reviewing. Items under "Known noise" were already reviewed and dismissed by a human — do not re-report them unless the evidence is materially new. Use "Confirmed real-bug areas" to direct extra scrutiny at the code regions where real bugs actually lived.
 
+## Third reviewer (ritual)
+
+If a fresh `*-coderabbit.json` file exists in `${RITUAL_FINDINGS_DIR:-.ritual/findings}` (generated within the last hour), Read it: those are single-source, unconfirmed comments from an independent third reviewer. Verify or refute each against the actual diff — for ones you confirm, add `"coderabbit"` to your own finding's `sources` (three sources = strongest signal); ignore the rest silently. Never copy them unverified.
+
 ## Guardrails
 
 - If the `codex` tool fails with an auth error, tell the user to run `! codex login`; offer the single-model review rather than silently degrading.

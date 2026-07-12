@@ -313,6 +313,10 @@ fn run_headless(
         if let Some(msg) = crate::secrets::preflight(cfg, dirs) {
             println!("{msg}");
         }
+        // Sequential here (CLI blocks anyway) so the skill sees the file.
+        if let Some(msg) = crate::coderabbit::preflight(cfg, dirs) {
+            println!("{msg}");
+        }
     }
     let findings_before = list_findings(&dirs.findings_dir());
 
