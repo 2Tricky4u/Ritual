@@ -485,21 +485,18 @@ fn draw_chat_preview(f: &mut Frame, app: &App, chat: &ChatState, area: Rect) {
         None => (app.dirs.spec_file(&app.slug), "spec"),
     };
     let full = std::fs::read_to_string(&path).unwrap_or_default();
-    let (header, text) = match target {
-        Some(tg) if tg.section.is_some() => {
-            let lines: Vec<&str> = full.lines().collect();
-            let end = tg.range.end.min(lines.len());
-            let start = tg.range.start.min(end);
-            (
-                format!(
-                    " {} · § {}",
-                    doc_label,
-                    tg.section.clone().unwrap_or_default()
-                ),
-                lines[start..end].join("\n"),
-            )
-        }
-        _ => (format!(" {doc_label} · whole"), full),
+    // The FULL document renders; a section target becomes a focus range —
+    // banded and auto-scrolled to, with the rest visible for context.
+    let (header, focus) = match target {
+        Some(tg) if tg.section.is_some() => (
+            format!(
+                " {} · § {}",
+                doc_label,
+                tg.section.clone().unwrap_or_default()
+            ),
+            Some(tg.range.clone()),
+        ),
+        _ => (format!(" {doc_label} · whole"), None),
     };
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -514,7 +511,7 @@ fn draw_chat_preview(f: &mut Frame, app: &App, chat: &ChatState, area: Rect) {
         ))),
         rows[0],
     );
-    draw_markdown_scrolled(f, t, rows[1], &text, 0);
+    draw_markdown_scrolled(f, t, rows[1], &full, 0, focus.as_ref());
 }
 
 /// The conversation: header + windowed transcript + a cursored input line.
@@ -1049,26 +1046,53 @@ fn draw_plan(f: &mut Frame, app: &App, area: Rect) {
         (None, Some(s)) => format!("*(no plan yet — spec below)*\n\n{s}"),
         (None, None) => "no spec or plan yet — press enter on the spec stage".into(),
     };
-    draw_markdown_scrolled(f, &app.cfg.theme, area, &text, app.plan_scroll);
+    draw_markdown_scrolled(f, &app.cfg.theme, area, &text, app.plan_scroll, None);
 }
 
 /// In-app manual: detailed guide + tips, embedded at compile time.
 fn draw_guide(f: &mut Frame, app: &App, area: Rect) {
     let text = include_str!("../../docs/guide.md");
-    draw_markdown_scrolled(f, &app.cfg.theme, area, text, app.guide_scroll);
+    draw_markdown_scrolled(f, &app.cfg.theme, area, text, app.guide_scroll, None);
 }
 
 /// Themed markdown (pulldown-cmark) with j/k scrolling and a top-right
-/// position hint — shared by the plan and guide tabs.
-fn draw_markdown_scrolled(f: &mut Frame, t: &Theme, area: Rect, text: &str, scroll: usize) {
-    let lines = crate::ui::markdown::render(text, t, area.width);
-    let total = lines.len();
+/// position hint — shared by the plan/guide tabs and the chat preview.
+/// `focus` is a SOURCE-line range: matching output lines get a subtle band,
+/// and (when the caller isn't scrolling) the view auto-scrolls to it.
+fn draw_markdown_scrolled(
+    f: &mut Frame,
+    t: &Theme,
+    area: Rect,
+    text: &str,
+    scroll: usize,
+    focus: Option<&std::ops::Range<usize>>,
+) {
+    let rendered = crate::ui::markdown::render(text, t, area.width);
+    let total = rendered.lines.len();
     let max_scroll = total.saturating_sub(area.height as usize);
-    let offset = scroll.min(max_scroll);
-    let visible: Vec<Line> = lines
+    let in_focus = |i: usize| {
+        focus.is_some_and(|r| rendered.src[i].is_some_and(|s| s >= r.start && s < r.end))
+    };
+    let mut offset = scroll.min(max_scroll);
+    if scroll == 0
+        && let Some(first) = (0..total).find(|i| in_focus(*i))
+    {
+        // One line of context above the focused section.
+        offset = first.saturating_sub(1).min(max_scroll);
+    }
+    let visible: Vec<Line> = rendered
+        .lines
         .into_iter()
+        .enumerate()
         .skip(offset)
         .take(area.height as usize)
+        .map(|(i, line)| {
+            if in_focus(i) {
+                line.style(Style::default().bg(t.bg_row2()))
+            } else {
+                line
+            }
+        })
         .collect();
     f.render_widget(Paragraph::new(visible).wrap(Wrap { trim: false }), area);
 
