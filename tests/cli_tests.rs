@@ -223,6 +223,30 @@ fn findings_exit_code_contract() {
         .arg("findings")
         .assert()
         .code(1);
+
+    // The same critical marked dismissed: unblocked (exit 0), hidden by
+    // default, visible with --all.
+    std::fs::write(
+        tmp.path()
+            .join(".ritual/findings/20260711T000001Z-dual-review.json"),
+        r#"{"ritual_findings":1,"stage":"dual-review","findings":[
+            {"id":1,"severity":"critical","title":"bad","verdict":"confirmed","action":"dismissed"}]}"#,
+    )
+    .unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("findings")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("resolved finding(s) hidden"));
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["findings", "--all"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("bad"));
 }
 
 #[test]

@@ -864,7 +864,7 @@ fn severity_pill<'a>(t: &Theme, sev: Severity) -> Vec<Span<'a>> {
 
 fn draw_findings(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.cfg.theme;
-    let agg = crate::findings::aggregate(&app.findings);
+    let agg = crate::findings::aggregate(&app.findings, app.show_resolved);
     if agg.is_empty() {
         f.render_widget(
             Paragraph::new(Span::styled(
@@ -882,7 +882,8 @@ fn draw_findings(f: &mut Frame, app: &App, area: Rect) {
     let first = app
         .selected_finding
         .saturating_sub(visible.saturating_sub(1));
-    for (i, (src, finding)) in agg.iter().enumerate().skip(first).take(visible) {
+    for (i, af) in agg.iter().enumerate().skip(first).take(visible) {
+        let (src, finding) = (&af.file_idx, &af.finding);
         let selected = i == app.selected_finding;
         let row_bg = if selected { t.bg_row2() } else { t.bg() };
         let mut spans: Vec<Span> = vec![Span::styled(" ", Style::default().bg(row_bg))];

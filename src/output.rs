@@ -88,10 +88,11 @@ pub fn render_status(cfg: &Config, features: &[(String, Feature)], current_branc
     }
 }
 
-pub fn render_findings(cfg: &Config, loaded: &[LoadedFindings], json: bool) {
+pub fn render_findings(cfg: &Config, loaded: &[LoadedFindings], json: bool, show_resolved: bool) {
     let t = &cfg.theme;
     let p = t.palette;
     if json {
+        // Scripting contract: raw and complete, never filtered.
         let all: Vec<_> = loaded.iter().map(|l| &l.file).collect();
         println!(
             "{}",
@@ -99,8 +100,8 @@ pub fn render_findings(cfg: &Config, loaded: &[LoadedFindings], json: bool) {
         );
         return;
     }
-    let agg = crate::findings::aggregate(loaded);
-    if agg.is_empty() {
+    let agg = crate::findings::aggregate(loaded, show_resolved);
+    if agg.is_empty() && crate::findings::resolved_count(loaded) == 0 {
         println!(
             "{}",
             hex(
@@ -113,7 +114,8 @@ pub fn render_findings(cfg: &Config, loaded: &[LoadedFindings], json: bool) {
     }
     println!("{}", hex(t, p.purple, "ritual — findings"));
     println!();
-    for (src_idx, f) in &agg {
+    for af in &agg {
+        let f = &af.finding;
         let sev = match f.severity {
             crate::findings::Severity::Critical => hex(t, p.red, "critical"),
             crate::findings::Severity::Major => hex(t, p.orange, "major   "),
@@ -124,7 +126,7 @@ pub fn render_findings(cfg: &Config, loaded: &[LoadedFindings], json: bool) {
         } else {
             hex(t, p.orange, "◇ single")
         };
-        let stage = &loaded[*src_idx].file.stage;
+        let stage = &loaded[af.file_idx].file.stage;
         println!(
             "  {} {} {}  {}  {}",
             t.icon_finding(),
@@ -145,6 +147,18 @@ pub fn render_findings(cfg: &Config, loaded: &[LoadedFindings], json: bool) {
                     "verdict: {}  action: {}  stage: {}",
                     f.verdict, f.action, stage
                 )
+            )
+        );
+    }
+    let hidden = crate::findings::resolved_count(loaded);
+    if !show_resolved && hidden > 0 {
+        println!();
+        println!(
+            "  {}",
+            hex(
+                t,
+                p.light_grey,
+                &format!("{hidden} resolved finding(s) hidden — `ritual findings --all`")
             )
         );
     }
