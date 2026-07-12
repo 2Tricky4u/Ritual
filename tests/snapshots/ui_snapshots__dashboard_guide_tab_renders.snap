@@ -1,0 +1,26 @@
+---
+source: tests/ui_snapshots.rs
+expression: render(&app)
+---
+"                            │   live    findings    history    plan   guide             "
+"  PIPELINE ──────────────── │─────────────────────────────────────────────────────────────"
+"  ○ spec                    │ 󰲣 Why this shape                                      5/94  "
+"  ○ plan                    │                                                             "
+"  ○ plan-review             │ Research verdict behind the workflow: external feedback     "
+"  ○ tests-red               │ (tests, execution, checks) is the quality engine — not      "
+"  ○ implement               │ model debate. A second model pays off in exactly three      "
+"  ○ dual-review             │ roles: plan critic, independent test designer, and second   "
+"                            │ reviewer. That is the pipeline.                             "
+" 󰚩 AGENTS ───────────────── │                                                             "
+"  󰚩 claude …                │ 󰲣 The pipeline                                              "
+"  󰚩 codex …                 │                                                             "
+"  󱘖 bridge …                │  • spec — you write intent in  spec.md  ( e  edits in       "
+"   nvim —                   │ $EDITOR)                                                    "
+"   check ?                  │  • plan — Claude drafts  plan.md  from the spec             "
+"                            │  • plan-review — Codex attacks the plan; bounded 2-round    "
+"   detached                 │ debate; plan revised in place                               "
+"                            │  • tests-red — Codex designs tests from the spec — written  "
+"                            │ red, no implementation                                      "
+"                            │  • implement — Claude implements until  check.sh  is green  "
+"                            │  • dual-review — both models review the diff independently; "
+" RITUAL   detached  detached                                                          "

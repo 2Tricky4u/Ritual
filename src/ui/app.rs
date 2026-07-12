@@ -23,6 +23,7 @@ pub enum Tab {
     Findings,
     History,
     Plan,
+    Guide,
 }
 
 pub const TABS: &[(Tab, &str)] = &[
@@ -30,6 +31,7 @@ pub const TABS: &[(Tab, &str)] = &[
     (Tab::Findings, "findings"),
     (Tab::History, "history"),
     (Tab::Plan, "plan"),
+    (Tab::Guide, "guide"),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +83,7 @@ pub struct App {
     pub quit: bool,
     pub palette: Option<PaletteState>,
     pub plan_scroll: usize,
+    pub guide_scroll: usize,
 
     findings_before: Vec<String>,
     run_task: Option<JoinHandle<()>>,
@@ -126,6 +129,7 @@ impl App {
             quit: false,
             palette: None,
             plan_scroll: 0,
+            guide_scroll: 0,
             findings_before: Vec::new(),
             run_task: None,
             current_run_id: None,
@@ -353,9 +357,14 @@ impl App {
             Action::TabFindings => self.tab = Tab::Findings,
             Action::TabHistory => self.tab = Tab::History,
             Action::TabPlan => self.tab = Tab::Plan,
+            Action::TabGuide => self.tab = Tab::Guide,
             Action::Down => self.nav(1),
             Action::Up => self.nav(-1),
-            Action::ScrollTop => self.stream_scroll = Some(0),
+            Action::ScrollTop => match self.tab {
+                Tab::Plan => self.plan_scroll = 0,
+                Tab::Guide => self.guide_scroll = 0,
+                _ => self.stream_scroll = Some(0),
+            },
             Action::Follow => self.stream_scroll = None,
             Action::Confirm => self.on_enter(tx),
             Action::Cancel => self.cancel_run(),
@@ -405,6 +414,9 @@ impl App {
             }
             Tab::Plan => {
                 self.plan_scroll = (self.plan_scroll as i32 + delta).max(0) as usize;
+            }
+            Tab::Guide => {
+                self.guide_scroll = (self.guide_scroll as i32 + delta).max(0) as usize;
             }
             _ => {
                 self.selected =

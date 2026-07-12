@@ -2,7 +2,7 @@
 source: tests/ui_snapshots.rs
 expression: render(&app)
 ---
-"                            │  live   findings    history    plan                       "
+"                            │  live   findings    history    plan    guide              "
 "  PIPELINE ──────────────── │─────────────────────────────────────────────────────────────"
 "  ○ spec                    │                                                             "
 "  ○ plan         ╭ command ─────────────────────────────────────────────╮                 "
@@ -18,9 +18,9 @@ expression: render(&app)
 "   nvim —        │  run plan                                            │odes             "
 "   check ?       │  run plan-review                                     │atures           "
 "                 │  run tests-red                                       │ine · cmds       "
-"   detached      │  run implement                                       │                 "
-"                 │  run dual-review                                     │ys    q  quit    "
-"                 ╰──────────────────────────────────────────────────────╯                 "
+"   detached      │  run implement                                       │ in-app          "
+"                 │  run dual-review                                     │                 "
+"                 ╰──────────────────────────────────────────────────────╯ys    q  quit    "
 "                            │                                                             "
 "                            │                                                             "
 " RITUAL   detached  detached                                                          "

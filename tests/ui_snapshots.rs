@@ -100,6 +100,15 @@ fn dashboard_plan_tab_renders_markdown() {
 }
 
 #[test]
+fn dashboard_guide_tab_renders() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_app(&tmp);
+    app.tab = Tab::Guide;
+    app.guide_scroll = 4; // land on real content, prove scrolling works
+    insta::assert_snapshot!(render(&app));
+}
+
+#[test]
 fn dashboard_palette_filters() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = setup_app(&tmp);

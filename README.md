@@ -108,7 +108,7 @@ blame = "git log --oneline -3 -- {{finding.file}}"
 
 ## Keys (defaults — all rebindable)
 
-`enter` run/open · `:` palette · `j/k` move · `tab` `1-4` panes · `[` `]` features · `a` takeover · `o` open in nvim · `Q` findings → quickfix · `c/C` check fast/full · `x` cancel · `e` editor · `r` refresh · `g/G` scroll/follow · `?` help · `q` quit
+`enter` run/open · `:` palette · `j/k` move · `tab` `1-5` panes (`5` = in-app guide & tips) · `[` `]` features · `a` takeover · `o` open in nvim · `Q` findings → quickfix · `c/C` check fast/full · `x` cancel · `e` editor · `r` refresh · `g/G` scroll/follow · `?` help · `q` quit
 
 ## Design notes
 
