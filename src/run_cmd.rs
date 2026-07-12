@@ -474,8 +474,8 @@ pub fn run_doc_chat(
     };
     std::fs::create_dir_all(dirs.feature_dir(&slug))?;
     let doc_before = std::fs::read_to_string(&doc_path).unwrap_or_default();
-    // Same pre-edit snapshot the TUI writes: CLI chats are Ctrl+Z-undoable.
-    let _ = std::fs::write(dirs.undo_file(&slug, kind.label()), &doc_before);
+    // Same pre-edit snapshot stack the TUI pushes: CLI chats are undoable too.
+    let _ = crate::undo::push(dirs, &slug, kind.label(), &doc_before);
 
     // Plan targets carry the spec path so a missing plan drafts from it.
     let spec_path = (kind == stages::DocKind::Plan && dirs.spec_file(&slug).exists())

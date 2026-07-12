@@ -19,6 +19,8 @@ const GITIGNORE_ENTRIES: &[&str] = &[
     ".ritual/ci/",
     ".ritual/state.json",
     ".ritual/features/*/.*.undo",
+    ".ritual/features/*/.undo/",
+    ".ritual/features/*/.redo/",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
