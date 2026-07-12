@@ -154,3 +154,96 @@ plan-review = "opus"
   locally, fire reviews when you're back on a real connection.
 - `NO_COLOR=1 ritual status` / `--ascii` for logs and plain terminals
   — every state is readable without color.
+
+## A full run, start to finish
+
+A concrete walkthrough of one feature, touching every part of the tool.
+Keys are shown as `⟨key⟩`. The sidebar (left) always shows three
+sections — FEATURES, PIPELINE, AGENTS; the main pane (right) is the
+five tabs.
+
+**0. Open ritual.** Run `ritual init` once in your repo (scaffolds
+`.ritual/`, `check.sh`, `CLAUDE.md`), then just `ritual`. You land on
+the **live** tab (`⟨1⟩`) showing the greeter. Bottom line is the
+powerline statusline: branch, today's spend vs budget, check state.
+
+**1. Name the feature.** In another shell: `ritual new "Audio engine"`.
+For parallel work that shouldn't touch your current branch, use a
+worktree: `ritual new --worktree feat/audio` (own checkout, shared
+`.ritual`). Back in the TUI, `⟨r⟩` refreshes; the feature shows in the
+FEATURES section. `⟨[⟩` / `⟨]⟩` cycle features — needs-you ones sort
+first, flagged with a yellow ``.
+
+**2. Write the spec.** The PIPELINE section lists the six stages with
+one highlighted. On the greeter, `⟨j⟩`/`⟨k⟩` move that highlight;
+land on `spec` and press `⟨enter⟩`. ritual opens `spec.md` in your
+`$EDITOR` (the TUI hands over the terminal, then takes it back on
+exit). Write what you want built, `:wq`. The stage flips to **done**
+if you wrote real content, stays pending if you only left comments.
+
+**3. Draft the plan.** Highlight `plan`, `⟨enter⟩` → an interactive
+Claude session opens (plan mode). When it saves `plan.md` and exits,
+the stage goes done. Read the result on the **plan** tab (`⟨4⟩`) —
+it's rendered markdown; `⟨j⟩`/`⟨k⟩` scroll, `⟨g⟩` jumps to top.
+
+**4. Cross-review the plan.** The fastest way to run any stage from
+anywhere is the command palette: `⟨:⟩`, type `run plan-review`,
+`⟨enter⟩` (fuzzy — `rpl` works). Claude and Codex now debate the plan.
+This is a **daemon**: the **live** tab (`⟨1⟩`) streams both models;
+the statusline budget meter ticks up. You can quit ritual entirely
+(`⟨q⟩`) and reopen later — it reattaches to the running daemon. Press
+`⟨a⟩` to take the session over in interactive Claude (`--resume`).
+`⟨x⟩` cancels. When it finishes you get a desktop notification and the
+stage shows **needs-you** (a human decides).
+
+**5. Triage findings.** Switch to the **findings** tab (`⟨2⟩`). Each
+finding is a severity pill (crit/major/minor); a green **◆ both**
+badge means *both* models flagged it — treat those as blockers.
+`⟨j⟩`/`⟨k⟩` select. Then either `⟨o⟩` (open the file:line in your
+already-running nvim), `⟨Q⟩` (push *all* findings to nvim's quickfix
+list — `:cnext` through them), or `⟨e⟩` (open in `$EDITOR`). Edit
+`plan.md` to address them; re-run `plan-review` if the plan changed
+materially.
+
+**6. Tests first.** Palette → `run tests-red`: Codex designs tests
+from the *spec* (not from your plan, and never the model that will
+implement), written **failing**. Press `⟨c⟩` to run `check.sh fast` —
+red, as expected. This is the whole point: the test author and the
+implementer are different models.
+
+**7. Implement.** Palette → `run implement`: Claude codes until the
+suite is green. As it edits, the global PostToolUse hook auto-runs
+`check.sh` and feeds failures back. You can also press `⟨c⟩` (fast) or
+`⟨C⟩` (full) yourself; the check segment in the statusline goes
+green/red. The stage completes when `check.sh` passes.
+
+**8. Final review.** Palette → `run dual-review`: both models review
+the actual diff independently, findings merged into tab `⟨2⟩` again.
+Fix every **◆ both**, re-run `⟨C⟩`, then accept. In CI you'd run this
+headless instead: `ritual run dual-review --ci` writes JUnit XML and
+exits nonzero on blocking findings.
+
+**9. Wrap up and prove it.** From the shell (or the palette's custom
+commands):
+- `ritual report --pdf` — a shareable report from every artifact
+  (redacted, safe to commit).
+- **history** tab (`⟨3⟩`) or `ritual history` — cost, tokens, duration
+  per run; the statusline shows today's total vs your `budget_daily_usd`.
+- `ritual verify-log` — proves the tamper-evident hash chain over all
+  runs is intact.
+- `ritual repro <run-id>` — the exact models, CLI versions, and git sha
+  a run used, diffed against your current environment.
+- `ritual export` — OTLP-JSON spans for a tracing backend.
+- `ritual bench plan-review --runs 5 --golden expected.json` — measure
+  a stage's quality/recall across repeats when tuning models or prompts.
+
+**Throughout:** secrets are redacted before anything is archived;
+runs survive the TUI dying; the daily budget refuses new runs past the
+ceiling (`--force` overrides once); `offline = true` blocks agent calls
+for metered connections. Nothing here needs the cloud except the agent
+calls themselves — archives, findings, reports, and the chain are all
+local files.
+
+That's the loop: **spec → plan → plan-review → tests-red → implement →
+dual-review**, with two models keeping each other honest and
+`check.sh` keeping both honest.
