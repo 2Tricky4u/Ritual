@@ -4,3 +4,4 @@
 .ritual/logs/
 .ritual/state.json
 .cargo/
+*.snap.new
