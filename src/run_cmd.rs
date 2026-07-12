@@ -366,6 +366,8 @@ pub fn run_doc_chat(
     };
     std::fs::create_dir_all(dirs.feature_dir(&slug))?;
     let doc_before = std::fs::read_to_string(&doc_path).unwrap_or_default();
+    // Same pre-edit snapshot the TUI writes: CLI chats are Ctrl+Z-undoable.
+    let _ = std::fs::write(dirs.undo_file(&slug, kind.label()), &doc_before);
 
     let cmd = stages::doc_chat_command(cfg, &doc_path, kind, &scope, message, "");
     let stage_label = format!("{}-chat", kind.label());
