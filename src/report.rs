@@ -156,6 +156,23 @@ pub fn generate(
             ));
         }
         md.push_str(&format!("\nTotal recorded spend: ${total_cost:.2}.\n\n"));
+
+        // Where the money goes: per-stage rollup with cache economics.
+        md.push_str("### Cost by stage\n\n");
+        md.push_str("| stage | runs | total | avg | cache hit |\n|---|---|---|---|---|\n");
+        for s in crate::history::by_stage(&metas, crate::history::CostWindow::All) {
+            md.push_str(&format!(
+                "| {} | {} | ${:.2} | ${:.2} | {} |\n",
+                s.stage,
+                s.runs,
+                s.total_usd,
+                s.total_usd / s.runs.max(1) as f64,
+                s.cache_hit_pct()
+                    .map(|x| format!("{x:.0}%"))
+                    .unwrap_or_else(|| "-".into()),
+            ));
+        }
+        md.push('\n');
     }
 
     // Redact and write.

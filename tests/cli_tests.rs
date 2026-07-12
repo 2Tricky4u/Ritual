@@ -154,6 +154,60 @@ fn run_plan_review_e2e_with_fake_agent() {
 }
 
 #[test]
+fn costs_rolls_up_per_stage_with_cache_rates() {
+    let tmp = setup_project();
+    std::fs::create_dir_all(tmp.path().join(".ritual/runs")).unwrap();
+    let today = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+    for (name, stage, cost) in [
+        ("20260711T000001Z-1-dual-review", "dual-review", 2.5),
+        ("20260711T000002Z-2-dual-review", "dual-review", 1.5),
+        ("20260711T000003Z-3-plan-review", "plan-review", 0.5),
+    ] {
+        std::fs::write(
+            tmp.path().join(format!(".ritual/runs/{name}.meta.json")),
+            format!(
+                r#"{{"run_id":"{name}","stage":"{stage}","started_at":"{today}",
+                    "total_cost_usd":{cost},
+                    "usage":{{"input_tokens":100,"output_tokens":50,
+                              "cache_read_input_tokens":900,"cache_creation_input_tokens":10}}}}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    let out = Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["costs", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["all_time"][0]["stage"], "dual-review"); // biggest spend first
+    assert_eq!(v["all_time"][0]["runs"], 2);
+    assert_eq!(v["all_time"][0]["total_usd"], 4.0);
+    assert_eq!(v["all_time"][0]["cache_read"], 1800);
+    assert_eq!(v["today"][1]["stage"], "plan-review");
+
+    // Styled output renders the gauge line when a budget is set.
+    std::fs::write(
+        tmp.path().join(".ritual/config.toml"),
+        "budget_daily_usd = 10.0\n",
+    )
+    .unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("costs")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cache"))
+        .stdout(predicate::str::contains("daily budget: $4.50 / $10.00"));
+}
+
+#[test]
 fn lessons_distill_dispositions_and_refresh_before_dual_review() {
     let tmp = setup_project();
     std::fs::create_dir_all(tmp.path().join(".ritual/findings")).unwrap();

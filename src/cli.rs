@@ -54,6 +54,13 @@ pub enum Command {
         #[arg(long)]
         stdout: bool,
     },
+    /// Per-stage cost analytics: today / 7 days / all time, cache-hit rates,
+    /// daily-budget gauge
+    Costs {
+        /// Emit machine-readable JSON (per-stage rollups per window)
+        #[arg(long)]
+        json: bool,
+    },
     /// Show past agent runs (tokens, cost, duration)
     History {
         /// Max runs to display
