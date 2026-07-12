@@ -29,8 +29,15 @@ const PLAN_REVIEW_TOOLS: &str =
     "Read Glob Grep Edit Write Bash(git *) mcp__codex__codex mcp__codex__codex-reply";
 const DUAL_REVIEW_TOOLS: &str =
     "Task Read Glob Grep Edit Write Bash mcp__codex__codex mcp__codex__codex-reply";
-/// The doc-chat agent only reads and edits the one document it's given.
-const DOC_CHAT_TOOLS: &str = "Read Edit Write";
+/// The doc-chat agent may read anything but edit ONLY the one document it's
+/// given. Path rules are gitignore-style; a single leading '/' anchors at the
+/// settings source, so a filesystem-absolute path needs '//'. Enforced by
+/// `dontAsk` mode — `acceptEdits` would auto-approve edits everywhere and
+/// defeat the scoping (verified against the permission docs).
+fn doc_chat_tools(doc_path: &Path) -> String {
+    let p = doc_path.display().to_string(); // absolute, starts with '/'
+    format!("Read,Edit(/{p}),Write(/{p})")
+}
 
 /// Which ritual document a chat edit targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,10 +105,13 @@ pub fn doc_chat_command(
                 "--output-format".into(),
                 "stream-json".into(),
                 "--verbose".into(),
+                // dontAsk: everything outside the allow rules is denied
+                // instantly (no headless hang) — the doc is the only
+                // writable file.
                 "--permission-mode".into(),
-                "acceptEdits".into(),
+                "dontAsk".into(),
                 "--allowedTools".into(),
-                DOC_CHAT_TOOLS.into(),
+                doc_chat_tools(doc_path),
                 "--max-budget-usd".into(),
                 cfg.budget_doc_chat_usd.to_string(),
             ],
@@ -334,7 +344,21 @@ mod tests {
         assert!(prompt.contains("add a retry invariant"));
         assert!(prompt.contains("RECENT CONVERSATION"));
         assert!(cmd.argv.contains(&"stream-json".to_string()));
-        assert!(cmd.argv.contains(&DOC_CHAT_TOOLS.to_string()));
+        // Hard scoping: dontAsk mode + Edit/Write rules anchored to THE doc
+        // with the '//' filesystem-absolute form; Read stays unrestricted.
+        assert!(cmd.argv.contains(&"dontAsk".to_string()));
+        assert!(!cmd.argv.contains(&"acceptEdits".to_string()));
+        let tools = cmd
+            .argv
+            .iter()
+            .find(|a| a.starts_with("Read,"))
+            .expect("allowedTools value");
+        assert!(tools.contains(&format!(
+            "Edit(//{})",
+            path.display().to_string().trim_start_matches('/')
+        )));
+        assert!(tools.starts_with("Read,Edit(//"));
+        assert!(tools.contains("Write(//"));
 
         // Whole scope + empty context omit the section/context lines; model
         // routing appends --model.
