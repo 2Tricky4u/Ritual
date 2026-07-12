@@ -12,6 +12,7 @@ pub mod keymap;
 pub mod notify;
 pub mod nvim;
 pub mod output;
+pub mod pr_comment;
 pub mod provenance;
 pub mod redact;
 pub mod report;

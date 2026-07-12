@@ -44,6 +44,8 @@ pub struct FileConfig {
     pub commands: Option<HashMap<String, String>>,
     /// `[consensus]` table: the optional third-model arbitration tier.
     pub consensus: Option<ConsensusFileConfig>,
+    /// argv for the GitHub CLI (pr-comment), e.g. "gh".
+    pub gh_cmd: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -75,6 +77,7 @@ pub struct Config {
     pub commands: Vec<(String, String)>,
     pub nvim_server: Option<String>,
     pub consensus_enabled: bool,
+    pub gh_cmd: Vec<String>,
 }
 
 impl Default for Config {
@@ -98,6 +101,7 @@ impl Default for Config {
             commands: Vec::new(),
             nvim_server: None,
             consensus_enabled: false,
+            gh_cmd: vec!["gh".into()],
         }
     }
 }
@@ -195,6 +199,9 @@ impl Config {
             {
                 cfg.consensus_enabled = enabled;
             }
+            if let Some(g) = fc.gh_cmd {
+                cfg.gh_cmd = split_cmd(&g)?;
+            }
         }
 
         // Env overrides (also the test seam).
@@ -203,6 +210,9 @@ impl Config {
         }
         if let Ok(c) = std::env::var("RITUAL_CODEX_CMD") {
             cfg.codex_cmd = split_cmd(&c)?;
+        }
+        if let Ok(c) = std::env::var("RITUAL_GH_CMD") {
+            cfg.gh_cmd = split_cmd(&c)?;
         }
 
         // CLI flags win.

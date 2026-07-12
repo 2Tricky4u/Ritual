@@ -516,6 +516,62 @@ fn worktree_feature_shares_state_and_resolves_dirs() {
 }
 
 #[test]
+fn pr_comment_posts_redacted_summary_via_fake_gh() {
+    let tmp = setup_project();
+    let fake_gh = format!("{}/tests/fake_gh.sh", env!("CARGO_MANIFEST_DIR"));
+
+    // No findings yet: clean error.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_GH_CMD", &fake_gh)
+        .arg("pr-comment")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no dual-review findings"));
+
+    // A findings file with an open critical (with a seeded secret), a
+    // dismissed finding, and an unconfirmed one.
+    std::fs::write(
+        tmp.path()
+            .join(".ritual/findings/20260712T190000Z-dual-review.json"),
+        r#"{"ritual_findings":1,"stage":"dual-review","branch":"main",
+            "generated_at":"2026-07-12T19:00:00Z",
+            "source_models":{"claude":"c","codex":"x"},
+            "findings":[
+              {"id":1,"severity":"critical","title":"token leak","file":"src/a.rs","line":3,
+               "scenario":"api_key = \"hunter2hunter2\" in logs","sources":["claude","codex"],
+               "verdict":"confirmed","action":"pending"},
+              {"id":2,"severity":"major","title":"already dismissed","verdict":"confirmed","action":"dismissed"}
+            ]}"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_GH_CMD", &fake_gh)
+        .env("FAKE_GH_LOG_DIR", tmp.path())
+        .args(["pr-comment", "--inline"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("posted summary comment on #7"))
+        .stdout(predicate::str::contains("inline:"));
+
+    // The fake gh recorded the body: open finding present, dismissed one
+    // absent, and the assignment-shaped secret redacted.
+    let body = std::fs::read_to_string(tmp.path().join("gh-stdin.log")).unwrap();
+    assert!(body.contains("token leak"));
+    assert!(!body.contains("already dismissed"));
+    assert!(body.contains("[REDACTED"), "secret survived: {body}");
+    assert!(!body.contains("hunter2hunter2"));
+    // Inline call went to the pulls comments API with the head commit.
+    let args = std::fs::read_to_string(tmp.path().join("gh-args.log")).unwrap();
+    assert!(args.contains("pulls/7/comments"));
+    assert!(args.contains("commit_id=abc123def456"));
+}
+
+#[test]
 fn doctor_passes_healthy_and_fails_without_check_sh() {
     let tmp = setup_project();
     // Skills installed into a fake home so the drift check passes.
