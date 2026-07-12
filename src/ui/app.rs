@@ -520,7 +520,7 @@ impl App {
             Action::Takeover => self.takeover(),
             Action::NvimOpen => self.nvim_open(),
             Action::NvimQuickfix => self.nvim_quickfix(),
-            Action::SpecChat => self.open_chat(),
+            Action::SpecChat => self.open_chat(tx),
             Action::FindingFix => self.finding_set_action("fixed"),
             Action::FindingDismiss => self.finding_set_action("dismissed"),
             Action::ToggleResolved => {
@@ -799,7 +799,7 @@ impl App {
 
     /// Open the interactive chat over this feature's spec (and plan, if it
     /// exists). Ensures spec.md exists so there is always something to edit.
-    fn open_chat(&mut self) {
+    fn open_chat(&mut self, tx: &mpsc::Sender<AppMsg>) {
         let spec = self.dirs.spec_file(&self.slug);
         if !spec.exists() {
             let _ = std::fs::create_dir_all(self.dirs.feature_dir(&self.slug));
@@ -815,7 +815,7 @@ impl App {
             );
         }
         let targets = self.build_chat_targets();
-        self.chat = Some(ChatState {
+        let mut chat = ChatState {
             transcript: Vec::new(),
             input: Vec::new(),
             cursor: 0,
@@ -824,7 +824,44 @@ impl App {
             scroll: 0,
             in_flight: false,
             pending: Default::default(),
-        });
+        };
+        // Reattach: a chat edit daemonized before the TUI died is still live —
+        // rebuild the view around it instead of orphaning it (the archive
+        // replay repaints the assistant turn; completion lands normally).
+        if self.chat_task.is_none()
+            && let Some((run_id, status)) = runner::live_runs(&self.dirs)
+                .into_iter()
+                .rev()
+                .find(|(_, s)| s.stage.ends_with("-chat") && s.branch == self.branch)
+        {
+            let doc = if status.stage.starts_with("plan") {
+                stages::DocKind::Plan
+            } else {
+                stages::DocKind::Spec
+            };
+            if let Some(i) = chat
+                .targets
+                .iter()
+                .position(|t| t.doc == doc && t.section.is_none())
+            {
+                chat.target_idx = i;
+            }
+            let doc_path = match doc {
+                stages::DocKind::Plan => self.dirs.plan_file(&self.slug),
+                stages::DocKind::Spec => self.dirs.spec_file(&self.slug),
+            };
+            self.doc_before = std::fs::read_to_string(&doc_path).unwrap_or_default();
+            chat.in_flight = true;
+            chat.transcript.push(ChatTurn::System(format!(
+                "reattached to in-flight {} ({run_id})",
+                status.stage
+            )));
+            let agent = runner::load_request(&self.dirs, &run_id)
+                .map(|r| r.agent)
+                .unwrap_or(runner::AgentKind::Claude);
+            self.attach_chat_tail(run_id, agent, tx);
+        }
+        self.chat = Some(chat);
     }
 
     /// The editable targets: spec (whole + each `##` section), then plan the
@@ -1153,17 +1190,33 @@ impl App {
             cwd: run_cwd,
             wrapper: stages::wrapper_argv(&self.cfg, cmd.mode),
         };
-        let dirs = self.dirs.clone();
         let run_id = runner::new_run_id(&stage_label);
+        if let Err(e) = runner::spawn_detached(&self.dirs, &req, &run_id) {
+            if let Some(chat) = self.chat.as_mut() {
+                chat.in_flight = false;
+                chat.transcript
+                    .push(ChatTurn::System(format!("chat failed to start: {e:#}")));
+            }
+            return;
+        }
+        self.attach_chat_tail(run_id, req.agent, tx);
+    }
+
+    /// Follow a chat run (just spawned OR reattached after a TUI restart):
+    /// `tail_run` replays the archive from byte 0 and then follows, so the
+    /// assistant turn rebuilds itself through the normal ChatAgent path and
+    /// completion lands as ChatExited either way.
+    fn attach_chat_tail(
+        &mut self,
+        run_id: String,
+        agent: runner::AgentKind,
+        tx: &mpsc::Sender<AppMsg>,
+    ) {
+        let dirs = self.dirs.clone();
         self.current_chat_run_id = Some(run_id.clone());
         let tx_events = tx.clone();
         let tx_done = tx.clone();
         self.chat_task = Some(tokio::spawn(async move {
-            let agent = req.agent;
-            if let Err(e) = runner::spawn_detached(&dirs, &req, &run_id) {
-                let _ = tx_done.send(AppMsg::ChatExited(Box::new(Err(e)))).await;
-                return;
-            }
             let (etx, mut erx) = mpsc::channel::<AgentEvent>(256);
             let forward = tokio::spawn(async move {
                 while let Some(ev) = erx.recv().await {
@@ -1886,6 +1939,48 @@ mod tests {
         assert!(newest_resumable_run(&dirs).is_none());
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_chat_reattaches_to_a_live_chat_run() {
+        let (_t, mut app, tx, _rx) = test_app();
+        let runs = app.dirs.runs_dir();
+        std::fs::create_dir_all(&runs).unwrap();
+        let pid = std::process::id(); // our own pid: definitely alive
+        std::fs::write(
+            runs.join("20260712T000009Z-9-9-spec-chat.status"),
+            format!(
+                r#"{{"pid":{pid},"stage":"spec-chat","branch":"{}"}}"#,
+                app.branch
+            ),
+        )
+        .unwrap();
+        std::fs::write(runs.join("20260712T000009Z-9-9-spec-chat.jsonl"), "").unwrap();
+
+        app.open_chat(&tx);
+        {
+            let chat = app.chat.as_ref().unwrap();
+            assert!(chat.in_flight, "reattached chat is in flight");
+            assert!(
+                matches!(&chat.transcript[0], ChatTurn::System(s) if s.contains("reattached")),
+                "transcript starts with the reattach note"
+            );
+        }
+        assert!(
+            app.current_chat_run_id
+                .as_deref()
+                .unwrap()
+                .ends_with("spec-chat")
+        );
+        assert!(app.chat_task.is_some(), "tail task follows the daemon");
+        app.chat_task.take().unwrap().abort();
+        app.current_chat_run_id = None;
+
+        // No live chat run -> a plain fresh chat.
+        std::fs::remove_file(runs.join("20260712T000009Z-9-9-spec-chat.status")).unwrap();
+        app.open_chat(&tx);
+        assert!(!app.chat.as_ref().unwrap().in_flight);
+        assert!(app.chat.as_ref().unwrap().transcript.is_empty());
+    }
+
     #[test]
     fn finding_lifecycle_marks_and_clamps() {
         let (_t, mut app, tx, _rx) = test_app();
@@ -1939,7 +2034,7 @@ mod tests {
     #[test]
     fn chat_input_edits_with_a_real_cursor() {
         let (_t, mut app, tx, _rx) = test_app();
-        app.open_chat();
+        app.open_chat(&tx);
         for c in "helo".chars() {
             send(&mut app, &tx, KeyCode::Char(c));
         }
@@ -1974,7 +2069,7 @@ mod tests {
     #[test]
     fn chat_ctrl_chords_do_not_type_letters() {
         let (_t, mut app, tx, _rx) = test_app();
-        app.open_chat();
+        app.open_chat(&tx);
         // Ctrl+Z on a fresh chat: no snapshot -> "nothing to undo" note, and
         // crucially no literal 'z' lands in the input.
         app.chat_input(
@@ -2000,7 +2095,7 @@ mod tests {
     #[test]
     fn chat_alt_enter_inserts_newline_and_enter_still_submits() {
         let (_t, mut app, tx, _rx) = test_app();
-        app.open_chat();
+        app.open_chat(&tx);
         for c in "ab".chars() {
             app.chat_input(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), &tx);
         }
@@ -2019,7 +2114,7 @@ mod tests {
     #[test]
     fn chat_undo_swaps_doc_and_snapshot() {
         let (_t, mut app, tx, _rx) = test_app();
-        app.open_chat();
+        app.open_chat(&tx);
         let spec = app.dirs.spec_file(&app.slug);
         // Simulate an edit cycle: snapshot the old content, then "Claude"
         // writes new content (this is what spawn_doc_chat does pre-run).
@@ -2046,7 +2141,7 @@ mod tests {
     #[test]
     fn chat_enter_while_in_flight_queues_with_cap() {
         let (_t, mut app, tx, _rx) = test_app();
-        app.open_chat();
+        app.open_chat(&tx);
         app.chat.as_mut().unwrap().in_flight = true;
         let type_and_enter = |app: &mut App, tx: &mpsc::Sender<AppMsg>, s: &str| {
             for c in s.chars() {
@@ -2086,7 +2181,7 @@ mod tests {
     #[test]
     fn chat_cancel_resets_in_flight() {
         let (_t, mut app, tx, _rx) = test_app();
-        app.open_chat();
+        app.open_chat(&tx);
         // Nothing in flight: informational note only.
         app.chat_input(
             KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
@@ -2115,7 +2210,7 @@ mod tests {
     #[test]
     fn chat_input_is_utf8_safe() {
         let (_t, mut app, tx, _rx) = test_app();
-        app.open_chat();
+        app.open_chat(&tx);
         for c in "café".chars() {
             send(&mut app, &tx, KeyCode::Char(c));
         }
@@ -2128,8 +2223,8 @@ mod tests {
 
     #[test]
     fn chat_submit_records_clears_and_guards() {
-        let (_t, mut app, _tx, _rx) = test_app();
-        app.open_chat();
+        let (_t, mut app, tx, _rx) = test_app();
+        app.open_chat(&tx);
         assert!(
             app.chat_take_submit().is_none(),
             "empty input submits nothing"
@@ -2154,7 +2249,7 @@ mod tests {
     #[test]
     fn chat_tab_cycles_targets_and_esc_closes() {
         let (_t, mut app, tx, _rx) = test_app();
-        app.open_chat();
+        app.open_chat(&tx);
         let n = app.chat.as_ref().unwrap().targets.len();
         assert!(n >= 5, "spec whole + 4 sections expected, got {n}");
         send(&mut app, &tx, KeyCode::Tab);
@@ -2169,8 +2264,8 @@ mod tests {
 
     #[test]
     fn open_chat_seeds_spec_and_targets() {
-        let (_t, mut app, _tx, _rx) = test_app();
-        app.open_chat();
+        let (_t, mut app, tx, _rx) = test_app();
+        app.open_chat(&tx);
         // spec.md was created from the template.
         assert!(app.dirs.spec_file(&app.slug).exists());
         let chat = app.chat.as_ref().unwrap();
