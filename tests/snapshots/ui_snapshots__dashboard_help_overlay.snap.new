@@ -1,5 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
+assertion_line: 149
 expression: render(&app)
 ---
 "                      ╭ keys ──────────────────────────────────────╮   guide              "

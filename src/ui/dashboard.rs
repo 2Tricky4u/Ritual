@@ -425,6 +425,17 @@ fn draw_main(f: &mut Frame, app: &App, area: Rect) {
         chunks[2].width.saturating_sub(2),
         chunks[2].height,
     );
+    // A one-row `/` filter bar sits above the findings/history list when active.
+    let content = if app.filter_active() {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(content);
+        draw_filter_bar(f, app, rows[0]);
+        rows[1]
+    } else {
+        content
+    };
     match app.tab {
         Tab::Live => draw_live(f, app, content),
         Tab::Findings => draw_findings(f, app, content),
@@ -432,6 +443,33 @@ fn draw_main(f: &mut Frame, app: &App, area: Rect) {
         Tab::Plan => draw_plan(f, app, content),
         Tab::Guide => draw_guide(f, app, content),
     }
+}
+
+/// The `/` filter bar: the live needle plus a match count, a caret while
+/// typing. Rendered only when [`App::filter_active`].
+fn draw_filter_bar(f: &mut Frame, app: &App, area: Rect) {
+    let t = &app.cfg.theme;
+    let count = match app.tab {
+        Tab::Findings => app.visible_findings().len(),
+        Tab::History => app.visible_metas().len(),
+        _ => 0,
+    };
+    let caret = if app.filter_editing { "▏" } else { "" };
+    let spans = vec![
+        Span::styled(" / ", Style::default().fg(t.accent()).bg(t.bg_row())),
+        Span::styled(
+            format!("{}{caret}", app.filter),
+            Style::default().fg(t.fg()).bg(t.bg_row()),
+        ),
+        Span::styled(
+            format!("  {count} match{}", if count == 1 { "" } else { "es" }),
+            Style::default().fg(t.comment()).bg(t.bg_row()),
+        ),
+    ];
+    f.render_widget(
+        Paragraph::new(fill_row(spans, area.width, t.bg_row())),
+        area,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -680,7 +718,7 @@ fn draw_greeter(f: &mut Frame, t: &Theme, area: Rect) {
         ("pipeline", "spec → plan → review → tests → impl → dual"),
         ("chat", "s — chat to write/edit the spec or plan live"),
         ("runs", "daemons: quit freely, reattach · a takeover"),
-        ("findings", "f fix · d dismiss · Q quickfix · o nvim"),
+        ("findings", "f fix · d dismiss · / filter · Q quickfix"),
         ("gates", "mutants · secrets · lessons · invariants"),
         ("money", "daily budget · per-run caps · costs"),
         ("safety", "redaction · verify-log chain · repro"),
@@ -906,14 +944,16 @@ fn severity_pill<'a>(t: &Theme, sev: Severity) -> Vec<Span<'a>> {
 
 fn draw_findings(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.cfg.theme;
-    let agg = crate::findings::aggregate(&app.findings, app.show_resolved);
+    let agg = app.visible_findings();
     if agg.is_empty() {
+        let msg = if app.filter_active() {
+            "no findings match the filter"
+        } else {
+            "no findings — run plan-review or dual-review"
+        };
         f.render_widget(
-            Paragraph::new(Span::styled(
-                "no findings — run plan-review or dual-review",
-                Style::default().fg(t.comment()),
-            ))
-            .alignment(Alignment::Center),
+            Paragraph::new(Span::styled(msg, Style::default().fg(t.comment())))
+                .alignment(Alignment::Center),
             Rect::new(area.x, area.y + area.height / 2, area.width, 1),
         );
         return;
@@ -1002,20 +1042,22 @@ fn draw_findings(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_history(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.cfg.theme;
-    if app.metas.is_empty() {
+    let metas = app.visible_metas();
+    if metas.is_empty() {
+        let msg = if app.filter_active() {
+            "no runs match the filter"
+        } else {
+            "no runs yet"
+        };
         f.render_widget(
-            Paragraph::new(Span::styled(
-                "no runs yet",
-                Style::default().fg(t.comment()),
-            ))
-            .alignment(Alignment::Center),
+            Paragraph::new(Span::styled(msg, Style::default().fg(t.comment())))
+                .alignment(Alignment::Center),
             Rect::new(area.x, area.y + area.height / 2, area.width, 1),
         );
         return;
     }
     let mut lines: Vec<Line> = vec![Line::default()];
-    for (i, m) in app
-        .metas
+    for (i, m) in metas
         .iter()
         .take((area.height as usize).saturating_sub(1))
         .enumerate()
@@ -1299,6 +1341,7 @@ fn draw_help(f: &mut Frame, t: &Theme) {
                 ("f", "mark fixed (toggle)"),
                 ("d", "dismiss (toggle)"),
                 ("v", "show/hide resolved"),
+                ("/", "filter list (2/3)"),
             ],
         ),
         (

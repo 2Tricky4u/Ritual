@@ -81,6 +81,10 @@ pub struct App {
     pub selected_finding: usize,
     /// Show findings already marked fixed/dismissed (toggled with `v`).
     pub show_resolved: bool,
+    /// `/` filter over the findings/history lists (empty = inactive).
+    pub filter: String,
+    /// True while typing the filter (keys feed it instead of navigating).
+    pub filter_editing: bool,
     pub metas: Vec<RunMeta>,
     pub check: CheckState,
     pub agents: crate::agents_status::AgentsStatus,
@@ -206,6 +210,8 @@ impl App {
             findings,
             selected_finding: 0,
             show_resolved: false,
+            filter: String::new(),
+            filter_editing: false,
             metas,
             check: CheckState::Unknown,
             agents: Default::default(),
@@ -447,6 +453,10 @@ impl App {
             self.chat_input(key, tx);
             return;
         }
+        if self.filter_editing {
+            self.filter_input(key.code);
+            return;
+        }
         // Ctrl-C always quits, even if rebound away.
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.quit = true;
@@ -455,6 +465,92 @@ impl App {
         if let Some(action) = self.cfg.keymap.resolve(key.code, key.modifiers) {
             self.dispatch(action, tx);
         }
+    }
+
+    /// The `/` filter is meaningful only on the findings and history lists.
+    fn tab_is_filterable(&self) -> bool {
+        matches!(self.tab, Tab::Findings | Tab::History)
+    }
+
+    /// A filter is showing (bar visible) when it has text or is being typed.
+    pub fn filter_active(&self) -> bool {
+        self.tab_is_filterable() && (self.filter_editing || !self.filter.is_empty())
+    }
+
+    /// Enter filter-typing mode (keeps existing text so it can be refined).
+    fn start_filter(&mut self) {
+        if self.tab_is_filterable() {
+            self.filter_editing = true;
+        }
+    }
+
+    /// Clear the filter and stop editing (on tab switch and on Esc).
+    fn clear_filter(&mut self) {
+        self.filter.clear();
+        self.filter_editing = false;
+    }
+
+    /// Keys while typing the `/` filter: Enter keeps it and returns to nav,
+    /// Esc clears it, the rest edits the needle and re-clamps the selection.
+    fn filter_input(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => self.clear_filter(),
+            KeyCode::Enter => self.filter_editing = false,
+            KeyCode::Backspace => {
+                self.filter.pop();
+                self.clamp_selected_finding();
+            }
+            KeyCode::Char(c) => {
+                self.filter.push(c);
+                self.clamp_selected_finding();
+            }
+            _ => {}
+        }
+    }
+
+    /// Case-insensitive substring test used by both filtered lists.
+    fn filter_hit(needle: &str, haystacks: &[&str]) -> bool {
+        if needle.is_empty() {
+            return true;
+        }
+        let n = needle.to_ascii_lowercase();
+        haystacks
+            .iter()
+            .any(|h| h.to_ascii_lowercase().contains(&n))
+    }
+
+    /// The findings the findings tab shows: aggregated, then narrowed by the
+    /// `/` filter. Every consumer (nav clamp, f/d actions, editor jump, the
+    /// renderer) goes through here so indices stay consistent.
+    pub fn visible_findings(&self) -> Vec<crate::findings::AggregatedFinding> {
+        let mut agg = crate::findings::aggregate(&self.findings, self.show_resolved);
+        if !self.filter.is_empty() {
+            agg.retain(|af| {
+                let f = &af.finding;
+                let loc = f.location();
+                Self::filter_hit(&self.filter, &[&f.title, &loc, &f.scenario, &f.verdict])
+            });
+        }
+        agg
+    }
+
+    /// The run metas the history tab shows, narrowed by the `/` filter.
+    pub fn visible_metas(&self) -> Vec<&RunMeta> {
+        self.metas
+            .iter()
+            .filter(|m| {
+                self.filter.is_empty()
+                    || Self::filter_hit(
+                        &self.filter,
+                        &[
+                            &m.stage,
+                            &m.agent,
+                            &m.run_id,
+                            m.model.as_deref().unwrap_or(""),
+                        ],
+                    )
+            })
+            .collect()
     }
 
     /// Keys while the palette is open: type to filter, navigate, execute.
@@ -492,6 +588,7 @@ impl App {
     }
 
     fn dispatch(&mut self, action: Action, tx: &mpsc::Sender<AppMsg>) {
+        let prev_tab = self.tab;
         match action {
             Action::Quit => {
                 if self.running.is_some() {
@@ -528,6 +625,7 @@ impl App {
             Action::NvimOpen => self.nvim_open(),
             Action::NvimQuickfix => self.nvim_quickfix(),
             Action::SpecChat => self.open_chat(tx),
+            Action::Filter => self.start_filter(),
             Action::FindingFix => self.finding_set_action("fixed"),
             Action::FindingDismiss => self.finding_set_action("dismissed"),
             Action::ToggleResolved => {
@@ -560,6 +658,11 @@ impl App {
                 self.on_enter(tx);
             }
         }
+        // A filter is scoped to its list — leaving the tab drops it so it
+        // can't silently empty the next tab's view.
+        if self.tab != prev_tab {
+            self.clear_filter();
+        }
     }
 
     fn next_tab(&mut self) {
@@ -570,7 +673,7 @@ impl App {
     fn nav(&mut self, delta: i32) {
         match self.tab {
             Tab::Findings => {
-                let len = crate::findings::aggregate(&self.findings, self.show_resolved).len();
+                let len = self.visible_findings().len();
                 if len > 0 {
                     self.selected_finding =
                         (self.selected_finding as i32 + delta).rem_euclid(len as i32) as usize;
@@ -1325,7 +1428,7 @@ impl App {
         let Some((name, template)) = self.cfg.commands.get(idx).cloned() else {
             return;
         };
-        let agg = crate::findings::aggregate(&self.findings, self.show_resolved);
+        let agg = self.visible_findings();
         let finding = agg.get(self.selected_finding).map(|af| af.finding.clone());
         let rendered = template
             .replace("{{branch}}", &self.branch)
@@ -1646,7 +1749,7 @@ impl App {
 
     /// The finding under the cursor, if any (Findings tab or last selection).
     fn selected_finding_ref(&self) -> Option<crate::findings::Finding> {
-        crate::findings::aggregate(&self.findings, self.show_resolved)
+        self.visible_findings()
             .get(self.selected_finding)
             .map(|af| af.finding.clone())
     }
@@ -1658,7 +1761,7 @@ impl App {
             self.status_msg = Some(format!("{action} works on the findings tab (2)",));
             return;
         }
-        let agg = crate::findings::aggregate(&self.findings, self.show_resolved);
+        let agg = self.visible_findings();
         let Some(af) = agg.get(self.selected_finding) else {
             self.status_msg = Some("no finding selected".into());
             return;
@@ -1676,7 +1779,7 @@ impl App {
 
     /// Keep the selection valid after resolving/toggling changes the list.
     fn clamp_selected_finding(&mut self) {
-        let len = crate::findings::aggregate(&self.findings, self.show_resolved).len();
+        let len = self.visible_findings().len();
         self.selected_finding = self.selected_finding.min(len.saturating_sub(1));
     }
 
@@ -1757,7 +1860,7 @@ impl App {
     }
 
     fn open_editor(&mut self) {
-        let agg = crate::findings::aggregate(&self.findings, self.show_resolved);
+        let agg = self.visible_findings();
         let Some(finding) = agg.get(self.selected_finding).map(|af| &af.finding) else {
             self.status_msg = Some("no finding selected".into());
             return;
@@ -2410,6 +2513,84 @@ mod tests {
                 .status,
             StageStatus::Done
         );
+    }
+
+    #[test]
+    fn slash_filter_narrows_findings_clamps_and_acts_on_the_visible_row() {
+        let (_t, mut app, tx, _rx) = test_app();
+        std::fs::create_dir_all(app.dirs.findings_dir()).unwrap();
+        std::fs::write(
+            app.dirs
+                .findings_dir()
+                .join("20260712T000000Z-dual-review.json"),
+            r#"{"stage":"dual-review","findings":[
+                {"id":1,"title":"race in state save","file":"src/state.rs","line":9,"severity":"critical","verdict":"confirmed"},
+                {"id":2,"title":"unbuffered write","file":"src/io.rs","line":3,"severity":"major","verdict":"confirmed"},
+                {"id":3,"title":"another race window","file":"src/run.rs","line":7,"severity":"minor","verdict":"confirmed"}]}"#,
+        )
+        .unwrap();
+        app.reload_artifacts();
+        app.tab = Tab::Findings;
+
+        // `/` opens editing; typing narrows to the two "race" findings.
+        app.dispatch(Action::Filter, &tx);
+        assert!(app.filter_editing);
+        for c in "race".chars() {
+            app.filter_input(KeyCode::Char(c));
+        }
+        assert_eq!(app.visible_findings().len(), 2);
+        assert!(app.filter_active());
+
+        // Enter keeps the filter and returns to navigation.
+        app.filter_input(KeyCode::Enter);
+        assert!(!app.filter_editing);
+        assert!(app.filter_active());
+
+        // Selecting past the filtered length was clamped, and f/d act on the
+        // VISIBLE row's real finding — not the underlying full-list index.
+        app.selected_finding = 5;
+        app.clamp_selected_finding();
+        assert_eq!(app.selected_finding, 1); // 2 visible → max index 1
+        app.selected_finding = 1;
+        app.finding_set_action("dismissed");
+        // "another race window" (2nd visible) is now dismissed in the file.
+        let dismissed = app
+            .findings
+            .iter()
+            .flat_map(|l| &l.file.findings)
+            .find(|f| f.title == "another race window")
+            .unwrap();
+        assert_eq!(dismissed.action, "dismissed");
+
+        // Esc clears the filter; leaving the tab also clears it.
+        app.filter_input(KeyCode::Char('x'));
+        app.filter_input(KeyCode::Esc);
+        assert!(!app.filter_active());
+        assert_eq!(app.filter, "");
+
+        // A history filter matches stage/agent/run_id and drops on tab switch.
+        app.metas = vec![
+            crate::history::RunMeta {
+                run_id: "r1".into(),
+                stage: "plan-review".into(),
+                agent: "claude".into(),
+                ..Default::default()
+            },
+            crate::history::RunMeta {
+                run_id: "r2".into(),
+                stage: "dual-review".into(),
+                agent: "codex".into(),
+                ..Default::default()
+            },
+        ];
+        app.tab = Tab::History;
+        app.dispatch(Action::Filter, &tx);
+        for c in "dual".chars() {
+            app.filter_input(KeyCode::Char(c));
+        }
+        assert_eq!(app.visible_metas().len(), 1);
+        app.dispatch(Action::TabLive, &tx);
+        assert!(!app.filter_active(), "filter dropped on tab switch");
     }
 
     #[test]

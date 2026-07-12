@@ -1,5 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
+assertion_line: 247
 expression: render(&app)
 ---
 "                            │  live   findings    history    plan    guide              "
