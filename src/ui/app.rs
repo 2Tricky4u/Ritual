@@ -157,7 +157,13 @@ pub struct ChatState {
     pub target_idx: usize,
     pub scroll: usize,
     pub in_flight: bool,
+    /// Messages typed while an edit was in flight, sent one at a time as
+    /// each edit finishes (capped — this is a chat, not a job queue).
+    pub pending: std::collections::VecDeque<String>,
 }
+
+/// Beyond this the user should wait — queued edits compound unpredictably.
+const CHAT_QUEUE_CAP: usize = 3;
 
 impl ChatState {
     pub fn target(&self) -> Option<&ChatTarget> {
@@ -351,7 +357,7 @@ impl App {
                     chat.scroll = 0; // follow the tail while streaming
                 }
             }
-            AppMsg::ChatExited(outcome) => self.on_chat_exited(*outcome),
+            AppMsg::ChatExited(outcome) => self.on_chat_exited(*outcome, tx),
             AppMsg::CheckDone { ok, tail } => {
                 self.check = if ok {
                     CheckState::Green
@@ -752,6 +758,7 @@ impl App {
             target_idx: 0,
             scroll: 0,
             in_flight: false,
+            pending: Default::default(),
         });
     }
 
@@ -800,12 +807,34 @@ impl App {
             return;
         }
         // Alt+Enter inserts a newline; plain Enter submits (handled first
-        // because submitting needs `&mut self` to spawn).
+        // because submitting needs `&mut self` to spawn). While an edit is
+        // in flight, Enter queues instead (drained as edits finish).
         if key.code == KeyCode::Enter {
             if key.modifiers.contains(KeyModifiers::ALT) {
                 if let Some(chat) = self.chat.as_mut() {
                     chat.input.insert(chat.cursor, '\n');
                     chat.cursor += 1;
+                }
+            } else if self.chat.as_ref().is_some_and(|c| c.in_flight) {
+                if let Some(chat) = self.chat.as_mut() {
+                    let msg: String = chat.input.iter().collect::<String>().trim().to_string();
+                    if msg.is_empty() {
+                        return;
+                    }
+                    if chat.pending.len() >= CHAT_QUEUE_CAP {
+                        chat.transcript.push(ChatTurn::System(
+                            "queue full — wait for the current edit".into(),
+                        ));
+                        return;
+                    }
+                    chat.input.clear();
+                    chat.cursor = 0;
+                    chat.pending.push_back(msg);
+                    chat.transcript.push(ChatTurn::System(format!(
+                        "queued ({} waiting)",
+                        chat.pending.len()
+                    )));
+                    chat.scroll = 0;
                 }
             } else if let Some(msg) = self.chat_take_submit() {
                 self.spawn_doc_chat(msg, tx);
@@ -875,9 +904,16 @@ impl App {
         }
         if let Some(chat) = self.chat.as_mut() {
             chat.in_flight = false;
-            chat.transcript.push(ChatTurn::System(
-                "edit cancelled — Ctrl+Z restores the pre-edit document".into(),
-            ));
+            let dropped = chat.pending.len();
+            chat.pending.clear();
+            chat.transcript.push(ChatTurn::System(format!(
+                "edit cancelled{} — Ctrl+Z restores the pre-edit document",
+                if dropped > 0 {
+                    format!(" ({dropped} queued message(s) dropped)")
+                } else {
+                    String::new()
+                }
+            )));
             chat.scroll = 0;
         }
     }
@@ -1073,7 +1109,7 @@ impl App {
 
     /// A chat edit finished: mark the target stage done iff the document
     /// meaningfully changed, refresh section targets, and note the cost.
-    fn on_chat_exited(&mut self, outcome: Result<RunOutcome>) {
+    fn on_chat_exited(&mut self, outcome: Result<RunOutcome>, tx: &mpsc::Sender<AppMsg>) {
         self.chat_task = None;
         let run_id = self.current_chat_run_id.take();
         if let Some(chat) = self.chat.as_mut() {
@@ -1115,6 +1151,14 @@ impl App {
             chat.scroll = 0;
         }
         self.reload_artifacts();
+        // Send the next queued message, if any (one at a time). Note: each
+        // send replaces the undo snapshot — undo covers the LAST edit.
+        if let Some(msg) = self.chat.as_mut().and_then(|c| c.pending.pop_front()) {
+            if let Some(chat) = self.chat.as_mut() {
+                chat.transcript.push(ChatTurn::User(msg.clone()));
+            }
+            self.spawn_doc_chat(msg, tx);
+        }
     }
 
     /// Run a user-defined [commands] template ({{branch}}, {{run_id}},
@@ -1921,6 +1965,46 @@ mod tests {
         assert!(matches!(
             app.chat.as_ref().unwrap().transcript.last(),
             Some(ChatTurn::System(n)) if n.contains("in flight")
+        ));
+    }
+
+    #[test]
+    fn chat_enter_while_in_flight_queues_with_cap() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.open_chat();
+        app.chat.as_mut().unwrap().in_flight = true;
+        let type_and_enter = |app: &mut App, tx: &mpsc::Sender<AppMsg>, s: &str| {
+            for c in s.chars() {
+                app.chat_input(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), tx);
+            }
+            app.chat_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), tx);
+        };
+        for i in 1..=3 {
+            type_and_enter(&mut app, &tx, &format!("msg{i}"));
+            assert_eq!(app.chat.as_ref().unwrap().pending.len(), i);
+            assert!(app.chat.as_ref().unwrap().input.is_empty());
+        }
+        // Fourth message: queue full, input retained so nothing is lost.
+        type_and_enter(&mut app, &tx, "overflow");
+        let chat = app.chat.as_ref().unwrap();
+        assert_eq!(chat.pending.len(), 3);
+        assert!(matches!(
+            chat.transcript.last(),
+            Some(ChatTurn::System(n)) if n.contains("queue full")
+        ));
+        assert_eq!(chat.input.iter().collect::<String>(), "overflow");
+
+        // Ctrl+X drops the queue.
+        app.current_chat_run_id = Some("nope".into());
+        app.chat_input(
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            &tx,
+        );
+        let chat = app.chat.as_ref().unwrap();
+        assert!(chat.pending.is_empty());
+        assert!(matches!(
+            chat.transcript.last(),
+            Some(ChatTurn::System(n)) if n.contains("3 queued")
         ));
     }
 

@@ -82,6 +82,7 @@ fn setup_chat_app(tmp: &tempfile::TempDir) -> App {
         target_idx: 1, // focused on the Behavior section
         scroll: 0,
         in_flight: false,
+        pending: Default::default(),
     });
     app
 }
