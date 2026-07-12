@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::findings::{FindingsFile, Severity};
+use crate::findings::{Finding, FindingsFile, Severity};
 
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -15,9 +15,12 @@ fn xml_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// A finding fails the suite when it's confirmed and critical/major.
-fn is_failure(sev: Severity, verdict: &str) -> bool {
-    matches!(sev, Severity::Critical | Severity::Major) && verdict == "confirmed"
+/// A finding fails the suite when it's confirmed, critical/major, and not
+/// already resolved (fixed/dismissed) by a human.
+fn is_failure(f: &Finding) -> bool {
+    matches!(f.severity, Severity::Critical | Severity::Major)
+        && f.verdict == "confirmed"
+        && !f.resolved()
 }
 
 pub struct JunitOutcome {
@@ -55,7 +58,7 @@ pub fn write_junit(
         for f in &file.findings {
             tests += 1;
             let name = format!("{}: {} [{}]", f.severity.label(), f.title, f.location());
-            if is_failure(f.severity, &f.verdict) {
+            if is_failure(f) {
                 failures += 1;
                 cases.push_str(&format!(
                     r#"    <testcase name="{}" classname="ritual.{}"><failure message="{}">{}</failure></testcase>{}"#,
@@ -129,6 +132,21 @@ mod tests {
         assert!(xml.contains("bad &lt;thing&gt;"));
         assert!(xml.contains("boom &amp; crash"));
         assert!(xml.contains(r#"failures="1""#));
+    }
+
+    #[test]
+    fn junit_resolved_critical_is_not_a_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file: FindingsFile = serde_json::from_str(
+            r#"{"stage":"dual-review","findings":[
+                {"id":1,"severity":"critical","title":"was bad","verdict":"confirmed","action":"fixed"},
+                {"id":2,"severity":"major","title":"noise","verdict":"confirmed","action":"dismissed"}
+            ]}"#,
+        )
+        .unwrap();
+        let out = write_junit(tmp.path(), "run4", "dual-review", &[&file], false).unwrap();
+        assert_eq!(out.tests, 2);
+        assert_eq!(out.failures, 0, "resolved findings must not fail CI");
     }
 
     #[test]

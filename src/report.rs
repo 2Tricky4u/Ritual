@@ -72,21 +72,23 @@ pub fn generate(
         md.push_str("\n\n");
     }
 
-    // Findings, most severe first.
-    let agg = findings::aggregate(&loaded);
+    // Findings, most severe first. Reports are the record: include resolved
+    // ones too — the action column shows fixed/dismissed.
+    let agg = findings::aggregate(&loaded, true);
     md.push_str("## Findings\n\n");
     if agg.is_empty() {
         md.push_str("_none recorded_\n\n");
     } else {
         md.push_str("| severity | sources | location | finding | verdict | action |\n|---|---|---|---|---|---|\n");
-        for (src, f) in &agg {
+        for af in &agg {
+            let f = &af.finding;
             let sources = if f.cross_confirmed() {
                 "both".to_string()
             } else {
                 f.sources.join("+")
             };
             let action = if f.action.is_empty() {
-                loaded[*src].file.stage.clone()
+                loaded[af.file_idx].file.stage.clone()
             } else {
                 f.action.clone()
             };
@@ -102,7 +104,7 @@ pub fn generate(
         }
         let criticals = agg
             .iter()
-            .filter(|(_, f)| f.severity == Severity::Critical)
+            .filter(|af| af.finding.severity == Severity::Critical)
             .count();
         md.push_str(&format!(
             "\n{} findings total, {} critical.\n\n",

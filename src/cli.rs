@@ -38,6 +38,9 @@ pub enum Command {
         /// Emit raw JSON instead of styled output
         #[arg(long)]
         json: bool,
+        /// Also show findings already marked fixed/dismissed
+        #[arg(long)]
+        all: bool,
     },
     /// Show past agent runs (tokens, cost, duration)
     History {

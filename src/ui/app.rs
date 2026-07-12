@@ -79,6 +79,8 @@ pub struct App {
     pub stream_scroll: Option<usize>, // None = follow tail
     pub findings: Vec<LoadedFindings>,
     pub selected_finding: usize,
+    /// Show findings already marked fixed/dismissed (toggled with `v`).
+    pub show_resolved: bool,
     pub metas: Vec<RunMeta>,
     pub check: CheckState,
     pub agents: crate::agents_status::AgentsStatus,
@@ -192,6 +194,7 @@ impl App {
             stream_scroll: None,
             findings,
             selected_finding: 0,
+            show_resolved: false,
             metas,
             check: CheckState::Unknown,
             agents: Default::default(),
@@ -499,7 +502,7 @@ impl App {
     fn nav(&mut self, delta: i32) {
         match self.tab {
             Tab::Findings => {
-                let len = crate::findings::aggregate(&self.findings).len();
+                let len = crate::findings::aggregate(&self.findings, self.show_resolved).len();
                 if len > 0 {
                     self.selected_finding =
                         (self.selected_finding as i32 + delta).rem_euclid(len as i32) as usize;
@@ -1014,8 +1017,8 @@ impl App {
         let Some((name, template)) = self.cfg.commands.get(idx).cloned() else {
             return;
         };
-        let agg = crate::findings::aggregate(&self.findings);
-        let finding = agg.get(self.selected_finding).map(|(_, f)| f.clone());
+        let agg = crate::findings::aggregate(&self.findings, self.show_resolved);
+        let finding = agg.get(self.selected_finding).map(|af| af.finding.clone());
         let rendered = template
             .replace("{{branch}}", &self.branch)
             .replace("{{run_id}}", self.current_run_id.as_deref().unwrap_or(""))
@@ -1335,9 +1338,9 @@ impl App {
 
     /// The finding under the cursor, if any (Findings tab or last selection).
     fn selected_finding_ref(&self) -> Option<crate::findings::Finding> {
-        crate::findings::aggregate(&self.findings)
+        crate::findings::aggregate(&self.findings, self.show_resolved)
             .get(self.selected_finding)
-            .map(|(_, f)| f.clone())
+            .map(|af| af.finding.clone())
     }
 
     /// `o`: open the selected finding in a RUNNING nvim (no TUI suspend).
@@ -1391,23 +1394,25 @@ impl App {
         let cwd = self
             .run_cwd()
             .unwrap_or_else(|| self.dirs.work_root.clone());
-        let entries: Vec<crate::nvim::QfEntry> = crate::findings::aggregate(&self.findings)
-            .into_iter()
-            .filter_map(|(_, f)| {
-                let file = f.file.as_ref()?;
-                Some(crate::nvim::QfEntry {
-                    file: cwd.join(file).display().to_string(),
-                    line: f.line.unwrap_or(1),
-                    text: format!(
-                        "{}{}: {} [{}]",
-                        f.severity.label(),
-                        if f.cross_confirmed() { " ◆both" } else { "" },
-                        f.title,
-                        f.verdict
-                    ),
+        let entries: Vec<crate::nvim::QfEntry> =
+            crate::findings::aggregate(&self.findings, self.show_resolved)
+                .into_iter()
+                .map(|af| af.finding)
+                .filter_map(|f| {
+                    let file = f.file.as_ref()?;
+                    Some(crate::nvim::QfEntry {
+                        file: cwd.join(file).display().to_string(),
+                        line: f.line.unwrap_or(1),
+                        text: format!(
+                            "{}{}: {} [{}]",
+                            f.severity.label(),
+                            if f.cross_confirmed() { " ◆both" } else { "" },
+                            f.title,
+                            f.verdict
+                        ),
+                    })
                 })
-            })
-            .collect();
+                .collect();
         match crate::nvim::send_quickfix(&server, &entries, "ritual findings") {
             Ok(n) => self.status_msg = Some(format!(" {n} finding(s) → nvim quickfix")),
             Err(e) => self.status_msg = Some(format!("nvim: {e:#}")),
@@ -1415,8 +1420,8 @@ impl App {
     }
 
     fn open_editor(&mut self) {
-        let agg = crate::findings::aggregate(&self.findings);
-        let Some((_, finding)) = agg.get(self.selected_finding) else {
+        let agg = crate::findings::aggregate(&self.findings, self.show_resolved);
+        let Some(finding) = agg.get(self.selected_finding).map(|af| &af.finding) else {
             self.status_msg = Some("no finding selected".into());
             return;
         };

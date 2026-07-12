@@ -43,14 +43,16 @@ fn main() -> Result<()> {
                 output::render_status(&cfg, &features, branch.as_deref());
             }
         }
-        Some(Command::Findings { json }) => {
+        Some(Command::Findings { json, all }) => {
             let loaded = findings::load_all(&dirs.findings_dir())?;
-            output::render_findings(&cfg, &loaded, json);
-            // Scriptability contract: confirmed critical findings -> exit 1.
-            let blocking = loaded
-                .iter()
-                .flat_map(|l| &l.file.findings)
-                .any(|f| f.severity == findings::Severity::Critical && f.verdict == "confirmed");
+            output::render_findings(&cfg, &loaded, json, all);
+            // Scriptability contract: UNRESOLVED confirmed critical findings
+            // -> exit 1. A human marking one fixed/dismissed unblocks it.
+            let blocking = loaded.iter().flat_map(|l| &l.file.findings).any(|f| {
+                f.severity == findings::Severity::Critical
+                    && f.verdict == "confirmed"
+                    && !f.resolved()
+            });
             if blocking {
                 std::process::exit(1);
             }
