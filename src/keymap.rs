@@ -36,6 +36,9 @@ pub enum Action {
     NvimOpen,
     NvimQuickfix,
     SpecChat,
+    FindingFix,
+    FindingDismiss,
+    ToggleResolved,
     RunStage(StageId),
     /// User-defined [commands] entry by index (palette-only).
     Custom(usize),
@@ -76,6 +79,17 @@ pub const ACTIONS: &[(&str, Action, &str)] = &[
         "send findings to nvim quickfix",
     ),
     ("spec-chat", Action::SpecChat, "chat: edit spec/plan"),
+    ("finding-fix", Action::FindingFix, "finding: mark fixed"),
+    (
+        "finding-dismiss",
+        Action::FindingDismiss,
+        "finding: dismiss",
+    ),
+    (
+        "toggle-resolved",
+        Action::ToggleResolved,
+        "findings: show/hide resolved",
+    ),
 ];
 
 pub fn action_by_name(name: &str) -> Option<Action> {
@@ -182,6 +196,9 @@ impl Default for Keymap {
             ("o", "nvim-open"),
             ("Q", "nvim-quickfix"),
             ("s", "spec-chat"),
+            ("f", "finding-fix"),
+            ("d", "finding-dismiss"),
+            ("v", "toggle-resolved"),
         ];
         let map = defaults
             .iter()

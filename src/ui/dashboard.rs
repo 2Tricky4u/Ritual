@@ -885,11 +885,21 @@ fn draw_findings(f: &mut Frame, app: &App, area: Rect) {
     for (i, af) in agg.iter().enumerate().skip(first).take(visible) {
         let (src, finding) = (&af.file_idx, &af.finding);
         let selected = i == app.selected_finding;
+        let resolved = finding.resolved();
         let row_bg = if selected { t.bg_row2() } else { t.bg() };
+        // Resolved rows recede: dim text, no colored pills.
+        let title_fg = if resolved { t.comment() } else { t.fg() };
         let mut spans: Vec<Span> = vec![Span::styled(" ", Style::default().bg(row_bg))];
         spans.extend(severity_pill(t, finding.severity));
         spans.push(Span::styled(" ", Style::default().bg(row_bg)));
-        if finding.cross_confirmed() {
+        if resolved {
+            let (mark, color) = if finding.action == "fixed" {
+                ("✓fixed ", t.ok())
+            } else {
+                ("∅dismissed", t.comment())
+            };
+            spans.push(Span::styled(mark, Style::default().fg(color).bg(row_bg)));
+        } else if finding.cross_confirmed() {
             spans.extend(pill(t, " ◆both ".into(), t.ok()));
         } else {
             spans.push(Span::styled(
@@ -904,7 +914,7 @@ fn draw_findings(f: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled(
             finding.title.clone(),
             Style::default()
-                .fg(t.fg())
+                .fg(title_fg)
                 .bg(row_bg)
                 .add_modifier(if selected {
                     Modifier::BOLD

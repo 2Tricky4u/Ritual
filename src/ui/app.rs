@@ -483,6 +483,21 @@ impl App {
             Action::NvimOpen => self.nvim_open(),
             Action::NvimQuickfix => self.nvim_quickfix(),
             Action::SpecChat => self.open_chat(),
+            Action::FindingFix => self.finding_set_action("fixed"),
+            Action::FindingDismiss => self.finding_set_action("dismissed"),
+            Action::ToggleResolved => {
+                if self.tab == Tab::Findings {
+                    self.show_resolved = !self.show_resolved;
+                    self.clamp_selected_finding();
+                    self.status_msg = Some(if self.show_resolved {
+                        "showing resolved findings".into()
+                    } else {
+                        "hiding resolved findings".into()
+                    });
+                } else {
+                    self.status_msg = Some("v toggles resolved on the findings tab (2)".into());
+                }
+            }
             Action::Custom(i) => self.run_custom(i, tx),
             Action::RunStage(id) => {
                 if let Some(idx) = PIPELINE.iter().position(|s| *s == id) {
@@ -1343,6 +1358,35 @@ impl App {
             .map(|af| af.finding.clone())
     }
 
+    /// `f`/`d` on the findings tab: mark the selected finding fixed/dismissed
+    /// (toggling back to pending), writing through to the source JSON.
+    fn finding_set_action(&mut self, action: &str) {
+        if self.tab != Tab::Findings {
+            self.status_msg = Some(format!("{action} works on the findings tab (2)",));
+            return;
+        }
+        let agg = crate::findings::aggregate(&self.findings, self.show_resolved);
+        let Some(af) = agg.get(self.selected_finding) else {
+            self.status_msg = Some("no finding selected".into());
+            return;
+        };
+        let (file_idx, pos, title) = (af.file_idx, af.pos, af.finding.title.clone());
+        match crate::findings::set_action(&mut self.findings, file_idx, pos, action) {
+            Ok(()) => {
+                let now = &self.findings[file_idx].file.findings[pos].action;
+                self.status_msg = Some(format!("{title}: {now}"));
+            }
+            Err(e) => self.status_msg = Some(format!("could not update finding: {e:#}")),
+        }
+        self.clamp_selected_finding();
+    }
+
+    /// Keep the selection valid after resolving/toggling changes the list.
+    fn clamp_selected_finding(&mut self) {
+        let len = crate::findings::aggregate(&self.findings, self.show_resolved).len();
+        self.selected_finding = self.selected_finding.min(len.saturating_sub(1));
+    }
+
     /// `o`: open the selected finding in a RUNNING nvim (no TUI suspend).
     /// Falls back to the attached $EDITOR flow when no server is found.
     fn nvim_open(&mut self) {
@@ -1630,6 +1674,56 @@ mod tests {
         // Only chat runs live -> nothing to resume (they stay daemon-only).
         std::fs::remove_file(runs.join("20260712T000001Z-1-1-plan-review.status")).unwrap();
         assert!(newest_resumable_run(&dirs).is_none());
+    }
+
+    #[test]
+    fn finding_lifecycle_marks_and_clamps() {
+        let (_t, mut app, tx, _rx) = test_app();
+        std::fs::create_dir_all(app.dirs.findings_dir()).unwrap();
+        std::fs::write(
+            app.dirs
+                .findings_dir()
+                .join("20260712T000000Z-dual-review.json"),
+            r#"{"stage":"dual-review","findings":[
+                {"title":"a","severity":"critical","verdict":"confirmed"},
+                {"title":"b","severity":"major","verdict":"confirmed"}]}"#,
+        )
+        .unwrap();
+        app.findings = crate::findings::load_all(&app.dirs.findings_dir()).unwrap();
+        app.tab = Tab::Findings;
+        app.selected_finding = 1; // "b" (major sorts after critical)
+
+        app.dispatch(Action::FindingDismiss, &tx);
+        // b is dismissed and hidden; selection clamped to the one visible.
+        let agg = crate::findings::aggregate(&app.findings, false);
+        assert_eq!(agg.len(), 1);
+        assert_eq!(app.selected_finding, 0);
+        // The write went through to disk.
+        let text = std::fs::read_to_string(
+            app.dirs
+                .findings_dir()
+                .join("20260712T000000Z-dual-review.json"),
+        )
+        .unwrap();
+        assert!(text.contains("dismissed"));
+
+        // v shows resolved again.
+        app.dispatch(Action::ToggleResolved, &tx);
+        assert!(app.show_resolved);
+        assert_eq!(
+            crate::findings::aggregate(&app.findings, app.show_resolved).len(),
+            2
+        );
+
+        // f on the wrong tab is a hint, not a mutation.
+        app.tab = Tab::Live;
+        app.dispatch(Action::FindingFix, &tx);
+        assert!(
+            app.status_msg
+                .as_deref()
+                .unwrap_or("")
+                .contains("findings tab")
+        );
     }
 
     #[test]

@@ -114,6 +114,30 @@ fn dashboard_findings_tab_with_data() {
 }
 
 #[test]
+fn dashboard_findings_tab_with_resolved_shown() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".ritual/findings")).unwrap();
+    std::fs::write(
+        tmp.path()
+            .join(".ritual/findings/20260712T000000Z-dual-review.json"),
+        r#"{"ritual_findings":1,"stage":"dual-review","branch":"main",
+            "findings":[
+              {"id":1,"severity":"critical","title":"Open bug","file":"src/a.rs","line":3,
+               "scenario":"boom","sources":["claude","codex"],"verdict":"confirmed","action":"pending"},
+              {"id":2,"severity":"major","title":"Was fixed","file":"src/b.rs","line":9,
+               "scenario":"","sources":["codex"],"verdict":"confirmed","action":"fixed"},
+              {"id":3,"severity":"minor","title":"Noise","file":null,"line":null,
+               "scenario":"","sources":["claude"],"verdict":"unconfirmed","action":"dismissed"}
+            ]}"#,
+    )
+    .unwrap();
+    let mut app = setup_app(&tmp);
+    app.tab = Tab::Findings;
+    app.show_resolved = true;
+    insta::assert_snapshot!(render(&app));
+}
+
+#[test]
 fn dashboard_help_overlay() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = setup_app(&tmp);
