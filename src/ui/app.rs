@@ -799,9 +799,15 @@ impl App {
             self.chat_undo();
             return;
         }
-        // Enter submits — handled first because it needs `&mut self` to spawn.
+        // Alt+Enter inserts a newline; plain Enter submits (handled first
+        // because submitting needs `&mut self` to spawn).
         if key.code == KeyCode::Enter {
-            if let Some(msg) = self.chat_take_submit() {
+            if key.modifiers.contains(KeyModifiers::ALT) {
+                if let Some(chat) = self.chat.as_mut() {
+                    chat.input.insert(chat.cursor, '\n');
+                    chat.cursor += 1;
+                }
+            } else if let Some(msg) = self.chat_take_submit() {
                 self.spawn_doc_chat(msg, tx);
             }
             return;
@@ -1870,6 +1876,25 @@ mod tests {
             app.chat.as_ref().unwrap().input.iter().collect::<String>(),
             "H"
         );
+    }
+
+    #[test]
+    fn chat_alt_enter_inserts_newline_and_enter_still_submits() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.open_chat();
+        for c in "ab".chars() {
+            app.chat_input(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), &tx);
+        }
+        app.chat_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT), &tx);
+        for c in "cd".chars() {
+            app.chat_input(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), &tx);
+        }
+        let chat = app.chat.as_ref().unwrap();
+        assert_eq!(chat.input.iter().collect::<String>(), "ab\ncd");
+        assert_eq!(chat.cursor, 5);
+        // chat_take_submit keeps the newline in the message.
+        let msg = app.chat_take_submit().unwrap();
+        assert_eq!(msg, "ab\ncd");
     }
 
     #[test]

@@ -203,6 +203,19 @@ fn dashboard_spec_chat_narrow() {
 }
 
 #[test]
+fn dashboard_spec_chat_multiline_input() {
+    // A 3-line input: the box grows and the caret sits mid-line-two.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_chat_app(&tmp);
+    {
+        let chat = app.chat.as_mut().unwrap();
+        chat.input = "first line\nsecond line\nthird".chars().collect();
+        chat.cursor = 17; // inside "second line"
+    }
+    insta::assert_snapshot!(render_at(&app, 100, 26));
+}
+
+#[test]
 fn dashboard_spec_chat_ascii() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = setup_chat_app(&tmp);

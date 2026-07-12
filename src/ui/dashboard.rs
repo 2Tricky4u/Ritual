@@ -520,12 +520,14 @@ fn draw_chat_preview(f: &mut Frame, app: &App, chat: &ChatState, area: Rect) {
 /// The conversation: header + windowed transcript + a cursored input line.
 fn draw_chat_panel(f: &mut Frame, app: &App, chat: &ChatState, area: Rect) {
     let t = &app.cfg.theme;
+    // The input box grows with Alt+Enter newlines, up to 4 rows.
+    let input_rows = (chat.input.iter().filter(|c| **c == '\n').count() as u16 + 1).clamp(1, 4);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Min(1),
-            Constraint::Length(1),
+            Constraint::Length(input_rows),
         ])
         .split(area);
 
@@ -596,20 +598,55 @@ fn draw_chat_panel(f: &mut Frame, app: &App, chat: &ChatState, area: Rect) {
     let visible: Vec<Line> = lines.into_iter().skip(start).take(h).collect();
     f.render_widget(Paragraph::new(visible).wrap(Wrap { trim: false }), rows[1]);
 
-    // Input line with a caret sitting at the cursor position.
-    let before: String = chat.input[..chat.cursor].iter().collect();
-    let after: String = chat.input[chat.cursor..].iter().collect();
-    let input_spans = vec![
-        Span::styled(
-            format!(" {} ", t.icon_prompt()),
-            Style::default().fg(t.highlight()).bg(t.bg_row()),
-        ),
-        Span::styled(before, Style::default().fg(t.fg()).bg(t.bg_row())),
-        Span::styled("▏", Style::default().fg(t.info()).bg(t.bg_row())),
-        Span::styled(after, Style::default().fg(t.fg()).bg(t.bg_row())),
-    ];
+    // Input box (possibly multi-line via Alt+Enter): the caret sits on the
+    // cursor's own line, split at its column. First line carries the prompt
+    // glyph; continuation lines get a matching indent.
+    let cursor_row = chat.input[..chat.cursor]
+        .iter()
+        .filter(|c| **c == '\n')
+        .count();
+    let text: String = chat.input.iter().collect();
+    let mut consumed = 0usize; // chars consumed incl. the row's trailing '\n'
+    let mut input_lines: Vec<Line> = Vec::new();
+    for (row, seg) in text.split('\n').enumerate() {
+        let lead = if row == 0 {
+            Span::styled(
+                format!(" {} ", t.icon_prompt()),
+                Style::default().fg(t.highlight()).bg(t.bg_row()),
+            )
+        } else {
+            Span::styled("   ", Style::default().bg(t.bg_row()))
+        };
+        let mut spans = vec![lead];
+        if row == cursor_row {
+            let col = chat.cursor - consumed;
+            let before: String = seg.chars().take(col).collect();
+            let after: String = seg.chars().skip(col).collect();
+            spans.push(Span::styled(
+                before,
+                Style::default().fg(t.fg()).bg(t.bg_row()),
+            ));
+            spans.push(Span::styled(
+                "▏",
+                Style::default().fg(t.info()).bg(t.bg_row()),
+            ));
+            spans.push(Span::styled(
+                after,
+                Style::default().fg(t.fg()).bg(t.bg_row()),
+            ));
+        } else {
+            spans.push(Span::styled(
+                seg.to_string(),
+                Style::default().fg(t.fg()).bg(t.bg_row()),
+            ));
+        }
+        input_lines.push(fill_row(spans, rows[2].width, t.bg_row()));
+        consumed += seg.chars().count() + 1;
+    }
+    // Show the last input_rows lines so the caret's line stays visible.
+    let skip = input_lines.len().saturating_sub(rows[2].height as usize);
     f.render_widget(
-        Paragraph::new(fill_row(input_spans, rows[2].width, t.bg_row())),
+        Paragraph::new(input_lines.into_iter().skip(skip).collect::<Vec<_>>()),
         rows[2],
     );
 }
