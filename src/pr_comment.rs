@@ -131,6 +131,28 @@ pub fn pr_comment(cfg: &Config, dirs: &RitualDirs, pr: Option<u32>, inline: bool
     Ok(())
 }
 
+/// One inline review comment's markdown: severity + title + scenario, plus
+/// the anchored snippet as evidence when the finding carries one.
+fn inline_body(f: &crate::findings::Finding) -> String {
+    let snippet = f
+        .snippet
+        .as_deref()
+        .map(|s| format!("\n\n```\n{s}\n```"))
+        .unwrap_or_default();
+    format!(
+        "**{}**{}: {}\n\n{}{}",
+        f.severity.label(),
+        if f.cross_confirmed() {
+            " · ◆ both models"
+        } else {
+            ""
+        },
+        f.title,
+        f.scenario,
+        snippet
+    )
+}
+
 /// Best-effort per-finding review comments: each needs a file+line and the
 /// PR's head commit; individual failures are warnings, never fatal.
 fn post_inline(cfg: &Config, file: &FindingsFile, pr: u32) {
@@ -154,17 +176,7 @@ fn post_inline(cfg: &Config, file: &FindingsFile, pr: u32) {
         let (Some(path), Some(line)) = (&f.file, f.line) else {
             continue; // no location -> summary table only
         };
-        let body = redactor(&format!(
-            "**{}**{}: {}\n\n{}",
-            f.severity.label(),
-            if f.cross_confirmed() {
-                " · ◆ both models"
-            } else {
-                ""
-            },
-            f.title,
-            f.scenario
-        ));
+        let body = redactor(&inline_body(f));
         let status = gh(cfg)
             .args([
                 "api",
@@ -218,6 +230,23 @@ mod tests {
         assert!(body.contains("claude + codex"));
         assert!(!body.contains("dismissed noise"));
         assert!(!body.contains("unconfirmed"));
+    }
+
+    #[test]
+    fn inline_body_carries_the_snippet_as_evidence() {
+        let file = file_from(
+            r#"{"stage":"dual-review","findings":[
+                  {"title":"off-by-one","severity":"major","verdict":"confirmed",
+                   "file":"src/a.rs","line":3,"scenario":"last item skipped",
+                   "snippet":"for i in 0..len - 1 {","sources":["claude","codex"]},
+                  {"title":"no snippet","severity":"minor","verdict":"confirmed"}
+                ]}"#,
+        );
+        let body = inline_body(&file.findings[0]);
+        assert!(body.contains("**major** · ◆ both models: off-by-one"));
+        assert!(body.contains("```\nfor i in 0..len - 1 {\n```"));
+        // Absent snippet -> no empty fence.
+        assert!(!inline_body(&file.findings[1]).contains("```"));
     }
 
     #[test]

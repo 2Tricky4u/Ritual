@@ -39,6 +39,10 @@ pub struct Finding {
     pub line: Option<u32>,
     #[serde(default)]
     pub plan_step: Option<String>,
+    /// 1-3 verbatim source lines at the finding — hunk-anchored evidence
+    /// (reviewers act on snippet-bearing findings; absent for plan findings).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
     #[serde(default)]
     pub scenario: String,
     #[serde(default)]
@@ -323,6 +327,32 @@ mod tests {
         // Out-of-range is an error, not a panic.
         assert!(set_action(&mut loaded, 0, 99, "fixed").is_err());
         assert!(set_action(&mut loaded, 9, 0, "fixed").is_err());
+    }
+
+    #[test]
+    fn snippet_roundtrips_and_absence_stays_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("20260712T000001Z-dual-review.json");
+        std::fs::write(
+            &path,
+            r#"{"stage":"dual-review",
+                "findings":[{"title":"with","snippet":"let x = 1;"},
+                            {"title":"without"}]}"#,
+        )
+        .unwrap();
+        let mut loaded = load_all(tmp.path()).unwrap();
+        assert_eq!(
+            loaded[0].file.findings[0].snippet.as_deref(),
+            Some("let x = 1;")
+        );
+        assert_eq!(loaded[0].file.findings[1].snippet, None);
+
+        // A rewrite keeps the snippet and does NOT invent one where absent
+        // (skip_serializing_if — external emitters' files stay minimal).
+        set_action(&mut loaded, 0, 0, "fixed").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("let x = 1;"));
+        assert_eq!(text.matches("snippet").count(), 1);
     }
 
     #[test]

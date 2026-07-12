@@ -111,6 +111,19 @@ pub fn generate(
             agg.len(),
             criticals
         ));
+        // Anchored source excerpts (tables can't hold code blocks).
+        let with_snippets: Vec<_> = agg
+            .iter()
+            .filter(|af| af.finding.snippet.is_some())
+            .collect();
+        if !with_snippets.is_empty() {
+            md.push_str("### Evidence\n\n");
+            for af in with_snippets {
+                let f = &af.finding;
+                md.push_str(&format!("**{}** — {}\n\n", f.location(), f.title));
+                md.push_str(&format!("```\n{}\n```\n\n", f.snippet.as_deref().unwrap()));
+            }
+        }
     }
 
     // Runs + spend.

@@ -46,6 +46,7 @@ If the project working directory contains a `.ritual/` directory: after the repo
   "findings": [
     {"id": 1, "severity": "critical|major|minor", "title": "<one-sentence defect>",
      "file": "src/foo.rs", "line": 42, "plan_step": null,
+     "snippet": "<1-3 verbatim source lines at the finding>",
      "scenario": "<concrete inputs/state -> wrong outcome>",
      "sources": ["claude", "codex"],
      "verdict": "confirmed|unconfirmed|refuted", "action": "fixed|pending|skipped"}
@@ -54,3 +55,5 @@ If the project working directory contains a `.ritual/` directory: after the repo
 ```
 
 `sources` lists which reviewer(s) reported it (both = cross-confirmed). Use `null` for unknown fields. An empty `findings: []` file is valid when both reviewers found nothing. This section must not change the human-visible report or the procedure above. If `.ritual/` does not exist, skip this section entirely.
+
+Anchoring rules (findings that follow them get acted on; vague ones get ignored): `file` + `line` must point at the exact defective line, not the enclosing function; `snippet` is 1-3 verbatim source lines copied from that location (never paraphrased); `title` stays under 80 characters.

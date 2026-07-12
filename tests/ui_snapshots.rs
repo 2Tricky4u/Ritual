@@ -105,6 +105,7 @@ fn dashboard_findings_tab_with_data() {
         r#"{"ritual_findings":1,"stage":"dual-review","branch":"main",
             "findings":[
               {"id":1,"severity":"critical","title":"Race in state save","file":"src/state.rs","line":42,
+               "snippet":"let st = load(&path)?; // no lock\nsave(&path, &st)?;",
                "scenario":"two writers","sources":["claude","codex"],"verdict":"confirmed","action":"pending"},
               {"id":2,"severity":"minor","title":"Long line","file":"src/x.rs","line":7,
                "scenario":"style-ish","sources":["codex"],"verdict":"unconfirmed","action":"pending"}
