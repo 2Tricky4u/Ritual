@@ -402,8 +402,15 @@ impl App {
                         (self.selected_finding as i32 + delta).rem_euclid(len as i32) as usize;
                 }
             }
+            Tab::Live if self.stream.is_empty() => {
+                // Greeter is showing (nothing to scroll): j/k moves the
+                // sidebar pipeline highlight, so the greeter's "enter = run
+                // selected stage" hint is actually navigable from the dash.
+                self.selected =
+                    (self.selected as i32 + delta).rem_euclid(PIPELINE.len() as i32) as usize;
+            }
             Tab::Live => {
-                // Manual scroll: leave follow mode.
+                // Live stream present: manual scroll leaves follow mode.
                 let cur = self.stream_scroll.unwrap_or(self.stream.len());
                 let next = (cur as i32 + delta).max(0) as usize;
                 self.stream_scroll = if next >= self.stream.len() {
@@ -1238,6 +1245,34 @@ mod tests {
         app.tab = Tab::Guide;
         app.dispatch(Action::ScrollTop, &tx);
         assert_eq!(app.guide_scroll, 0);
+    }
+
+    #[test]
+    fn greeter_nav_moves_pipeline_selection_when_stream_empty() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.tab = Tab::Live;
+        assert!(app.stream.is_empty());
+        app.selected = 0;
+        app.dispatch(Action::Down, &tx);
+        assert_eq!(
+            app.selected, 1,
+            "greeter j/k should move the stage highlight"
+        );
+        app.dispatch(Action::Up, &tx);
+        assert_eq!(app.selected, 0);
+        app.dispatch(Action::Up, &tx); // wraps to the last stage
+        assert_eq!(app.selected, PIPELINE.len() - 1);
+
+        // With a live stream, j/k scrolls it instead of moving the selection.
+        app.stream.push(AgentEvent::Text {
+            text: "line".into(),
+        });
+        app.selected = 2;
+        app.dispatch(Action::Up, &tx);
+        assert_eq!(
+            app.selected, 2,
+            "selection frozen while a stream is present"
+        );
     }
 
     #[test]
