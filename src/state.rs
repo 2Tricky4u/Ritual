@@ -400,4 +400,23 @@ mod tests {
             tmp.path().canonicalize().unwrap()
         );
     }
+
+    #[test]
+    fn load_corrupt_state_is_an_error_not_a_silent_reset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        std::fs::create_dir_all(dirs.root()).unwrap();
+        std::fs::write(dirs.state_file(), "{ definitely not json").unwrap();
+        // Silently defaulting would orphan every feature's pipeline state.
+        assert!(State::load(&dirs).is_err());
+    }
+
+    #[test]
+    fn branch_slug_degenerate_inputs() {
+        assert_eq!(branch_slug(""), "detached");
+        assert_eq!(branch_slug("---"), "detached");
+        // Leading/trailing separators trim; inner dots survive.
+        assert_eq!(branch_slug("/feat/x/"), "feat-x");
+        assert_eq!(branch_slug("release/v0.5.0"), "release-v0.5.0");
+    }
 }
