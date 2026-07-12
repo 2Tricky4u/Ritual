@@ -1,0 +1,56 @@
+---
+name: dual-review
+description: Independent two-model review of the current diff — Claude's code-reviewer subagent and OpenAI Codex review the same changes without seeing each other's findings, then results are merged and only confirmed findings are fixed. Use before committing significant changes.
+argument-hint: "[base ref, e.g. main — omit to review uncommitted changes]"
+---
+
+# Dual-model review gate
+
+Two reviewers from different vendors have decorrelated blind spots. The independence is the point: **neither reviewer may see the other's findings before producing its own.** Agreement is strong evidence a finding is real; a single-model finding is a hypothesis that needs verification before acting.
+
+## Procedure
+
+1. **Scope the diff.** Uncommitted changes by default; if a base ref argument was given, use `git diff <base>...HEAD`.
+
+2. **Run both reviews independently — in parallel, same input:**
+   - **Claude side:** launch the `code-reviewer` subagent on the diff.
+   - **Codex side:** call the `codex` MCP tool with the diff and instructions equivalent to the code-reviewer's (real defects only, file:line + severity + concrete failure scenario, no style nits, verify before reporting). `/codex:review` is the interactive equivalent if the user prefers running it themselves.
+   - Do not include either reviewer's output in the other's prompt.
+
+3. **Merge and dedup** by file/line/defect (same defect described differently = one finding).
+
+4. **Triage each unique finding:**
+   - **Confirmed** = reported by BOTH models, or verifiable by reproduction (write/run a failing test, run the command, trace the code yourself). Fix confirmed findings now — unless the fix expands scope, in which case ask the user first.
+   - **Unconfirmed** (one model, not reproducible cheaply): do NOT auto-fix — reviewers hallucinate defects too. Present to the user with your own one-line assessment.
+
+5. **After fixes:** re-run `./check.sh` (or the test suite); confirm nothing regressed.
+
+6. **Report** a table: finding | source (both / claude / codex) | verdict (confirmed / unconfirmed / refuted) | action taken. If both reviewers found nothing, say so in one line.
+
+## Guardrails
+
+- If the `codex` tool fails with an auth error, tell the user to run `! codex login`; offer the single-model review rather than silently degrading.
+- Severity comes from the failure scenario, not from reviewer confidence.
+
+## Machine-readable findings (ritual)
+
+If the project working directory contains a `.ritual/` directory: after the report above, ALSO write the merged findings to a NEW file (never modify an existing one) at `${RITUAL_FINDINGS_DIR:-.ritual/findings}/<UTC timestamp yyyymmddTHHMMSSZ>-dual-review.json`, creating the directory if needed, with exactly this JSON shape:
+
+```json
+{
+  "ritual_findings": 1,
+  "stage": "dual-review",
+  "branch": "<git branch --show-current, or empty>",
+  "generated_at": "<ISO8601 UTC>",
+  "source_models": {"claude": "<your model id>", "codex": "<codex model if known>"},
+  "findings": [
+    {"id": 1, "severity": "critical|major|minor", "title": "<one-sentence defect>",
+     "file": "src/foo.rs", "line": 42, "plan_step": null,
+     "scenario": "<concrete inputs/state -> wrong outcome>",
+     "sources": ["claude", "codex"],
+     "verdict": "confirmed|unconfirmed|refuted", "action": "fixed|pending|skipped"}
+  ]
+}
+```
+
+`sources` lists which reviewer(s) reported it (both = cross-confirmed). Use `null` for unknown fields. An empty `findings: []` file is valid when both reviewers found nothing. This section must not change the human-visible report or the procedure above. If `.ritual/` does not exist, skip this section entirely.
