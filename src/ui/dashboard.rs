@@ -15,11 +15,16 @@ use crate::findings::Severity;
 use crate::runner::events::AgentEvent;
 use crate::state::{PIPELINE, StageStatus};
 use crate::theme::Theme;
-use crate::ui::app::{App, CheckState, TABS, Tab};
+use crate::ui::app::{App, ChatState, ChatTurn, CheckState, TABS, Tab};
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SIDEBAR_W: u16 = 28;
 const MIN_SIDEBAR_TERM_W: u16 = 70;
+/// In chat mode the sidebar only survives on wide terminals — below this the
+/// preview | chat split takes the full width (fits an 80-col terminal).
+const CHAT_SIDEBAR_MIN_TERM_W: u16 = 100;
+/// Below this main width, chat stacks vertically (preview above, chat below).
+const CHAT_STACK_MIN_W: u16 = 55;
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -160,7 +165,14 @@ pub fn draw(f: &mut Frame, app: &App) {
         .split(f.area());
 
     let content = rows[0];
-    if content.width >= MIN_SIDEBAR_TERM_W {
+    // Chat mode needs the width for its own preview|chat split, so the sidebar
+    // only survives on wide terminals.
+    let sidebar_min = if app.chat.is_some() {
+        CHAT_SIDEBAR_MIN_TERM_W
+    } else {
+        MIN_SIDEBAR_TERM_W
+    };
+    if content.width >= sidebar_min {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -365,6 +377,10 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_main(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.cfg.theme;
+    if app.chat.is_some() {
+        draw_chat(f, app, area);
+        return;
+    }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -412,6 +428,193 @@ fn draw_main(f: &mut Frame, app: &App, area: Rect) {
 }
 
 // ---------------------------------------------------------------------------
+// spec/plan chat: live doc preview (left) + conversation (right)
+// ---------------------------------------------------------------------------
+
+fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
+    let t = &app.cfg.theme;
+    let Some(chat) = &app.chat else { return };
+    if area.width >= CHAT_STACK_MIN_W {
+        let chat_w = (area.width * 45 / 100).clamp(30, 60);
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Min(24),
+                Constraint::Length(1),
+                Constraint::Length(chat_w),
+            ])
+            .split(area);
+        draw_chat_preview(f, app, chat, cols[0]);
+        draw_divider(f, t, cols[1]);
+        draw_chat_panel(f, app, chat, cols[2]);
+    } else {
+        // Too narrow to sit side by side: stack, keeping the input visible.
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(3),
+                Constraint::Length(1),
+                Constraint::Length(10),
+            ])
+            .split(area);
+        draw_chat_preview(f, app, chat, rows[0]);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "─".repeat(rows[1].width as usize),
+                Style::default().fg(t.divider()),
+            ))),
+            rows[1],
+        );
+        draw_chat_panel(f, app, chat, rows[2]);
+    }
+}
+
+/// The live document (re-read every frame, so edits appear as they happen),
+/// focused on the current target — the whole doc, or one section's raw slice.
+fn draw_chat_preview(f: &mut Frame, app: &App, chat: &ChatState, area: Rect) {
+    let t = &app.cfg.theme;
+    let target = chat.target();
+    let (path, doc_label) = match target {
+        Some(tg) => (
+            match tg.doc {
+                crate::stages::DocKind::Spec => app.dirs.spec_file(&app.slug),
+                crate::stages::DocKind::Plan => app.dirs.plan_file(&app.slug),
+            },
+            tg.doc.label(),
+        ),
+        None => (app.dirs.spec_file(&app.slug), "spec"),
+    };
+    let full = std::fs::read_to_string(&path).unwrap_or_default();
+    let (header, text) = match target {
+        Some(tg) if tg.section.is_some() => {
+            let lines: Vec<&str> = full.lines().collect();
+            let end = tg.range.end.min(lines.len());
+            let start = tg.range.start.min(end);
+            (
+                format!(
+                    " {} · § {}",
+                    doc_label,
+                    tg.section.clone().unwrap_or_default()
+                ),
+                lines[start..end].join("\n"),
+            )
+        }
+        _ => (format!(" {doc_label} · whole"), full),
+    };
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            header,
+            Style::default()
+                .fg(t.comment())
+                .add_modifier(Modifier::BOLD),
+        ))),
+        rows[0],
+    );
+    draw_markdown_scrolled(f, t, rows[1], &text, 0);
+}
+
+/// The conversation: header + windowed transcript + a cursored input line.
+fn draw_chat_panel(f: &mut Frame, app: &App, chat: &ChatState, area: Rect) {
+    let t = &app.cfg.theme;
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(area);
+
+    // Header: which target + the keys.
+    let target_label = chat
+        .target()
+        .map(|tg| tg.label())
+        .unwrap_or_else(|| "spec".into());
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!(" {} chat ", t.icon_agent()),
+                Style::default().fg(t.accent()).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("· {target_label}"), Style::default().fg(t.muted())),
+        ])),
+        rows[0],
+    );
+
+    // Transcript, windowed by scroll (offset from the bottom; 0 = tail).
+    let width = rows[1].width;
+    let mut lines: Vec<Line> = Vec::new();
+    for turn in &chat.transcript {
+        match turn {
+            ChatTurn::User(text) => lines.push(Line::from(vec![
+                Span::styled(
+                    "› ",
+                    Style::default()
+                        .fg(t.highlight())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(text.clone(), Style::default().fg(t.fg())),
+            ])),
+            ChatTurn::Assistant(evs) => {
+                for ev in evs {
+                    lines.push(event_line(t, ev, width));
+                }
+            }
+            ChatTurn::System(s) => lines.push(Line::from(Span::styled(
+                format!("  {s}"),
+                Style::default()
+                    .fg(t.comment())
+                    .add_modifier(Modifier::ITALIC),
+            ))),
+        }
+    }
+    if chat.in_flight {
+        let sp = SPINNER[app.spinner % SPINNER.len()];
+        lines.push(Line::from(Span::styled(
+            format!("  {sp} editing…"),
+            Style::default().fg(t.info()),
+        )));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  ask me to write or refine this doc",
+            Style::default().fg(t.comment()),
+        )));
+        lines.push(Line::from(Span::styled(
+            "  Tab: target · Enter: send · Esc: close",
+            Style::default().fg(t.comment()),
+        )));
+    }
+    let h = rows[1].height as usize;
+    let total = lines.len();
+    let max_start = total.saturating_sub(h);
+    let start = max_start.saturating_sub(chat.scroll.min(max_start));
+    let visible: Vec<Line> = lines.into_iter().skip(start).take(h).collect();
+    f.render_widget(Paragraph::new(visible).wrap(Wrap { trim: false }), rows[1]);
+
+    // Input line with a caret sitting at the cursor position.
+    let before: String = chat.input[..chat.cursor].iter().collect();
+    let after: String = chat.input[chat.cursor..].iter().collect();
+    let input_spans = vec![
+        Span::styled(
+            format!(" {} ", t.icon_prompt()),
+            Style::default().fg(t.highlight()).bg(t.bg_row()),
+        ),
+        Span::styled(before, Style::default().fg(t.fg()).bg(t.bg_row())),
+        Span::styled("▏", Style::default().fg(t.info()).bg(t.bg_row())),
+        Span::styled(after, Style::default().fg(t.fg()).bg(t.bg_row())),
+    ];
+    f.render_widget(
+        Paragraph::new(fill_row(input_spans, rows[2].width, t.bg_row())),
+        rows[2],
+    );
+}
+
+// ---------------------------------------------------------------------------
 // live tab: greeter / stream / check pane
 // ---------------------------------------------------------------------------
 
@@ -432,8 +635,9 @@ fn draw_greeter(f: &mut Frame, t: &Theme, area: Rect) {
 
     // Super-concise feature map: fixed-width rows so the centered block
     // keeps a clean label column.
-    let guide: [(&str, &str); 9] = [
+    let guide: [(&str, &str); 10] = [
         ("pipeline", "spec → plan → review → tests → impl → dual"),
+        ("chat", "s — chat to write/edit the spec or plan live"),
         ("runs", "daemons: quit freely, reattach · a takeover"),
         ("findings", "Q → nvim quickfix · o open · e $EDITOR"),
         ("money", "daily budget · per-run caps · --force"),
@@ -986,6 +1190,7 @@ fn draw_help(f: &mut Frame, t: &Theme) {
             "run",
             &[
                 ("enter", "run stage / open"),
+                ("s", "chat: edit spec/plan"),
                 ("a", "take over session"),
                 ("x", "cancel run"),
                 ("c/C", "check fast / full"),
