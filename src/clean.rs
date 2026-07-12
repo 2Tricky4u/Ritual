@@ -351,6 +351,129 @@ mod tests {
     }
 
     #[test]
+    fn state_ref_wins_over_today_in_keep_reasons() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = dirs(&tmp);
+        // A run dated TODAY that is ALSO state-referenced: classification
+        // order makes StateRef the recorded reason (both protect it).
+        let id = "20260712T000001Z-x";
+        let meta = RunMeta {
+            run_id: id.into(),
+            stage: "plan-review".into(),
+            ok: true,
+            started_at: Some(Utc::now()),
+            ..Default::default()
+        };
+        std::fs::write(
+            d.runs_dir().join(format!("{id}.meta.json")),
+            serde_json::to_string(&meta).unwrap(),
+        )
+        .unwrap();
+        let mut st = State::default();
+        let f = st.feature_for_branch_mut("main");
+        f.stages.entry(StageId::PlanReview).or_default().runs = vec![id.into()];
+        st.save(&d).unwrap();
+
+        let r = clean(&d, 0, false).unwrap();
+        assert!(r.deleted_groups.is_empty());
+        assert!(
+            r.kept
+                .iter()
+                .any(|(k, why)| k == id && *why == KeepReason::StateRef),
+            "{:?}",
+            r.kept
+        );
+    }
+
+    #[test]
+    fn corrupt_checkpoint_does_not_block_unchained_pruning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = dirs(&tmp);
+        std::fs::write(d.runs_dir().join("checkpoint.json"), "not json").unwrap();
+        for i in 1..=2 {
+            mk_finished(&d, &format!("20260701T00000{i}Z-x"));
+        }
+        let r = clean(&d, 0, false).unwrap();
+        assert_eq!(r.deleted_groups.len(), 2, "unchained garbage still prunes");
+    }
+
+    #[test]
+    fn partial_suffix_failure_excludes_the_group_and_records_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = dirs(&tmp);
+        mk_finished(&d, "20260701T000001Z-x");
+        mk_finished(&d, "20260701T000002Z-x");
+        // Make ONE suffix un-deletable: a non-empty DIRECTORY named like the
+        // archive — remove_file() fails on it while the meta unlinks fine.
+        let blocker = d.runs_dir().join("20260701T000001Z-x.jsonl");
+        std::fs::remove_file(&blocker).unwrap();
+        std::fs::create_dir(&blocker).unwrap();
+        std::fs::write(blocker.join("keep"), "x").unwrap();
+
+        let r = clean(&d, 0, false).unwrap();
+        assert_eq!(ids(&r.deleted_groups), ["20260701T000002Z-x"]);
+        assert!(
+            r.failures
+                .iter()
+                .any(|(id, why)| id == "20260701T000001Z-x" && why.contains(".jsonl")),
+            "{:?}",
+            r.failures
+        );
+    }
+
+    #[test]
+    fn dry_run_over_a_chained_prefix_reports_but_never_writes_the_checkpoint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = dirs(&tmp);
+        let l1 = mk_chained(&d, "20260701T000001Z-c", GENESIS);
+        let l2 = mk_chained(&d, "20260701T000002Z-c", &l1);
+        mk_chained(&d, "20260701T000003Z-c", &l2);
+
+        let r = clean(&d, 1, true).unwrap();
+        let cp = r
+            .checkpoint
+            .expect("dry-run reports the would-be checkpoint");
+        assert_eq!(cp.as_of_run_id, "20260701T000002Z-c");
+        assert!(
+            crate::provenance::load_checkpoint(&d.runs_dir())
+                .unwrap()
+                .is_none(),
+            "nothing written on disk"
+        );
+        // Everything still verifies exactly as before.
+        assert_eq!(
+            crate::provenance::verify_log(&d.runs_dir()).unwrap(),
+            crate::provenance::VerifyOutcome::Ok {
+                runs: 3,
+                checkpoint: None
+            }
+        );
+    }
+
+    #[test]
+    fn second_clean_never_rewrites_the_checkpoint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = dirs(&tmp);
+        let l1 = mk_chained(&d, "20260701T000001Z-c", GENESIS);
+        let l2 = mk_chained(&d, "20260701T000002Z-c", &l1);
+        mk_chained(&d, "20260701T000003Z-c", &l2);
+
+        let r = clean(&d, 1, false).unwrap();
+        let first = r.checkpoint.expect("first clean checkpoints");
+        // No new candidates: the checkpoint must stay byte-identical (the
+        // as_of can never regress, and an idle clean never rewrites it).
+        let r = clean(&d, 1, false).unwrap();
+        assert!(r.checkpoint.is_none());
+        assert_eq!(
+            crate::provenance::load_checkpoint(&d.runs_dir())
+                .unwrap()
+                .unwrap()
+                .self_hash,
+            first.self_hash
+        );
+    }
+
+    #[test]
     fn dry_run_mutates_nothing() {
         let tmp = tempfile::tempdir().unwrap();
         let d = dirs(&tmp);

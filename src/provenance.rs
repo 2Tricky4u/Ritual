@@ -435,4 +435,91 @@ mod tests {
         assert!(b.claude_version.is_none());
         assert!(b.config_snapshot.contains_key("redaction"));
     }
+
+    #[test]
+    fn verify_maps_unreadable_checkpoint_to_broken() {
+        let tmp = tempfile::tempdir().unwrap();
+        mk_run(tmp.path(), "20260711T000001Z-a", GENESIS);
+        std::fs::write(checkpoint_path(tmp.path()), "not json").unwrap();
+        match verify_log(tmp.path()).unwrap() {
+            VerifyOutcome::Broken { run_id, .. } => assert_eq!(run_id, "checkpoint.json"),
+            other => panic!("expected Broken, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_archive_breaks_the_chain_at_that_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c1 = mk_run(tmp.path(), "20260711T000001Z-a", GENESIS);
+        mk_run(tmp.path(), "20260711T000002Z-b", &c1.this);
+        // The meta survives but its .jsonl vanishes (partial deletion, disk
+        // repair, hand-tampering): content hash can no longer match.
+        std::fs::remove_file(tmp.path().join("20260711T000001Z-a.jsonl")).unwrap();
+        match verify_log(tmp.path()).unwrap() {
+            VerifyOutcome::Broken { run_id, .. } => assert!(run_id.ends_with("-a"), "{run_id}"),
+            other => panic!("expected Broken, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn last_link_skips_newer_unchained_metas() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c1 = mk_run(tmp.path(), "20260711T000001Z-a", GENESIS);
+        // A NEWER meta without a chain (failed write, foreign copy) must not
+        // reset the chain to GENESIS — the newest CHAINED link wins.
+        let meta = RunMeta {
+            run_id: "20260711T000002Z-b".into(),
+            ..Default::default()
+        };
+        std::fs::write(
+            tmp.path().join("20260711T000002Z-b.meta.json"),
+            serde_json::to_string(&meta).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(last_link(tmp.path()), c1.this);
+    }
+
+    #[test]
+    fn collect_captures_git_state_and_model_routing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        let mut cfg = Config {
+            claude_cmd: vec!["/nonexistent/claude".into()],
+            codex_cmd: vec!["/nonexistent/codex".into()],
+            ..Default::default()
+        };
+        cfg.models.insert("plan-review".into(), "opus".into());
+
+        // Outside a git repo: git fields stay None, snapshot still filled.
+        let b = collect(&cfg, &dirs);
+        assert!(b.git_commit.is_none());
+        assert!(b.git_dirty_diff_sha256.is_none());
+        assert_eq!(b.config_snapshot["base_ref"], "main");
+        assert_eq!(b.config_snapshot["model.plan-review"], "opus");
+
+        // A repo with a commit and a dirty tracked file fills both.
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(tmp.path())
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(tmp.path().join("f.txt"), "one\n").unwrap();
+        git(&["add", "-A"]);
+        git(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "x",
+        ]);
+        std::fs::write(tmp.path().join("f.txt"), "two\n").unwrap();
+        let b = collect(&cfg, &dirs);
+        assert!(b.git_commit.is_some());
+        assert!(b.git_dirty_diff_sha256.is_some(), "dirty diff hashed");
+    }
 }
