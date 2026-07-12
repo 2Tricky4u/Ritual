@@ -92,6 +92,9 @@ pub enum Command {
         /// CI mode: emit JUnit XML to .ritual/ci/, exit nonzero on blocking findings
         #[arg(long)]
         ci: bool,
+        /// Model override for this one run (beats the [models] routing table)
+        #[arg(long)]
+        model: Option<String>,
     },
     /// Generate a Markdown report for a feature (spec, plan, findings, runs, costs)
     Report {

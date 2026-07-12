@@ -19,6 +19,7 @@ pub fn execute(
     arg: Option<&str>,
     force: bool,
     ci: bool,
+    model: Option<&str>,
 ) -> Result<()> {
     let stage = StageId::parse(stage_str)
         .with_context(|| format!("unknown stage '{stage_str}' (spec, plan, plan-review, tests-red, implement, dual-review)"))?;
@@ -42,7 +43,7 @@ pub fn execute(
         .map(|f| f.title.clone())
         .unwrap_or_default();
 
-    let cmd = stages::build(stage, cfg, dirs, &slug, arg)?;
+    let cmd = stages::build(stage, cfg, dirs, &slug, arg, model)?;
 
     if cmd.needs_codex && !cfg.offline && !stages::codex_ready(cfg) {
         anyhow::bail!(

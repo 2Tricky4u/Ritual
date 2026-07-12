@@ -196,12 +196,16 @@ pub fn render_history(cfg: &Config, metas: &[RunMeta], summary: &DaySummary, lim
             .duration_ms
             .map(|d| format!("{:.1}s", d as f64 / 1000.0))
             .unwrap_or_else(|| "-".into());
+        // Short model tag so retried-with-model attempts are tellable apart.
+        let mut model = m.model.clone().unwrap_or_else(|| "-".into());
+        model.truncate(14);
         println!(
-            "  {} {}  {}  {}  {}  {}  {}",
+            "  {} {}  {}  {}  {}  {}  {}  {}",
             status,
             hex(t, p.light_grey, &when),
             hex(t, p.white, &format!("{:<12}", m.stage)),
             hex(t, p.cyan, &format!("{:<8}", m.agent)),
+            hex(t, p.light_grey, &format!("{model:<14}")),
             hex(t, p.orange, &format!("{cost:>8}")),
             hex(t, p.light_grey, &format!("{tokens:>16}")),
             hex(t, p.light_grey, &dur),

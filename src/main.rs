@@ -175,8 +175,17 @@ fn main() -> Result<()> {
             arg,
             force,
             ci,
+            model,
         }) => {
-            run_cmd::execute(&cfg, &dirs, &stage, arg.as_deref(), force, ci)?;
+            run_cmd::execute(
+                &cfg,
+                &dirs,
+                &stage,
+                arg.as_deref(),
+                force,
+                ci,
+                model.as_deref(),
+            )?;
         }
         Some(Command::Repro { run_id }) => {
             let metas = history::load_all(&dirs.runs_dir())?;

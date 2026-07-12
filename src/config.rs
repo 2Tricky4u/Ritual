@@ -57,6 +57,16 @@ pub struct FileConfig {
     pub sandbox: Option<SandboxFileConfig>,
     /// `[coderabbit]` table: third reviewer via the CodeRabbit CLI (dark).
     pub coderabbit: Option<CodeRabbitFileConfig>,
+    /// `[retry]` table: alternate models offered for failed-stage retries.
+    pub retry: Option<RetryFileConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct RetryFileConfig {
+    /// Models offered in the palette as "retry <stage> with <model>" when a
+    /// headless stage failed or needs attention.
+    pub models: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -140,6 +150,7 @@ pub struct Config {
     pub sandbox_wrapper: Vec<String>,
     pub coderabbit_enabled: bool,
     pub coderabbit_cmd: Vec<String>,
+    pub retry_models: Vec<String>,
 }
 
 impl Default for Config {
@@ -174,6 +185,7 @@ impl Default for Config {
             sandbox_wrapper: Vec::new(),
             coderabbit_enabled: false,
             coderabbit_cmd: vec!["coderabbit".into()],
+            retry_models: Vec::new(),
         }
     }
 }
@@ -311,6 +323,11 @@ impl Config {
                 if let Some(cmd) = c.cmd {
                     cfg.coderabbit_cmd = split_cmd(&cmd)?;
                 }
+            }
+            if let Some(r) = fc.retry
+                && let Some(models) = r.models
+            {
+                cfg.retry_models = models;
             }
         }
 

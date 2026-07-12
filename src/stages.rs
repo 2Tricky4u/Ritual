@@ -179,13 +179,15 @@ pub fn doc_chat_command(
 }
 
 /// Build the exact command for a stage. `arg` is the optional user argument
-/// (plan path for plan-review, base ref for dual-review).
+/// (plan path for plan-review, base ref for dual-review). `model_override`
+/// (retry-with-model, `run --model`) beats the `[models]` routing table.
 pub fn build(
     stage: StageId,
     cfg: &Config,
     dirs: &RitualDirs,
     slug: &str,
     arg: Option<&str>,
+    model_override: Option<&str>,
 ) -> Result<StageCommand> {
     let claude = cfg.claude_cmd.clone();
     let findings_env = (
@@ -299,12 +301,16 @@ pub fn build(
             }
         }
     };
-    // Per-stage model routing ([models] config table).
-    if let Some(model) = cfg.models.get(stage.label())
+    // Per-stage model routing: an explicit override (retry-with-model,
+    // `run --model`) beats the [models] config table.
+    let model = model_override
+        .map(str::to_string)
+        .or_else(|| cfg.models.get(stage.label()).cloned());
+    if let Some(model) = model
         && !cmd.argv.is_empty()
     {
         cmd.argv.push("--model".into());
-        cmd.argv.push(model.clone());
+        cmd.argv.push(model);
     }
     // Overload resilience: headless claude runs retry on a fallback model
     // instead of dying to a 529 hours into a review (interactive runs can
@@ -358,7 +364,7 @@ mod tests {
         let (_tmp, cfg, dirs) = setup();
         std::fs::create_dir_all(dirs.feature_dir("feat-x")).unwrap();
         std::fs::write(dirs.plan_file("feat-x"), "# plan").unwrap();
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "feat-x", None).unwrap();
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "feat-x", None, None).unwrap();
         assert_eq!(cmd.mode, Mode::Headless);
         assert!(cmd.needs_codex);
         assert!(cmd.argv.iter().any(|a| a.starts_with("/plan-review ")));
@@ -373,12 +379,12 @@ mod tests {
         std::fs::create_dir_all(dirs.feature_dir("s")).unwrap();
         std::fs::write(dirs.plan_file("s"), "# plan").unwrap();
 
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None).unwrap();
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None).unwrap();
         let tools = cmd.argv.iter().find(|a| a.contains("mcp__codex")).unwrap();
         assert!(!tools.contains("mcp__pal__consensus"), "dark by default");
 
         cfg.consensus_enabled = true;
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None).unwrap();
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None).unwrap();
         let tools = cmd.argv.iter().find(|a| a.contains("mcp__codex")).unwrap();
         assert!(tools.contains("mcp__pal__consensus"));
     }
@@ -386,7 +392,7 @@ mod tests {
     #[test]
     fn plan_review_requires_plan_file() {
         let (_tmp, cfg, dirs) = setup();
-        assert!(build(StageId::PlanReview, &cfg, &dirs, "feat-x", None).is_err());
+        assert!(build(StageId::PlanReview, &cfg, &dirs, "feat-x", None, None).is_err());
     }
 
     #[test]
@@ -396,11 +402,11 @@ mod tests {
         std::fs::write(dirs.plan_file("s"), "# plan").unwrap();
 
         // Off by default.
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None).unwrap();
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None).unwrap();
         assert!(!cmd.argv.contains(&"--fallback-model".to_string()));
 
         cfg.fallback_model = Some("claude-sonnet-5".into());
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None).unwrap();
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None).unwrap();
         let i = cmd
             .argv
             .iter()
@@ -409,7 +415,7 @@ mod tests {
         assert_eq!(cmd.argv[i + 1], "claude-sonnet-5");
 
         // Interactive stages negotiate with the user — no fallback flag.
-        let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None).unwrap();
+        let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None, None).unwrap();
         assert!(!cmd.argv.contains(&"--fallback-model".to_string()));
 
         // Doc-chat is headless claude too.
@@ -429,9 +435,9 @@ mod tests {
     #[test]
     fn dual_review_uses_base_ref() {
         let (_tmp, cfg, dirs) = setup();
-        let cmd = build(StageId::DualReview, &cfg, &dirs, "s", None).unwrap();
+        let cmd = build(StageId::DualReview, &cfg, &dirs, "s", None, None).unwrap();
         assert!(cmd.argv.contains(&"/dual-review main".to_string()));
-        let cmd = build(StageId::DualReview, &cfg, &dirs, "s", Some("develop")).unwrap();
+        let cmd = build(StageId::DualReview, &cfg, &dirs, "s", Some("develop"), None).unwrap();
         assert!(cmd.argv.contains(&"/dual-review develop".to_string()));
     }
 
@@ -512,7 +518,7 @@ mod tests {
     fn interactive_stages_have_no_stream_flags() {
         let (_tmp, cfg, dirs) = setup();
         for stage in [StageId::Plan, StageId::TestsRed, StageId::Implement] {
-            let cmd = build(stage, &cfg, &dirs, "s", None).unwrap();
+            let cmd = build(stage, &cfg, &dirs, "s", None, None).unwrap();
             assert_eq!(cmd.mode, Mode::Interactive);
             assert!(!cmd.argv.contains(&"stream-json".to_string()));
         }
@@ -527,18 +533,18 @@ mod tests {
             |cmd: &StageCommand| cmd.env.iter().any(|(k, _)| k == "RITUAL_INVARIANTS_FILE");
 
         // Absent file -> no env.
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None).unwrap();
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None).unwrap();
         assert!(!has_env(&cmd));
 
         // Scaffold template (headings + comments only) -> still no env.
         std::fs::write(dirs.invariants_file(), crate::scaffold::INVARIANTS_TEMPLATE).unwrap();
-        let cmd = build(StageId::DualReview, &cfg, &dirs, "s", None).unwrap();
+        let cmd = build(StageId::DualReview, &cfg, &dirs, "s", None, None).unwrap();
         assert!(!has_env(&cmd));
 
         // Real bullets -> both review stages carry it; interactive ones don't.
         std::fs::write(dirs.invariants_file(), "# Invariants\n- no panics\n").unwrap();
         for stage in [StageId::PlanReview, StageId::DualReview] {
-            let cmd = build(stage, &cfg, &dirs, "s", None).unwrap();
+            let cmd = build(stage, &cfg, &dirs, "s", None, None).unwrap();
             assert!(
                 cmd.env
                     .iter()
@@ -546,8 +552,35 @@ mod tests {
                 "{stage:?} must carry the constitution"
             );
         }
-        let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None).unwrap();
+        let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None, None).unwrap();
         assert!(!has_env(&cmd));
+    }
+
+    #[test]
+    fn model_override_beats_routing_table() {
+        let (_tmp, mut cfg, dirs) = setup();
+        std::fs::create_dir_all(dirs.feature_dir("s")).unwrap();
+        std::fs::write(dirs.plan_file("s"), "# plan").unwrap();
+        cfg.models.insert("plan-review".into(), "opus".into());
+
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None).unwrap();
+        assert!(cmd.argv.windows(2).any(|w| w == ["--model", "opus"]));
+
+        let cmd = build(
+            StageId::PlanReview,
+            &cfg,
+            &dirs,
+            "s",
+            None,
+            Some("claude-sonnet-5"),
+        )
+        .unwrap();
+        assert!(
+            cmd.argv
+                .windows(2)
+                .any(|w| w == ["--model", "claude-sonnet-5"])
+        );
+        assert!(!cmd.argv.contains(&"opus".to_string()));
     }
 
     #[test]
