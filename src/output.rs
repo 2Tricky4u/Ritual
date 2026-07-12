@@ -543,6 +543,29 @@ fn clip(s: &str, max: usize) -> String {
     out
 }
 
+/// A block-character sparkline of `values`, each scaled relative to the window
+/// max (so it shows the *shape*, not absolute magnitude). `None` when there
+/// isn't enough signal to draw — fewer than two points, or an all-zero window.
+pub fn sparkline(values: &[f64]) -> Option<String> {
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    if values.len() < 2 {
+        return None;
+    }
+    let max = values.iter().cloned().fold(0.0_f64, f64::max);
+    if max <= 0.0 {
+        return None;
+    }
+    Some(
+        values
+            .iter()
+            .map(|v| {
+                let idx = ((v.max(0.0) / max) * (BARS.len() - 1) as f64).round() as usize;
+                BARS[idx.min(BARS.len() - 1)]
+            })
+            .collect(),
+    )
+}
+
 pub fn render_init(cfg: &Config, report: &InitReport) {
     let t = &cfg.theme;
     let p = t.palette;
@@ -593,6 +616,24 @@ mod tests {
     fn clip_counts_chars_not_bytes() {
         // No panic on a multi-byte boundary, and exact char count.
         assert_eq!(clip("ααααα", 3), "ααα…");
+    }
+
+    #[test]
+    fn sparkline_scales_to_window_max_and_guards_degenerate_input() {
+        // Too little signal / no signal → nothing to draw.
+        assert!(sparkline(&[]).is_none());
+        assert!(sparkline(&[5.0]).is_none());
+        assert!(sparkline(&[0.0, 0.0, 0.0]).is_none());
+
+        // Ramp maps low→▁ and the max→█, one glyph per value.
+        let s = sparkline(&[0.0, 1.0, 2.0, 4.0]).unwrap();
+        assert_eq!(s.chars().count(), 4);
+        assert!(s.starts_with('▁'));
+        assert!(s.ends_with('█'));
+        // Relative, not absolute: a scaled-down copy renders identically.
+        assert_eq!(sparkline(&[0.0, 10.0, 20.0, 40.0]).unwrap(), s);
+        // Negative/garbage costs clamp to the floor, never panic.
+        assert!(sparkline(&[-1.0, 2.0]).unwrap().starts_with('▁'));
     }
 
     #[test]
