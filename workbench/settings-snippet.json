@@ -1,0 +1,34 @@
+{
+  "_comment": "Reference blocks for ~/.claude/settings.json — ritual never merges these automatically (no JSON surgery on your settings). `ritual init --skills` installs skills/agents/hooks as files; add these keys yourself if missing, and `ritual doctor` checks for them.",
+
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/check-on-edit.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/secrets-guard.py"
+          }
+        ]
+      }
+    ]
+  },
+
+  "enabledPlugins": {
+    "codex@openai-codex": true
+  },
+
+  "_mcp": "The codex MCP server is registered per-user, not in settings.json: `claude mcp add --scope user codex -- codex mcp-server`. Optional consensus tier: `claude mcp add --scope user pal --env GEMINI_API_KEY=<key> -- uvx --from git+https://github.com/BeehiveInnovations/pal-mcp-server.git pal-mcp-server`."
+}
