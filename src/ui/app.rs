@@ -1763,6 +1763,16 @@ impl App {
 /// stages that don't parse to a StageId and stay daemon-only — a newer live
 /// chat run must never shadow an older pipeline run (follow chat runs with
 /// `ritual attach` instead).
+/// With worktree parallelism a second live run can't attach into this TUI —
+/// but it must not be invisible either (chat runs count too: `ps` sees them).
+fn other_live_runs_notice(dirs: &RitualDirs, resumed: Option<&str>) -> Option<String> {
+    let others = runner::live_runs(dirs)
+        .into_iter()
+        .filter(|(id, _)| Some(id.as_str()) != resumed)
+        .count();
+    (others > 0).then(|| format!("{others} other live run(s) — `ritual ps` / `ritual attach <id>`"))
+}
+
 fn newest_resumable_run(dirs: &RitualDirs) -> Option<(String, runner::RunStatus)> {
     runner::live_runs(dirs)
         .into_iter()
@@ -1827,8 +1837,13 @@ pub async fn run(cfg: Config, dirs: RitualDirs) -> Result<()> {
     // Finalize stages whose runs completed while nobody was watching, then
     // reattach to any run that is still alive.
     app.reconcile_stale_runs();
-    if let Some((run_id, status)) = newest_resumable_run(&app.dirs) {
+    let resumed = newest_resumable_run(&app.dirs);
+    let resumed_id = resumed.as_ref().map(|(id, _)| id.clone());
+    if let Some((run_id, status)) = resumed {
         app.resume_run(run_id, status, &tx);
+    }
+    if let Some(msg) = other_live_runs_notice(&app.dirs, resumed_id.as_deref()) {
+        app.status_msg = Some(msg);
     }
     let watcher = crate::watcher::spawn(app.dirs.work_root.clone(), tx.clone()).ok();
 
@@ -1985,6 +2000,37 @@ mod tests {
         app.open_chat(&tx);
         assert!(!app.chat.as_ref().unwrap().in_flight);
         assert!(app.chat.as_ref().unwrap().transcript.is_empty());
+    }
+
+    #[test]
+    fn other_live_runs_surface_a_notice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runs = tmp.path().join(".ritual/runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        assert!(other_live_runs_notice(&dirs, None).is_none());
+
+        let pid = std::process::id();
+        for name in [
+            "20260712T000001Z-1-1-plan-review",
+            "20260712T000002Z-1-2-dual-review",
+        ] {
+            std::fs::write(
+                runs.join(format!("{name}.status")),
+                format!(r#"{{"pid":{pid},"stage":"x","branch":"other"}}"#),
+            )
+            .unwrap();
+        }
+        // The resumed run is excluded; the other one is announced.
+        let msg = other_live_runs_notice(&dirs, Some("20260712T000002Z-1-2-dual-review")).unwrap();
+        assert!(msg.contains("1 other live run(s)"), "{msg}");
+        assert!(msg.contains("ritual ps"));
+        // Nothing resumed -> both count.
+        assert!(
+            other_live_runs_notice(&dirs, None)
+                .unwrap()
+                .contains("2 other")
+        );
     }
 
     #[test]

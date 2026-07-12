@@ -65,6 +65,49 @@ fn init_skills_installs_the_workbench() {
 }
 
 #[test]
+fn skills_diff_reports_identical_divergent_and_missing() {
+    let tmp = setup_project();
+    let fake_home = tmp.path().join("claude-home");
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_HOME", &fake_home)
+        .args(["init", "--skills"])
+        .assert()
+        .success();
+
+    // Everything freshly installed -> identical, no divergence footer.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_HOME", &fake_home)
+        .args(["skills", "diff"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("tdd").and(predicate::str::contains("identical")))
+        .stdout(predicate::str::contains("divergent").not());
+
+    // Local edit + a removed skill -> flagged with the first divergent line.
+    let tdd = fake_home.join("skills/tdd/SKILL.md");
+    let mut text = std::fs::read_to_string(&tdd).unwrap();
+    text = text.replacen('\n', "\nLOCAL TWEAK\n", 1);
+    std::fs::write(&tdd, text).unwrap();
+    std::fs::remove_dir_all(fake_home.join("skills/consensus")).unwrap();
+
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_HOME", &fake_home)
+        .args(["skills", "diff"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("differs at line 2"))
+        .stdout(predicate::str::contains("installed: LOCAL TWEAK"))
+        .stdout(predicate::str::contains("MISSING"))
+        .stdout(predicate::str::contains("2 divergent"));
+}
+
+#[test]
 fn status_renders_empty_and_with_feature() {
     let tmp = setup_project();
     Command::cargo_bin("ritual")

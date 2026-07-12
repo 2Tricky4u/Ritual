@@ -147,6 +147,45 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Some(Command::Skills { cmd }) => match cmd {
+            ritual::cli::SkillsCmd::Diff => {
+                let home = match std::env::var_os("RITUAL_CLAUDE_HOME") {
+                    Some(h) => std::path::PathBuf::from(h), // test seam
+                    None => dirs::home_dir()
+                        .context("no home directory")?
+                        .join(".claude"),
+                };
+                let mut divergent = 0usize;
+                for (name, status) in ritual::workbench::diff(&home) {
+                    use ritual::workbench::SkillDiff;
+                    match status {
+                        SkillDiff::Identical => println!("  {name:<14} identical"),
+                        SkillDiff::Missing => {
+                            divergent += 1;
+                            println!("  {name:<14} MISSING (ritual init --skills installs it)");
+                        }
+                        SkillDiff::Differs {
+                            repo_lines,
+                            installed_lines,
+                            first: (line, repo, installed),
+                        } => {
+                            divergent += 1;
+                            println!(
+                                "  {name:<14} differs at line {line} (repo {repo_lines} lines, installed {installed_lines})"
+                            );
+                            println!("    repo:      {repo}");
+                            println!("    installed: {installed}");
+                        }
+                    }
+                }
+                if divergent > 0 {
+                    println!(
+                        "\n{divergent} divergent — `ritual init --skills --force` pushes repo → {}",
+                        home.display()
+                    );
+                }
+            }
+        },
         Some(Command::Costs { json }) => {
             let metas = history::load_all(&dirs.runs_dir())?;
             if json {
