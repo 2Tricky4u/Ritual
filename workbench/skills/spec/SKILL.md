@@ -12,13 +12,14 @@ Your invocation prompt carries these fields (values, not literals):
 
 - `DOC_FILE` — absolute path to the document to edit.
 - `DOC_KIND` — `spec` (a WHAT-not-HOW contract: Goal / Behavior / Edge cases / Out of scope) or `plan` (ordered implementation steps).
+- `SPEC_FILE` — (plan targets only) absolute path to the sibling spec, for drafting.
 - `SCOPE` — `whole`, or `section "<heading text>"` to confine the edit to one `##` section.
 - `REQUEST` — the user's message: what they want changed.
 - `RECENT CONVERSATION` — the last few turns, for context only. Do NOT re-apply earlier requests; the file already reflects them.
 
 ## Procedure
 
-1. **Read `DOC_FILE`.** If it does not exist or is empty, create it from the template for its `DOC_KIND`: a `spec` gets `# Feature: <infer a title>` then the four H2 sections `## Goal`, `## Behavior (the contract — WHAT, not HOW)`, `## Edge cases & failure modes`, `## Out of scope`; a `plan` gets `# Plan` and an empty `## Steps`. Then proceed to apply the request.
+1. **Read `DOC_FILE`.** If it does not exist or is empty, create it from the template for its `DOC_KIND`: a `spec` gets `# Feature: <infer a title>` then the four H2 sections `## Goal`, `## Behavior (the contract — WHAT, not HOW)`, `## Edge cases & failure modes`, `## Out of scope`; a `plan` gets `# Plan` and `## Steps`. **Drafting a plan:** when `DOC_KIND` is `plan`, the document is missing or empty, and `SPEC_FILE` is provided, Read the spec first and draft the steps FROM it — ordered, concrete, one deliverable per step, WHAT the spec demands over HOW you'd code it — then let the request shape that draft. Then proceed to apply the request.
 
 2. **Honor `SCOPE`.** For `section "<name>"`, every edit must land inside that section's body; do not add, remove, rename, or reorder any top-level (`#`/`##`) heading. For `whole`, you may touch any section but must preserve the document's structure (a spec keeps exactly its four H2s, in order).
 

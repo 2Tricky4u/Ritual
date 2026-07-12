@@ -72,11 +72,13 @@ fn setup_chat_app(tmp: &tempfile::TempDir) -> App {
                 doc: DocKind::Spec,
                 section: None,
                 range: 0..9,
+                missing: false,
             },
             ChatTarget {
                 doc: DocKind::Spec,
                 section: Some("Behavior (the contract — WHAT, not HOW)".into()),
                 range: 5..7,
+                missing: false,
             },
         ],
         target_idx: 1, // focused on the Behavior section

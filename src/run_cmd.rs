@@ -369,7 +369,18 @@ pub fn run_doc_chat(
     // Same pre-edit snapshot the TUI writes: CLI chats are Ctrl+Z-undoable.
     let _ = std::fs::write(dirs.undo_file(&slug, kind.label()), &doc_before);
 
-    let cmd = stages::doc_chat_command(cfg, &doc_path, kind, &scope, message, "");
+    // Plan targets carry the spec path so a missing plan drafts from it.
+    let spec_path = (kind == stages::DocKind::Plan && dirs.spec_file(&slug).exists())
+        .then(|| dirs.spec_file(&slug));
+    let cmd = stages::doc_chat_command(
+        cfg,
+        &doc_path,
+        kind,
+        &scope,
+        message,
+        "",
+        spec_path.as_deref(),
+    );
     let stage_label = format!("{}-chat", kind.label());
     let req = RunRequest {
         agent: cmd.agent,
