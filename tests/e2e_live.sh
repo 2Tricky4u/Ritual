@@ -225,6 +225,85 @@ exists "worktree checkout"    "$ROOT/proj-feat-parallel"
 ok "status from worktree"     0 "\"current_branch\": \"feat/parallel\"" -- bash -c \
   "cd '$ROOT/proj-feat-parallel' && '$RITUAL' status --json"
 
+echo "── v0.5: mutation + secrets gates ───────────────────────────────────"
+FAKE_MUTANTS="$HOME/Documents/project/ritual/tests/fake_mutants.sh"
+FAKE_GITLEAKS="$HOME/Documents/project/ritual/tests/fake_gitleaks.sh"
+ok "mutants: empty diff no-op" 0 "nothing to mutate" -- bash -c "cd '$PROJ' && \
+  RITUAL_MUTANTS_CMD='$FAKE_MUTANTS' '$RITUAL' mutants"
+printf '\n# touched\n' >> "$PROJ/Cargo.toml"
+ok "mutants: survivors -> findings" 0 "1 caught, 1 missed" -- bash -c "cd '$PROJ' && \
+  RITUAL_MUTANTS_CMD='$FAKE_MUTANTS' '$RITUAL' mutants"
+exists "mutants findings file" "$PROJ/.ritual/findings/"*-mutants.json
+printf 'x = 1\napi_key = "h"\n' > "$PROJ/leaky.py"
+ok "secrets: leaks block"     1 ".gitleaksignore" -- bash -c "cd '$PROJ' && \
+  RITUAL_GITLEAKS_CMD='$FAKE_GITLEAKS' '$RITUAL' secrets"
+exists "secrets findings file" "$PROJ/.ritual/findings/"*-secrets.json
+ok "secrets fingerprint recorded" 0 "leaky.py:generic-api-key" -- \
+  grep -r "leaky.py:generic-api-key" "$PROJ/.ritual/findings/"
+rm -f "$PROJ/leaky.py"
+
+echo "── v0.5: lessons, costs, retry, invariants ──────────────────────────"
+# Dismiss the mutants finding -> it becomes review memory.
+sed -i 's/"action": "pending"/"action": "dismissed"/' "$PROJ/.ritual/findings/"*-mutants.json
+ok "lessons distill dispositions" 0 "Known noise" -- bash -c "cd '$PROJ' && '$RITUAL' lessons --stdout"
+ok "costs rolls up per stage" 0 "plan-review" -- bash -c "cd '$PROJ' && '$RITUAL' costs --json"
+ok "run --model overrides"    0 "plan-review ok" -- bash -c "cd '$PROJ' && \
+  RITUAL_CLAUDE_CMD='$FAKE' RITUAL_CODEX_CMD='$FAKE' FAKE_AGENT_DELAY=0 \
+  FAKE_AGENT_FINDINGS='.ritual/findings/20260712T210000Z-plan-review.json' \
+  '$RITUAL' run plan-review --model fake-model-x"
+ok "override reached the argv" 0 "fake-model-x" -- bash -c "cd '$PROJ' && \
+  '$RITUAL' history --json | jq -r '.[0].argv | join(\" \")'"
+printf '# Invariants\n- parsers never panic\n' > "$PROJ/.ritual/invariants.md"
+ok "doctor sees the constitution" 0 "enforced by review stages" -- bash -c "cd '$PROJ' && \
+  RITUAL_CLAUDE_HOME='$CLAUDE_HOME' RITUAL_CLAUDE_CMD='$FAKE' RITUAL_CODEX_CMD='$FAKE' \
+  '$RITUAL' doctor"
+
+echo "── v0.5: sandbox wrapper + coderabbit ───────────────────────────────"
+FAKE_WRAP="$HOME/Documents/project/ritual/tests/fake_wrapper.sh"
+FAKE_CR="$HOME/Documents/project/ritual/tests/fake_coderabbit.sh"
+printf '[sandbox]\nenabled = true\nwrapper = "%s"\n' "$FAKE_WRAP" > "$PROJ/.ritual/config.toml"
+ok "sandboxed run completes"  0 "plan-review ok" -- bash -c "cd '$PROJ' && \
+  RITUAL_CLAUDE_CMD='$FAKE' RITUAL_CODEX_CMD='$FAKE' FAKE_AGENT_DELAY=0 \
+  FAKE_WRAPPER_LOG='$ROOT/wrapper.log' \
+  FAKE_AGENT_FINDINGS='.ritual/findings/20260712T220000Z-plan-review.json' \
+  '$RITUAL' run plan-review"
+ok "wrapper actually wrapped" 0 "wrapped:" -- cat "$ROOT/wrapper.log"
+printf '[coderabbit]\nenabled = true\n' > "$PROJ/.ritual/config.toml"
+ok "coderabbit lands findings" 0 "coderabbit review →" -- bash -c "cd '$PROJ' && \
+  RITUAL_CLAUDE_CMD='$FAKE' RITUAL_CODEX_CMD='$FAKE' RITUAL_CODERABBIT_CMD='$FAKE_CR' \
+  FAKE_AGENT_DELAY=0 FAKE_AGENT_FINDINGS='.ritual/findings/20260712T230000Z-dual-review.json' \
+  '$RITUAL' run dual-review"
+exists "coderabbit findings file" "$PROJ/.ritual/findings/"*-coderabbit.json
+rm -f "$PROJ/.ritual/config.toml"
+
+echo "── v0.5: skills diff + audit trail ──────────────────────────────────"
+ok "skills diff identical"    0 "identical" -- bash -c "cd '$PROJ' && \
+  RITUAL_CLAUDE_HOME='$CLAUDE_HOME' '$RITUAL' skills diff"
+printf '\nLOCAL TWEAK\n' >> "$CLAUDE_HOME/skills/tdd/SKILL.md"
+ok "skills diff flags drift"  0 "differs at line" -- bash -c "cd '$PROJ' && \
+  RITUAL_CLAUDE_HOME='$CLAUDE_HOME' '$RITUAL' skills diff"
+cat > "$ROOT/bin/verify-audit" <<'EOF'
+#!/usr/bin/env python3
+import json, hashlib, sys
+lines = [l.rstrip("\n") for l in open(sys.argv[1]) if l.strip()]
+prev = None
+for i, l in enumerate(lines):
+    r = json.loads(l)
+    if i == 0:
+        assert r["prev_hash"] is None, "genesis must have null prev_hash"
+    else:
+        expect = hashlib.sha256(prev.encode()).hexdigest()
+        assert r["prev_hash"] == expect, f"broken link at record {i}"
+    for k in ["record_id","timestamp","agent_id","session_id","action_type","outcome","trust_level"]:
+        assert r[k], f"missing {k}"
+    prev = l
+print(f"chain ok ({len(lines)} records)")
+EOF
+chmod +x "$ROOT/bin/verify-audit"
+ok "audit-trail exports"      0 "audit record(s) exported" -- bash -c "cd '$PROJ' && \
+  '$RITUAL' export --audit-trail --out '$ROOT/audit.jsonl'"
+ok "audit chain re-verifies"  0 "chain ok" -- "$ROOT/bin/verify-audit" "$ROOT/audit.jsonl"
+
 echo "── daemon survives launcher death ───────────────────────────────────"
 # Slow agent; kill the launcher mid-run; the detached daemon must still
 # write its meta. Detect by a *new* meta appearing (run_id is time-based, so

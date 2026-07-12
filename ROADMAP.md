@@ -1,6 +1,16 @@
 # ritual — roadmap
 
-> **Status (v0.4.0, 2026-07-12): everything below through v0.4 is SHIPPED**, except the
+> **Status (v0.5.0, 2026-07-12): the evidence-backed quality batch shipped** —
+> mutation-kill gate (`mutants`), secrets gate (gitleaks, blocking), invariants
+> constitution, review memory (`lessons`), findings snippets, `costs`
+> analytics, fallback models + retry-with-model attempts, sandbox wrapper seam
+> (srt), CodeRabbit third reviewer (dark), OTel GenAI semconv + IETF
+> audit-trail export, chat undo stack + reattach, parallel-run notice, bench
+> spread stats, `skills diff`. Deferred to a later cycle: steerable runs
+> (Agent SDK), `ritual mcp-server`, SQLite/fuzzy history, chat fork-at-turn,
+> container worktrees, OTLP receiver/waterfall, tree-sitter repo map.
+>
+> **v0.4.0: everything below through v0.4 is SHIPPED**, except the
 > in-app version-check note (deferred — `ritual --version` covers it) and full
 > session-state persistence (the load-bearing part — daemonized runs + reattach —
 > shipped; scroll/tab restoration was judged not worth the complexity).
