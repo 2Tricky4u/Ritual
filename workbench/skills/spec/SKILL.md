@@ -33,3 +33,4 @@ Your invocation prompt carries these fields (values, not literals):
 - Preserve structure: never drop or reorder a spec's four sections; keep headings intact when scoped to a section.
 - Prefer Edit over rewrite — the user is iterating, and wholesale rewrites lose their earlier wording.
 - Do not expand scope: apply what was asked, not adjacent "improvements" the user didn't request.
+- If the prompt names an `INVARIANTS_FILE`, Read it first; never write spec/plan content that contradicts an invariant — when the request does, apply the closest compliant change and name the conflict in your summary line.

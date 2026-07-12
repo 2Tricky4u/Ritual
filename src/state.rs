@@ -177,9 +177,20 @@ impl RitualDirs {
     }
 
     /// Walk up from cwd to find an existing `.ritual/`; in a linked worktree,
-    /// fall back to the main repository root (shared state across worktrees).
+    /// the MAIN repository root wins (shared state across worktrees) — even
+    /// when committed `.ritual` files (invariants.md, config.toml, specs)
+    /// materialize a `.ritual/` inside the worktree checkout.
     pub fn discover(cwd: &Path) -> Self {
         let work_root = git_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
+        if let Some(main_root) = git_main_root(cwd)
+            && main_root != work_root
+            && main_root.join(".ritual").is_dir()
+        {
+            return Self {
+                project_root: main_root,
+                work_root,
+            };
+        }
         let mut dir = Some(cwd);
         while let Some(d) = dir {
             if d.join(".ritual").is_dir() {
@@ -189,14 +200,6 @@ impl RitualDirs {
                 };
             }
             dir = d.parent();
-        }
-        if let Some(main_root) = git_main_root(cwd)
-            && main_root.join(".ritual").is_dir()
-        {
-            return Self {
-                project_root: main_root,
-                work_root,
-            };
         }
         Self {
             project_root: work_root.clone(),
@@ -212,6 +215,10 @@ impl RitualDirs {
     }
     pub fn findings_dir(&self) -> PathBuf {
         self.root().join("findings")
+    }
+    /// The project constitution: non-negotiable constraints reviewers enforce.
+    pub fn invariants_file(&self) -> PathBuf {
+        self.root().join("invariants.md")
     }
     pub fn runs_dir(&self) -> PathBuf {
         self.root().join("runs")

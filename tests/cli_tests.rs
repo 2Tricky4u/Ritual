@@ -490,9 +490,11 @@ fn worktree_feature_shares_state_and_resolves_dirs() {
     ));
     assert!(wt.is_dir(), "worktree dir missing: {}", wt.display());
 
-    // ...and shares the MAIN repo's .ritual: status from inside the worktree
-    // sees the same state file.
-    assert!(!wt.join(".ritual").exists());
+    // ...and shares the MAIN repo's .ritual: committed files (invariants.md)
+    // materialize a .ritual/ inside the checkout, but discovery still binds
+    // to the main root — status from inside the worktree sees the same state.
+    assert!(wt.join(".ritual/invariants.md").exists());
+    assert!(!wt.join(".ritual/state.json").exists());
     let out = Command::cargo_bin("ritual")
         .unwrap()
         .current_dir(&wt)

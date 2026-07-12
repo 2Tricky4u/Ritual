@@ -155,6 +155,20 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
         ),
     });
 
+    // -- invariants constitution -----------------------------------------------
+    out.push(match crate::stages::meaningful_invariants(dirs) {
+        Some(_) => check(
+            "invariants",
+            CheckStatus::Pass,
+            ".ritual/invariants.md enforced by review stages",
+        ),
+        None => check(
+            "invariants",
+            CheckStatus::Skipped,
+            "none — optional; add bullets to .ritual/invariants.md (ritual init scaffolds it)",
+        ),
+    });
+
     // -- workbench drift -------------------------------------------------------
     out.push(workbench_check());
     out.push(hooks_check());

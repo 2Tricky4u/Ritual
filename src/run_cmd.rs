@@ -465,6 +465,7 @@ pub fn run_doc_chat(
     // Plan targets carry the spec path so a missing plan drafts from it.
     let spec_path = (kind == stages::DocKind::Plan && dirs.spec_file(&slug).exists())
         .then(|| dirs.spec_file(&slug));
+    let invariants = stages::meaningful_invariants(dirs);
     let cmd = stages::doc_chat_command(
         cfg,
         &doc_path,
@@ -473,6 +474,7 @@ pub fn run_doc_chat(
         message,
         "",
         spec_path.as_deref(),
+        invariants.as_deref(),
     );
     let stage_label = format!("{}-chat", kind.label());
     let req = RunRequest {
