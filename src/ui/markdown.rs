@@ -494,6 +494,17 @@ mod tests {
             .unwrap_or_else(|| panic!("no output line contains {needle:?}"))
     }
 
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(96))]
+
+        #[test]
+        fn render_never_panics_and_lockstep_holds(md in "\\PC{0,400}") {
+            let t = Theme::default();
+            let r = render(&md, &t, 48);
+            proptest::prop_assert_eq!(r.lines.len(), r.src.len());
+        }
+    }
+
     #[test]
     fn torture_doc_keeps_lockstep_and_survives_every_construct() {
         let t = Theme::default();

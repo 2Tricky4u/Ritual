@@ -108,6 +108,17 @@ mod tests {
         assert_eq!(out, "ααα…");
     }
 
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(128))]
+
+        #[test]
+        fn summarize_is_bounded_and_single_line(s in "\\PC{0,300}", max in 1usize..64) {
+            let out = summarize(&json!(s), max);
+            proptest::prop_assert!(out.chars().count() <= max + 1, "{}", out);
+            proptest::prop_assert!(!out.contains('\n'));
+        }
+    }
+
     #[test]
     fn summarize_flattens_deeply_nested_structures() {
         let v = json!({"a": {"b": [1, {"c": "line\nbreak"}]}, "e": null});

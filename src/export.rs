@@ -429,6 +429,18 @@ mod tests {
         assert_eq!(text.lines().filter(|l| !l.trim().is_empty()).count(), 0);
     }
 
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(128))]
+
+        #[test]
+        fn synth_uuid_is_v4_shaped_for_any_seed(seed in "\\PC{0,64}") {
+            let u = synth_uuid(&seed);
+            proptest::prop_assert!(is_uuid(&u), "{}", u);
+            proptest::prop_assert_eq!(u.as_bytes()[14], b'4');
+            proptest::prop_assert!(matches!(u.as_bytes()[19], b'8' | b'9' | b'a' | b'b'));
+        }
+    }
+
     #[test]
     fn synth_uuid_shape_is_deterministic_v4() {
         for i in 0..64 {
