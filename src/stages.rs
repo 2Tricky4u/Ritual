@@ -525,6 +525,80 @@ mod tests {
     }
 
     #[test]
+    fn override_routing_and_fallback_compose_on_one_build() {
+        let (_tmp, mut cfg, dirs) = setup();
+        std::fs::create_dir_all(dirs.feature_dir("s")).unwrap();
+        std::fs::write(dirs.plan_file("s"), "# plan").unwrap();
+        cfg.models.insert("plan-review".into(), "opus".into());
+        cfg.fallback_model = Some("claude-sonnet-5".into());
+
+        let cmd = build(
+            StageId::PlanReview,
+            &cfg,
+            &dirs,
+            "s",
+            None,
+            Some("claude-fable-5"),
+        )
+        .unwrap();
+        // Exactly ONE --model, carrying the override; fallback still rides.
+        assert_eq!(
+            cmd.argv.iter().filter(|a| *a == "--model").count(),
+            1,
+            "{:?}",
+            cmd.argv
+        );
+        assert!(
+            cmd.argv
+                .windows(2)
+                .any(|w| w == ["--model", "claude-fable-5"])
+        );
+        assert!(!cmd.argv.contains(&"opus".to_string()));
+        assert!(
+            cmd.argv
+                .windows(2)
+                .any(|w| w == ["--fallback-model", "claude-sonnet-5"])
+        );
+    }
+
+    #[test]
+    fn plan_and_implement_argv_content() {
+        let (_tmp, cfg, dirs) = setup();
+        let cmd = build(StageId::Plan, &cfg, &dirs, "s", None, None).unwrap();
+        assert_eq!(cmd.argv[0], "claude");
+        assert!(
+            cmd.argv
+                .windows(2)
+                .any(|w| w == ["--permission-mode", "plan"])
+        );
+        let prompt = cmd.argv.last().unwrap();
+        assert!(prompt.contains("spec.md"), "{prompt}");
+        assert!(prompt.contains("plan.md"), "{prompt}");
+
+        let cmd = build(StageId::Implement, &cfg, &dirs, "s", None, None).unwrap();
+        assert_eq!(cmd.argv, vec!["claude", "--continue"]);
+    }
+
+    #[test]
+    fn invariants_with_only_a_multiline_comment_stay_dark() {
+        let (_tmp, cfg, dirs) = setup();
+        std::fs::create_dir_all(dirs.feature_dir("s")).unwrap();
+        std::fs::write(dirs.plan_file("s"), "# plan").unwrap();
+        // The false-positive shape the T1 fix closed: block-comment inner
+        // lines must not activate the constitution.
+        std::fs::write(
+            dirs.invariants_file(),
+            "# Invariants\n<!--\n- looks like a bullet\nfill this in\n-->\n",
+        )
+        .unwrap();
+        let cmd = build(StageId::DualReview, &cfg, &dirs, "s", None, None).unwrap();
+        assert!(
+            !cmd.env.iter().any(|(k, _)| k == "RITUAL_INVARIANTS_FILE"),
+            "template comments alone must not inject the constitution"
+        );
+    }
+
+    #[test]
     fn invariants_env_reaches_review_stages_only_when_meaningful() {
         let (_tmp, cfg, dirs) = setup();
         std::fs::create_dir_all(dirs.feature_dir("s")).unwrap();
