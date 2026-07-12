@@ -1,0 +1,191 @@
+//! The vendored multi-LLM workbench: every skill, agent, and hook the
+//! workflow needs, compiled into the binary so one `git clone` + `ritual
+//! init --skills` reproduces the whole setup on a fresh machine. The repo's
+//! `workbench/` directory is the source of truth; provenance hashes derive
+//! from [`SKILLS`].
+
+use std::path::Path;
+
+use anyhow::{Context, Result};
+
+/// (skill name, SKILL.md body) — installed to `~/.claude/skills/<name>/SKILL.md`.
+pub const SKILLS: &[(&str, &str)] = &[
+    (
+        "brainstorm",
+        include_str!("../workbench/skills/brainstorm/SKILL.md"),
+    ),
+    (
+        "changelog",
+        include_str!("../workbench/skills/changelog/SKILL.md"),
+    ),
+    (
+        "commit",
+        include_str!("../workbench/skills/commit/SKILL.md"),
+    ),
+    (
+        "consensus",
+        include_str!("../workbench/skills/consensus/SKILL.md"),
+    ),
+    ("debug", include_str!("../workbench/skills/debug/SKILL.md")),
+    (
+        "deps-audit",
+        include_str!("../workbench/skills/deps-audit/SKILL.md"),
+    ),
+    ("docs", include_str!("../workbench/skills/docs/SKILL.md")),
+    (
+        "document",
+        include_str!("../workbench/skills/document/SKILL.md"),
+    ),
+    (
+        "dual-review",
+        include_str!("../workbench/skills/dual-review/SKILL.md"),
+    ),
+    (
+        "plan-review",
+        include_str!("../workbench/skills/plan-review/SKILL.md"),
+    ),
+    ("pr", include_str!("../workbench/skills/pr/SKILL.md")),
+    ("spec", include_str!("../workbench/skills/spec/SKILL.md")),
+    ("tdd", include_str!("../workbench/skills/tdd/SKILL.md")),
+];
+
+/// Non-skill workbench files, installed relative to `~/.claude/`.
+pub struct VendoredFile {
+    pub rel: &'static str,
+    pub body: &'static str,
+    pub exec: bool,
+}
+
+pub const EXTRAS: &[VendoredFile] = &[
+    VendoredFile {
+        rel: "agents/code-reviewer.md",
+        body: include_str!("../workbench/agents/code-reviewer.md"),
+        exec: false,
+    },
+    VendoredFile {
+        rel: "hooks/check-on-edit.sh",
+        body: include_str!("../workbench/hooks/check-on-edit.sh"),
+        exec: true,
+    },
+    VendoredFile {
+        rel: "hooks/secrets-guard.py",
+        body: include_str!("../workbench/hooks/secrets-guard.py"),
+        exec: true,
+    },
+];
+
+/// Reference for the settings.json blocks — printed as a pointer, never
+/// merged automatically (`ritual doctor` checks for the hook block).
+pub const SETTINGS_SNIPPET: &str = include_str!("../workbench/settings-snippet.json");
+
+#[derive(Debug, Default)]
+pub struct InstallReport {
+    pub created: Vec<String>,
+    pub updated: Vec<String>,
+    pub identical: Vec<String>,
+    /// Local file differs from the vendored one — left alone (use --force).
+    pub skipped: Vec<String>,
+}
+
+/// Install the workbench into `claude_home` (normally `~/.claude`).
+/// Semantics per file: absent → write; byte-identical → no-op; differs →
+/// skip with a warning unless `force`.
+pub fn install(claude_home: &Path, force: bool) -> Result<InstallReport> {
+    let mut report = InstallReport::default();
+    let mut put = |rel: String, body: &str, exec: bool| -> Result<()> {
+        let path = claude_home.join(&rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        let bucket = if !path.exists() {
+            &mut report.created
+        } else if std::fs::read_to_string(&path)
+            .map(|c| c == body)
+            .unwrap_or(false)
+        {
+            report.identical.push(rel);
+            return Ok(());
+        } else if force {
+            &mut report.updated
+        } else {
+            report.skipped.push(rel);
+            return Ok(());
+        };
+        std::fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;
+        if exec {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&path)?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&path, perms)?;
+        }
+        bucket.push(rel);
+        Ok(())
+    };
+
+    for (name, body) in SKILLS {
+        put(format!("skills/{name}/SKILL.md"), body, false)?;
+    }
+    for f in EXTRAS {
+        put(f.rel.to_string(), f.body, f.exec)?;
+    }
+    Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_covers_all_dispositions_and_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+
+        // Fresh home: everything created.
+        let r = install(home, false).unwrap();
+        assert_eq!(r.created.len(), SKILLS.len() + EXTRAS.len());
+        assert!(r.updated.is_empty() && r.skipped.is_empty());
+        assert!(home.join("skills/spec/SKILL.md").exists());
+        assert!(home.join("skills/consensus/SKILL.md").exists());
+
+        // Hooks carry the exec bit.
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(home.join("hooks/check-on-edit.sh"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o111, 0o111, "hook not executable");
+
+        // Second run: all identical, nothing rewritten.
+        let r = install(home, false).unwrap();
+        assert_eq!(r.identical.len(), SKILLS.len() + EXTRAS.len());
+        assert!(r.created.is_empty());
+
+        // Local edit: skipped without --force, updated with it.
+        std::fs::write(home.join("skills/tdd/SKILL.md"), "locally modified").unwrap();
+        let r = install(home, false).unwrap();
+        assert_eq!(r.skipped, vec!["skills/tdd/SKILL.md".to_string()]);
+        assert!(
+            std::fs::read_to_string(home.join("skills/tdd/SKILL.md"))
+                .unwrap()
+                .contains("locally modified")
+        );
+        let r = install(home, true).unwrap();
+        assert_eq!(r.updated, vec!["skills/tdd/SKILL.md".to_string()]);
+        assert!(
+            std::fs::read_to_string(home.join("skills/tdd/SKILL.md"))
+                .unwrap()
+                .contains("name: tdd")
+        );
+    }
+
+    #[test]
+    fn vendored_skills_have_matching_frontmatter_names() {
+        for (name, body) in SKILLS {
+            assert!(
+                body.contains(&format!("name: {name}")),
+                "workbench/skills/{name}/SKILL.md frontmatter name mismatch"
+            );
+        }
+    }
+}

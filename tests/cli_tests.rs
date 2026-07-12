@@ -36,6 +36,35 @@ fn init_scaffolds_project() {
 }
 
 #[test]
+fn init_skills_installs_the_workbench() {
+    let tmp = setup_project();
+    let fake_home = tmp.path().join("claude-home");
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_HOME", &fake_home)
+        .args(["init", "--skills"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("workbench →"))
+        .stdout(predicate::str::contains("NOT auto-merged"));
+    assert!(fake_home.join("skills/plan-review/SKILL.md").exists());
+    assert!(fake_home.join("skills/consensus/SKILL.md").exists());
+    assert!(fake_home.join("agents/code-reviewer.md").exists());
+    assert!(fake_home.join("hooks/check-on-edit.sh").exists());
+
+    // Idempotent second run: everything unchanged.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_HOME", &fake_home)
+        .args(["init", "--skills"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("0 created, 0 updated"));
+}
+
+#[test]
 fn status_renders_empty_and_with_feature() {
     let tmp = setup_project();
     Command::cargo_bin("ritual")

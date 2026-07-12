@@ -29,9 +29,14 @@ pub enum Command {
     },
     /// Scaffold .ritual/, check.sh and CLAUDE.md in this project
     Init {
-        /// Overwrite an existing check.sh
+        /// Overwrite an existing check.sh (with --skills: overwrite locally
+        /// modified skills/hooks too)
         #[arg(long)]
         force: bool,
+        /// Also install the vendored workbench (skills, code-reviewer agent,
+        /// hooks) into ~/.claude
+        #[arg(long)]
+        skills: bool,
     },
     /// Browse recorded findings
     Findings {

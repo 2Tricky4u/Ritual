@@ -24,3 +24,4 @@ pub mod term;
 pub mod theme;
 pub mod ui;
 pub mod watcher;
+pub mod workbench;
