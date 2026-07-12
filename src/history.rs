@@ -277,6 +277,55 @@ mod tests {
     }
 
     #[test]
+    fn week_window_boundaries_cache_pct_and_rate_limit_capture() {
+        let now = Utc::now();
+        let mk = |offset: chrono::Duration| RunMeta {
+            stage: "dual-review".into(),
+            total_cost_usd: Some(1.0),
+            started_at: Some(now - offset),
+            ..Default::default()
+        };
+        // Just inside vs just outside the 7-day window.
+        let inside = mk(chrono::Duration::days(7) - chrono::Duration::seconds(5));
+        let outside = mk(chrono::Duration::days(7) + chrono::Duration::seconds(60));
+        let metas = vec![inside, outside];
+        assert_eq!(by_stage(&metas, CostWindow::Week)[0].runs, 1);
+        assert_eq!(by_stage(&metas, CostWindow::All)[0].runs, 2);
+
+        // DaySummary cache-hit rate over today's runs.
+        let today = RunMeta {
+            started_at: Some(now),
+            usage: Some(Usage {
+                input_tokens: 100,
+                output_tokens: 5,
+                cache_read_input_tokens: 900,
+                cache_creation_input_tokens: 0,
+            }),
+            ..Default::default()
+        };
+        let s = today_summary(&[today]);
+        assert_eq!(s.cache_hit_pct().unwrap().round(), 90.0);
+        assert!(today_summary(&[]).cache_hit_pct().is_none());
+
+        // latest_rate_limit: the FIRST one seen in (newest-first) order wins,
+        // scanning past metas that carry none.
+        let none = RunMeta {
+            started_at: Some(now),
+            ..Default::default()
+        };
+        let with = |kind: &str| RunMeta {
+            started_at: Some(now),
+            rate_limit: Some(RateLimitInfo {
+                kind: Some(kind.into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let s = today_summary(&[none, with("newest"), with("older")]);
+        assert_eq!(s.latest_rate_limit.unwrap().kind.as_deref(), Some("newest"));
+    }
+
+    #[test]
     fn by_stage_rolls_up_costs_and_cache() {
         let mk = |stage: &str, cost: f64, input: u64, cache: u64| RunMeta {
             stage: stage.into(),

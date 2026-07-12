@@ -155,6 +155,30 @@ mod tests {
     }
 
     #[test]
+    fn no_location_unicode_and_fixed_bucket_weighting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        seed(
+            &dirs.findings_dir(),
+            "20260712T000000Z-dual-review.json",
+            r#"{"stage":"dual-review","findings":[
+                {"title":"pure plan-level note","action":"dismissed"},
+                {"title":"caf\u00e9 d\u00e9j\u00e0-vu bug","file":"src/\u00fcn\u00ef.rs","line":1,"action":"fixed"},
+                {"title":"caf\u00e9 d\u00e9j\u00e0-vu bug","file":"src/\u00fcn\u00ef.rs","line":1,"action":"fixed"}
+            ]}"#,
+        );
+        let md = generate(&dirs).unwrap().unwrap();
+        // Location-less finding renders title-only (no dangling parens).
+        assert!(md.contains("- pure plan-level note\n"), "{md}");
+        assert!(!md.contains("pure plan-level note ("));
+        // Unicode survives; the FIXED bucket gets repeat weighting too.
+        assert!(md.contains("- café déjà-vu bug (src/ünï.rs:1) ×2"), "{md}");
+        // Both sections render together.
+        assert!(md.contains("## Known noise"));
+        assert!(md.contains("## Confirmed real-bug areas"));
+    }
+
+    #[test]
     fn sections_cap_at_fifty() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = RitualDirs::new(tmp.path());

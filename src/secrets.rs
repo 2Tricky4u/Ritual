@@ -249,6 +249,107 @@ mod tests {
         );
     }
 
+    fn fake_gitleaks() -> String {
+        format!("{}/tests/fake_gitleaks.sh", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    /// Config pointing at the fake, with an argv-level env override so tests
+    /// never touch process-global environment variables.
+    fn cfg_with(exit: Option<&str>) -> crate::config::Config {
+        let cmd = match exit {
+            Some(code) => vec![
+                "env".to_string(),
+                format!("FAKE_GITLEAKS_EXIT={code}"),
+                fake_gitleaks(),
+            ],
+            None => vec![fake_gitleaks()],
+        };
+        crate::config::Config {
+            gitleaks_cmd: cmd,
+            ..Default::default()
+        }
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+    }
+
+    #[test]
+    fn scan_stages_untracked_subdirs_and_blocks_on_hits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = crate::state::RitualDirs::new(tmp.path());
+        // A repo with NO commits: `git diff HEAD` fails (tolerated), the
+        // untracked walk still finds the nested file.
+        git(tmp.path(), &["init", "-q", "-b", "main"]);
+        std::fs::create_dir_all(tmp.path().join("cfg")).unwrap();
+        std::fs::write(tmp.path().join("cfg/leaky.py"), "api_key = \"h\"\n").unwrap();
+        std::fs::write(tmp.path().join(".gitleaksignore"), "known:fp:1\n").unwrap();
+
+        let r = scan(&cfg_with(None), &dirs).unwrap();
+        assert!(r.scanned_files >= 1, "{r:?}");
+        assert_eq!(r.leaks, 1);
+        let path = r.findings_path.expect("findings written");
+        let text = std::fs::read_to_string(path).unwrap();
+        assert!(text.contains(r#""severity": "critical""#));
+        assert!(text.contains("generic-api-key"));
+    }
+
+    #[test]
+    fn scan_clean_error_and_no_change_arms() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = crate::state::RitualDirs::new(tmp.path());
+        git(tmp.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(tmp.path().join("f.txt"), "x\n").unwrap();
+
+        // Exit 0 = clean scan: no findings file, no error.
+        let r = scan(&cfg_with(Some("0")), &dirs).unwrap();
+        assert_eq!(r.leaks, 0);
+        assert!(r.findings_path.is_none());
+
+        // Exit 1 = tool error: surfaced, never silently ignored.
+        let err = scan(&cfg_with(Some("1")), &dirs).unwrap_err();
+        assert!(format!("{err:#}").contains("failed"), "{err:#}");
+
+        // A committed, unchanged tree: nothing to scan at all.
+        git(tmp.path(), &["add", "-A"]);
+        git(
+            tmp.path(),
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "x",
+            ],
+        );
+        let r = scan(&cfg_with(None), &dirs).unwrap();
+        assert_eq!(r.scanned_files, 0, "clean tree short-circuits");
+
+        // A deletion is a change with nothing stageable: also a no-op.
+        std::fs::remove_file(tmp.path().join("f.txt")).unwrap();
+        let r = scan(&cfg_with(None), &dirs).unwrap();
+        assert_eq!(r.scanned_files, 0, "deleted files can't leak");
+    }
+
+    #[test]
+    fn preflight_notices_for_disabled_and_missing_tool() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = crate::state::RitualDirs::new(tmp.path());
+        let mut cfg = crate::config::Config {
+            gitleaks_cmd: vec!["/nonexistent/gitleaks".into()],
+            ..Default::default()
+        };
+        assert!(preflight(&cfg, &dirs).unwrap().contains("not installed"));
+        cfg.secrets_enabled = false;
+        assert!(preflight(&cfg, &dirs).is_none(), "disabled gate is silent");
+    }
+
     #[test]
     fn tolerates_sparse_and_empty_reports() {
         let f = findings_from_report(r#"[{"RuleID":"x"}]"#, Path::new("/s"), true).unwrap();
