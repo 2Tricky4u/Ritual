@@ -100,6 +100,14 @@ fn request_path(dirs: &RitualDirs, run_id: &str) -> PathBuf {
     dirs.runs_dir().join(format!("{run_id}.request.json"))
 }
 
+/// The persisted RunRequest for a run, if its .request.json still exists (it
+/// is written at spawn and deleted when the run finishes). This is the
+/// authoritative source for a LIVE run's agent — RunStatus doesn't carry it.
+pub fn load_request(dirs: &RitualDirs, run_id: &str) -> Option<RunRequest> {
+    let text = std::fs::read_to_string(request_path(dirs, run_id)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 pub fn pid_alive(pid: u32) -> bool {
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok()
 }
@@ -467,6 +475,34 @@ mod tests {
                 w[1]
             );
         }
+    }
+
+    #[test]
+    fn load_request_roundtrips_the_agent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        std::fs::create_dir_all(dirs.runs_dir()).unwrap();
+        let req = RunRequest {
+            agent: AgentKind::Codex,
+            argv: vec!["codex".into(), "exec".into()],
+            env: vec![],
+            stage: "plan-review".into(),
+            feature: "F".into(),
+            branch: "main".into(),
+            redact: true,
+            repro: None,
+            cwd: tmp.path().to_path_buf(),
+        };
+        std::fs::write(
+            request_path(&dirs, "r1"),
+            serde_json::to_string(&req).unwrap(),
+        )
+        .unwrap();
+        let loaded = load_request(&dirs, "r1").expect("request loads");
+        assert_eq!(loaded.agent, AgentKind::Codex);
+        assert_eq!(loaded.stage, "plan-review");
+        // Missing file -> None, never an error.
+        assert!(load_request(&dirs, "nope").is_none());
     }
 
     /// Regression: tail_run must not declare a run vanished while the daemon
