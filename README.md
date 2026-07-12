@@ -322,7 +322,7 @@ See the full [ROADMAP.md][roadmap-url] for the design rationale behind each item
 <!-- DEVELOPMENT -->
 ## Development
 
-`./check.sh` = fmt + clippy `-D warnings` + tests (226 across unit/CLI/snapshot suites); `bash tests/e2e_live.sh` drives the installed binary through 73 lifecycle checks token-free. Builds land in `/var/tmp/ritual-target` (see `.cargo/config.toml`). The repo dogfoods its own workflow (`CLAUDE.md`); `demo.tape` renders the README demo via [vhs][vhs-url].
+`./check.sh` = fmt + clippy `-D warnings` + tests (294 across unit/CLI/snapshot suites, incl. proptest property tests); `bash tests/e2e_live.sh` drives the installed binary through 80 lifecycle checks token-free. Builds land in `/var/tmp/ritual-target` (see `.cargo/config.toml`). The repo dogfoods its own workflow (`CLAUDE.md`); `demo.tape` renders the README demo via [vhs][vhs-url].
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -344,9 +344,9 @@ See the full [ROADMAP.md][roadmap-url] for the design rationale behind each item
 </div>
 
 <!-- MARKDOWN LINKS & IMAGES -->
-[version-shield]: https://img.shields.io/badge/version-0.5.0-9d7cd8?style=for-the-badge
-[tests-shield]: https://img.shields.io/badge/cargo_tests-226_passing-73daca?style=for-the-badge
-[e2e-shield]: https://img.shields.io/badge/live_driver-73%2F73-7aa2f7?style=for-the-badge
+[version-shield]: https://img.shields.io/badge/version-0.5.1-9d7cd8?style=for-the-badge
+[tests-shield]: https://img.shields.io/badge/cargo_tests-294_passing-73daca?style=for-the-badge
+[e2e-shield]: https://img.shields.io/badge/live_driver-80%2F80-7aa2f7?style=for-the-badge
 [chain-shield]: https://img.shields.io/badge/audit-tamper--evident-e0af68?style=for-the-badge
 [zero-token-shield]: https://img.shields.io/badge/testing-zero_tokens-bb9af7?style=for-the-badge
 [rust-badge]: https://img.shields.io/badge/Rust_2024-000000?style=for-the-badge&logo=rust&logoColor=white
