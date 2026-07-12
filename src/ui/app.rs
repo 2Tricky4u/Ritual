@@ -127,6 +127,8 @@ pub struct ChatTarget {
     pub section: Option<String>,
     /// Line range in the source file that the preview focuses on.
     pub range: std::ops::Range<usize>,
+    /// The document doesn't exist yet — the first message drafts it.
+    pub missing: bool,
 }
 
 impl ChatTarget {
@@ -140,6 +142,7 @@ impl ChatTarget {
     pub fn label(&self) -> String {
         match &self.section {
             Some(name) => format!("{} · § {}", self.doc.label(), first_words(name, 20)),
+            None if self.missing => format!("{} (draft from spec)", self.doc.label()),
             None => format!("{} · whole", self.doc.label()),
         }
     }
@@ -770,21 +773,23 @@ impl App {
             (stages::DocKind::Spec, self.dirs.spec_file(&self.slug)),
             (stages::DocKind::Plan, self.dirs.plan_file(&self.slug)),
         ] {
-            if doc == stages::DocKind::Plan && !path.exists() {
-                continue; // only refine a plan that already exists
-            }
+            let missing = !path.exists();
             let text = std::fs::read_to_string(&path).unwrap_or_default();
             let n = text.lines().count().max(1);
+            // A missing plan is still a target — the first message DRAFTS it
+            // from the spec (whole-doc only; sections appear once it exists).
             targets.push(ChatTarget {
                 doc,
                 section: None,
                 range: 0..n,
+                missing,
             });
             for (name, range) in crate::spec::sections(&text) {
                 targets.push(ChatTarget {
                     doc,
                     section: Some(name),
                     range,
+                    missing: false,
                 });
             }
         }
@@ -1038,6 +1043,10 @@ impl App {
             stages::DocKind::Plan => self.dirs.plan_file(&self.slug),
         };
         let context = self.recent_context();
+        // Plan targets carry the spec path so a missing plan drafts from it.
+        let spec_path = (target.doc == stages::DocKind::Plan
+            && self.dirs.spec_file(&self.slug).exists())
+        .then(|| self.dirs.spec_file(&self.slug));
         let cmd = stages::doc_chat_command(
             &self.cfg,
             &doc_path,
@@ -1045,6 +1054,7 @@ impl App {
             &target.scope(),
             &message,
             &context,
+            spec_path.as_deref(),
         );
         self.doc_before = std::fs::read_to_string(&doc_path).unwrap_or_default();
         // Persist the pre-edit snapshot: the Ctrl+Z undo source (survives
@@ -2106,6 +2116,33 @@ mod tests {
             chat.targets
                 .iter()
                 .any(|t| t.section.as_deref() == Some("Behavior (the contract — WHAT, not HOW)"))
+        );
+        // The MISSING plan is still a target — labeled as a draft.
+        let plan_target = chat
+            .targets
+            .iter()
+            .find(|t| t.doc == stages::DocKind::Plan)
+            .expect("plan target offered even when plan.md is absent");
+        assert!(plan_target.missing);
+        assert_eq!(plan_target.label(), "plan (draft from spec)");
+
+        // Once the plan exists, the label and sections normalize.
+        std::fs::write(
+            app.dirs.plan_file(&app.slug),
+            "# Plan\n\n## Steps\n1. do it\n",
+        )
+        .unwrap();
+        let targets = app.build_chat_targets();
+        let plan_target = targets
+            .iter()
+            .find(|t| t.doc == stages::DocKind::Plan && t.section.is_none())
+            .unwrap();
+        assert!(!plan_target.missing);
+        assert_eq!(plan_target.label(), "plan · whole");
+        assert!(
+            targets
+                .iter()
+                .any(|t| t.doc == stages::DocKind::Plan && t.section.as_deref() == Some("Steps"))
         );
     }
 

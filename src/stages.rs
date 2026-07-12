@@ -65,9 +65,10 @@ pub enum Scope {
 
 /// Build the headless command for ONE spec/plan chat message. `doc_path` must
 /// be absolute (headless runs execute in `work_root`, but the document lives
-/// under `project_root/.ritual`). `context` is a short "recent conversation"
-/// block (may be empty). Everything — path, scope, message — rides in the
-/// single `-p` prompt, because `--allowedTools` grants no Bash to read env.
+/// under `project_root/.ritual`). `spec_path` rides along for plan targets so
+/// a missing plan can be DRAFTED from the spec. `context` is a short "recent
+/// conversation" block (may be empty). Everything — paths, scope, message —
+/// rides in the single `-p` prompt, because the agent has no Bash to read env.
 pub fn doc_chat_command(
     cfg: &Config,
     doc_path: &Path,
@@ -75,10 +76,15 @@ pub fn doc_chat_command(
     scope: &Scope,
     message: &str,
     context: &str,
+    spec_path: Option<&Path>,
 ) -> StageCommand {
     let scope_line = match scope {
         Scope::Whole => "SCOPE: whole".to_string(),
         Scope::Section(name) => format!("SCOPE: section \"{name}\""),
+    };
+    let spec_line = match spec_path {
+        Some(p) => format!("SPEC_FILE: {}\n", p.display()),
+        None => String::new(),
     };
     let ctx_block = if context.trim().is_empty() {
         String::new()
@@ -89,7 +95,7 @@ pub fn doc_chat_command(
         "/spec Apply one scoped change to this ritual document.\n\n\
          DOC_FILE: {}\n\
          DOC_KIND: {}\n\
-         {scope_line}\n\n\
+         {spec_line}{scope_line}\n\n\
          REQUEST:\n{message}{ctx_block}",
         doc_path.display(),
         kind.label(),
@@ -325,6 +331,7 @@ mod tests {
             &Scope::Section("Behavior (the contract — WHAT, not HOW)".into()),
             "add a retry invariant",
             "you: earlier thing\nassistant: did it",
+            None,
         );
         assert_eq!(cmd.mode, Mode::Headless);
         assert!(!cmd.needs_codex);
@@ -360,9 +367,13 @@ mod tests {
         assert!(tools.starts_with("Read,Edit(//"));
         assert!(tools.contains("Write(//"));
 
+        // The spec-target prompt never carries SPEC_FILE.
+        assert!(!prompt.contains("SPEC_FILE:"));
+
         // Whole scope + empty context omit the section/context lines; model
-        // routing appends --model.
+        // routing appends --model; plan targets carry SPEC_FILE for drafting.
         cfg.models.insert("plan".into(), "opus".into());
+        let spec = dirs.spec_file("feat-x");
         let cmd = doc_chat_command(
             &cfg,
             &path,
@@ -370,11 +381,13 @@ mod tests {
             &Scope::Whole,
             "tighten step 2",
             "",
+            Some(&spec),
         );
         let prompt = cmd.argv.iter().find(|a| a.starts_with("/spec")).unwrap();
         assert!(prompt.contains("SCOPE: whole"));
         assert!(!prompt.contains("RECENT CONVERSATION"));
         assert!(prompt.contains("DOC_KIND: plan"));
+        assert!(prompt.contains(&format!("SPEC_FILE: {}", spec.display())));
         assert!(cmd.argv.windows(2).any(|w| w == ["--model", "opus"]));
     }
 
