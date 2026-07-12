@@ -1,6 +1,93 @@
-# ritual [![version](https://img.shields.io/badge/version-0.5.0-9d7cd8)](ROADMAP.md) [![tests](https://img.shields.io/badge/cargo_tests-226_passing-73daca)](tests/) [![live e2e](https://img.shields.io/badge/live_driver-73%2F73-73daca)](tests/e2e_live.sh) [![rust](https://img.shields.io/badge/rust-2024_edition-f7768e)](Cargo.toml)
+<a id="readme-top"></a>
 
-> *summon · review · verify* — a fast, eldritch-themed TUI that drives a **multi-LLM coding workflow**: Claude Code implements, OpenAI Codex adversarially reviews plans, designs tests, and second-reviews diffs — every loop grounded in your project's `./check.sh`.
+<!-- PROJECT SHIELDS -->
+<div align="center">
+
+[![Version][version-shield]][roadmap-url]
+[![Tests][tests-shield]][tests-url]
+[![Live driver][e2e-shield]][e2e-url]
+[![Tamper-evident][chain-shield]][guide-url]
+[![Zero tokens][zero-token-shield]][tests-url]
+
+</div>
+
+<!-- PROJECT LOGO -->
+<br />
+<div align="center">
+<pre>
+██████╗ ██╗████████╗██╗   ██╗ █████╗ ██╗     
+██╔══██╗██║╚══██╔══╝██║   ██║██╔══██╗██║     
+██████╔╝██║   ██║   ██║   ██║███████║██║     
+██╔══██╗██║   ██║   ██║   ██║██╔══██║██║     
+██║  ██║██║   ██║   ╚██████╔╝██║  ██║███████╗
+╚═╝  ╚═╝╚═╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚══════╝
+  s u m m o n  ·  r e v i e w  ·  v e r i f y
+</pre>
+
+  <p align="center">
+    A fast, eldritch-themed TUI that drives a <strong>multi-LLM coding workflow</strong>:<br />
+    Claude Code implements, OpenAI Codex adversarially reviews plans, designs tests,<br />
+    and second-reviews diffs — every loop grounded in your project's <code>./check.sh</code>.
+    <br />
+    <br />
+    <a href="docs/guide.md"><strong>Explore the guide »</strong></a>
+    <br />
+    <br />
+    <a href="#about-the-project">View Demo</a>
+    ·
+    <a href="ROADMAP.md">Roadmap</a>
+    ·
+    <a href="multi-llm-playbook.md">Playbook</a>
+    ·
+    <a href="#usage">Usage</a>
+  </p>
+</div>
+
+<!-- TABLE OF CONTENTS -->
+<details>
+  <summary>Table of Contents</summary>
+  <ol>
+    <li>
+      <a href="#about-the-project">About The Project</a>
+      <ul>
+        <li><a href="#built-with">Built With</a></li>
+      </ul>
+    </li>
+    <li>
+      <a href="#features">Features</a>
+      <ul>
+        <li><a href="#the-loop">The loop</a></li>
+        <li><a href="#running-things">Running things</a></li>
+        <li><a href="#trust--audit">Trust &amp; audit</a></li>
+        <li><a href="#ergonomics">Ergonomics</a></li>
+      </ul>
+    </li>
+    <li>
+      <a href="#getting-started">Getting Started</a>
+      <ul>
+        <li><a href="#prerequisites">Prerequisites</a></li>
+        <li><a href="#installation">Installation</a></li>
+      </ul>
+    </li>
+    <li>
+      <a href="#usage">Usage</a>
+      <ul>
+        <li><a href="#quick-start">Quick start</a></li>
+        <li><a href="#configuration">Configuration</a></li>
+        <li><a href="#recipes">Recipes</a></li>
+        <li><a href="#default-keys">Default keys</a></li>
+      </ul>
+    </li>
+    <li><a href="#roadmap">Roadmap</a></li>
+    <li><a href="#design-notes">Design Notes</a></li>
+    <li><a href="#documentation">Documentation</a></li>
+    <li><a href="#development">Development</a></li>
+    <li><a href="#acknowledgments">Acknowledgments</a></li>
+  </ol>
+</details>
+
+<!-- ABOUT THE PROJECT -->
+## About The Project
 
 ```
 ╭ feature title ─────────────╮╭ ritual ──────────────────────────────────────╮
@@ -19,31 +106,25 @@
  enter run · : commands · j/k move · ? help          $1.42/$5.00  ⠹ plan-review
 ```
 
-Built on one bet, backed by the research: **external feedback is the quality engine** — tests, checks, mutation kills, and cross-model review beat any single model talking to itself. Everything below exists to make that loop fast, auditable, and cheap to repeat.
+ritual is built on one bet, backed by the research: **external feedback is the quality engine** — tests, checks, mutation kills, and cross-model review beat any single model talking to itself. Everything here exists to make that loop fast, auditable, and cheap to repeat:
 
-## Contents
+- A **per-branch pipeline** (`spec → plan → plan-review → tests-red → implement → dual-review`) where the adversarial stages run a *different vendor's* model against Claude's work
+- **Runs are daemons** — archived raw before parsing, resumable after any crash, tamper-evident forever
+- **Findings are the currency** — every gate (models, mutation testing, secret scanning, a third reviewer) emits the same anchored JSON, adjudicated with two keys and enforced by one exit-code contract
 
-- [Highlights (v0.5)](#highlights-v05)
-- [Features](#features)
-  - [The loop](#the-loop)
-  - [Running things](#running-things)
-  - [Trust & audit](#trust--audit)
-  - [Ergonomics](#ergonomics)
-- [Install](#install)
-- [Quick start](#quick-start)
-- [Configuration](#configuration)
-- [Recipes](#recipes)
-- [Default keys](#default-keys)
-- [Design notes](#design-notes)
-- [Documentation](#documentation)
-- [Development](#development)
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-## Highlights (v0.5)
+### Built With
 
-- **Quality gates** — `ritual mutants` mutates only your diff (cargo-mutants) and turns every mutant the tests failed to kill into an anchored finding (a proven test gap, advisory); `ritual secrets` gitleaks-scans exactly what changed (incl. untracked files) and its critical findings **block until dismissed or fingerprinted** — auto-run before every dual-review. `.ritual/invariants.md` is the project constitution: every bullet becomes an acceptance criterion re-injected into each review stage. `ritual lessons` distills your f/d dispositions into review memory the critic reads first — it stops re-flagging what you already dismissed.
-- **Attempts + resilience** — `fallback_model` keeps headless runs alive through provider overloads; `[retry] models` offers *retry `<stage>` with `<model>`* in the palette for failed stages (`run --model` on the CLI); the sidebar shows `×N` attempts and history/reports grow a model column. `ritual costs` breaks spend down per stage with cache-hit economics.
-- **Ensemble + audit** — optional CodeRabbit CLI third reviewer (findings land unconfirmed; dual-review verifies → three-source signal). Optional `[sandbox]` wrapper spawns every headless run under Anthropic's `srt` (or any prefix) from the single spawn chokepoint. `ritual export` now carries OTel GenAI-semconv attributes, and `--audit-trail` emits IETF draft-sharif agent-audit-trail records (JCS-canonical, SHA-256-chained). Findings carry verbatim source **snippets**; chat undo is a 10-deep stack (`Alt+Z` redo) and reopening chat reattaches to a still-running edit.
+[![Rust][rust-badge]][rust-url]
+[![ratatui][ratatui-badge]][ratatui-url]
+[![tokio][tokio-badge]][tokio-url]
+[![Claude Code][claude-badge]][claude-url]
+[![Codex CLI][codex-badge]][codex-url]
 
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- FEATURES -->
 ## Features
 
 ### The loop
@@ -51,22 +132,23 @@ Built on one bet, backed by the research: **external feedback is the quality eng
 - **The pipeline** — per-branch stages `spec → plan → plan-review → tests-red → implement → dual-review`; one-key launch; headless stages stream live; interactive stages hand you a real attached `claude` session and resume the TUI on exit.
 - **Chat to author the spec/plan** (`s`) — a split view with the live document on the left (focused section highlighted in place) and a conversation on the right: type an instruction and Claude edits `spec.md` (or `plan.md`) in place while you watch, scopable to the whole doc or one `##` section (`Tab` to switch — a missing plan is *drafted from the spec*). `Ctrl+Z`/`Alt+Z` undo/redo (persisted 10-deep stack), `Ctrl+X` cancel, `Alt+Enter` multi-line, messages queue while an edit runs, and reopening chat reattaches to a still-running edit. The agent is hard-scoped at the permission layer: it can read the project but write only the targeted document. Also headless: `ritual chat "<msg>" [--plan] [--section …]`.
 - **Findings lifecycle** — on the findings tab, `f` marks fixed and `d` dismisses (write-through to the JSON; `v` shows/hides resolved); the selected finding shows the verbatim source **snippet** it anchors to. The exit-code/CI contract follows: a confirmed critical blocks until resolved. `ritual pr-comment [N] [--inline]` posts the open findings to the branch's GitHub PR, redacted.
-- **Quality gates** — `ritual mutants` (mutation-kill gate over the diff), `ritual secrets` (gitleaks over changed files, blocking), `.ritual/invariants.md` (the constitution every review enforces), and `ritual lessons` (review memory mined from your dispositions) — see [Highlights](#highlights-v05).
+- **Quality gates** — `ritual mutants` mutates only your diff (cargo-mutants) and turns every mutant the tests failed to kill into an anchored finding (a proven test gap, advisory); `ritual secrets` gitleaks-scans exactly what changed (incl. untracked files) and its critical findings **block until dismissed or fingerprinted** — auto-run before every dual-review. `.ritual/invariants.md` is the project constitution: every bullet becomes an acceptance criterion re-injected into each review stage. `ritual lessons` distills your f/d dispositions into review memory the critic reads first — it stops re-flagging what you already dismissed.
+- **Third reviewer, ensemble-style** — optional CodeRabbit CLI review before each dual-review: its comments land as *unconfirmed* single-source findings that never block; the dual-review skill verifies or refutes each one — three agreeing sources is the strongest signal there is.
 - **Reproducible workbench** — the whole multi-LLM setup (13 skills incl. `/spec` and the optional `/consensus`, the code-reviewer agent, both hooks) is vendored in `workbench/` and installed by `ritual init --skills`; `ritual skills diff` shows exactly where installed copies diverge. An optional third-model **consensus tier** (`[consensus] enabled`, pal MCP + Gemini) lets plan-review escalate one contested finding for arbitration.
 
 ### Running things
 
 - **Runs are daemons** — every headless run detaches (`setsid`) and survives the TUI, the terminal, and reboots of your session. The raw event stream is archived to `.ritual/runs/*.jsonl` *before* parsing; the TUI is just a tailer. Restart `ritual` and it reattaches to live runs, reconciles anything that finished while you were away, and announces parallel runs it can't attach. Cancel kills the whole process group.
 - **Run control from anywhere** — `ritual ps` lists live daemons, `ritual attach <run-id>` streams one into any terminal (`--kill` stops it). `ritual doctor [--deep]` checks agents, auth, MCP wiring, skills drift, hooks, check.sh, gates, and disk pressure. `ritual clean [--keep N] [--dry-run]` prunes old run artifacts — live/state-referenced/today's runs protected, pruned chained runs attested by a tamper-evident **checkpoint** so `verify-log` never breaks.
-- **Attempts + resilience** — `fallback_model` rides every headless run; failed stages offer palette retries with alternate models (`[retry] models`, `run --model`); `×N` attempt markers and model columns make attempts comparable.
+- **Attempts + resilience** — `fallback_model` keeps headless runs alive through provider overloads; `[retry] models` offers *retry `<stage>` with `<model>`* in the palette for failed stages (`run --model` on the CLI); the sidebar shows `×N` attempts and history/reports grow a model column.
 - **Parallel features in git worktrees** — `ritual new "Title" --worktree feat/x` creates a worktree sharing ONE `.ritual/` state in the main repo. The sidebar lists all features with a needs-you queue (`!` badge, attention-first ordering); `[` `]` cycle features; runs execute in the right checkout automatically.
 - **One-key takeover** — `a` reattaches the selected stage's recorded session interactively (`claude --resume <session-id>`).
 
 ### Trust & audit
 
-- **Safety + money** — gitleaks-style **secret redaction** on every archived line, stream, and report (vendor key shapes, PEM blocks, assignments, entropy tokens; `redaction = false` to opt out). **Daily budgets** (`budget_daily_usd`) with a status-bar meter and run refusal (`--force` overrides); `ritual costs` for per-stage, cache-aware analytics. Desktop **notifications** on stage completion.
+- **Safety + money** — gitleaks-style **secret redaction** on every archived line, stream, and report (vendor key shapes, PEM blocks, assignments, entropy tokens; `redaction = false` to opt out). **Daily budgets** (`budget_daily_usd`) with a status-bar meter and run refusal (`--force` overrides); `ritual costs` for per-stage, cache-aware spend analytics. Desktop **notifications** on stage completion.
 - **Provenance** — every run records a **reproducibility bundle** (git commit, dirty-diff hash, claude/codex versions, skill-file hashes, config snapshot; `ritual repro <run-id>` diffs it against your current env) and a **tamper-evident hash chain** (`ritual verify-log` walks it and reports the first break).
-- **Sandboxing** — `[sandbox] wrapper` spawns every headless run under Anthropic's [`srt`](https://github.com/anthropic-experimental/sandbox-runtime) (or any argv prefix) from the single spawn chokepoint; supervisor-owned, persisted per run, recorded in the meta ([example settings](docs/srt-settings.example.json)).
+- **Sandboxing** — `[sandbox] wrapper` spawns every headless run under Anthropic's [`srt`][srt-url] (or any argv prefix) from the single spawn chokepoint; supervisor-owned, persisted per run, recorded in the meta ([example settings](docs/srt-settings.example.json)).
 - **CI mode** — `ritual run dual-review --ci` writes JUnit XML to `.ritual/ci/` (confirmed critical/major findings = failures) and exits nonzero. Findings browsing is scriptable: `--json` everywhere, `ritual findings` exits 1 on confirmed criticals.
 - **Standards-shaped telemetry** — `ritual export` emits OTLP-JSON spans with OTel **GenAI semconv** attributes for any OpenTelemetry collector; `--audit-trail` emits IETF draft-sharif agent-audit-trail records (RFC 8785-canonical, SHA-256 hash-chained JSONL).
 
@@ -78,33 +160,61 @@ Built on one bet, backed by the research: **external feedback is the quality eng
 - **Reports** — `ritual report [--pdf]`: one Markdown document per feature (pipeline state, spec, plan, findings + evidence snippets, runs, per-stage costs), redacted, pandoc-converted when available.
 - **In-app guide** — tab `5` renders [the full guide & tips](docs/guide.md) inside the TUI.
 
-## Install
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-```sh
-git clone <this repo> && cd ritual
-cargo install --path . --root ~/.local   # → ~/.local/bin/ritual
-```
+<!-- GETTING STARTED -->
+## Getting Started
 
-Prereqs (verified against: Claude Code 2.1.205, Codex CLI 0.144.1, July 2026):
+### Prerequisites
 
-- Claude Code with the multi-LLM skills — `ritual init --skills` installs the vendored workbench, or see [`multi-llm-playbook.md`](multi-llm-playbook.md)
-- Codex CLI (`npm i -g @openai/codex`), authenticated: `codex login`
-- The codex MCP bridge: `claude mcp add --scope user codex -- codex mcp-server`
-- Optional: `gitleaks` (secrets gate), `cargo-mutants` (mutation gate), `gh` (pr-comment), `coderabbit` (third reviewer), `@anthropic-ai/sandbox-runtime` (sandbox)
+Verified against: Claude Code 2.1.205, Codex CLI 0.144.1 (July 2026).
 
-## Quick start
+- **Claude Code**, logged in — the multi-LLM skills install with `ritual init --skills` (or see the [playbook][playbook-url])
+- **Codex CLI**, authenticated
+  ```sh
+  npm i -g @openai/codex && codex login
+  ```
+- **The codex MCP bridge**
+  ```sh
+  claude mcp add --scope user codex -- codex mcp-server
+  ```
+- Optional, feature-gated: `gitleaks` (secrets gate), `cargo-mutants` (mutation gate), `gh` (pr-comment), `coderabbit` (third reviewer), `@anthropic-ai/sandbox-runtime` (sandbox), `pandoc` (PDF reports)
+
+### Installation
+
+1. Clone and install the binary
+   ```sh
+   git clone <this repo> && cd ritual
+   cargo install --path . --root ~/.local   # → ~/.local/bin/ritual
+   ```
+2. Install the vendored workbench (skills, agent, hooks) into `~/.claude`
+   ```sh
+   ritual init --skills
+   ```
+3. Verify everything in one shot
+   ```sh
+   ritual doctor
+   ```
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- USAGE -->
+## Usage
+
+### Quick start
 
 ```sh
 cd your-project
 ritual init                      # .ritual/, stack-detected check.sh, CLAUDE.md, invariants.md
 ritual new "My feature"          # or: ritual new "Big thing" --worktree feat/big
 ritual                           # the dashboard
-ritual doctor                    # verify every prerequisite in one shot
 ```
 
 Scriptable: `status|findings|history|costs [--json]`, `run <stage> [--force] [--ci] [--model m]`, `mutants [--base ref]`, `secrets`, `lessons [--stdout]`, `report [--pdf]`, `repro <run-id>`, `verify-log`, `bench <stage> --runs N`, `skills diff`, `export [--out f] [--audit-trail]`.
 
-## Configuration
+_For the full manual — including a start-to-finish walkthrough of every feature — see the **[guide][guide-url]** (also rendered in-app on tab `5`)._
+
+### Configuration
 
 `.ritual/config.toml` or `~/.config/ritual/config.toml` (layered: defaults ← user ← project ← env ← flags):
 
@@ -151,7 +261,7 @@ enabled = false
 blame = "git log --oneline -3 -- {{finding.file}}"
 ```
 
-## Recipes
+### Recipes
 
 **GitHub Actions gate**
 
@@ -168,30 +278,91 @@ blame = "git log --oneline -3 -- {{finding.file}}"
 
 **Embedded / hardware-in-the-loop** — use `templates/check-hil.sh` (build → flash → capture serial → assert) as your project's check.sh and set `check_timeout_secs` low enough that a dead board fails fast.
 
-## Default keys
+### Default keys
 
 All rebindable via `[keys]`:
 
 `enter` run/open · `s` chat: edit spec/plan · `:` palette · `j/k` move · `tab` `1-5` panes (`5` = in-app guide & tips) · `f/d/v` finding fix/dismiss/show-resolved · `[` `]` features · `a` takeover · `o` open in nvim · `Q` findings → quickfix · `c/C` check fast/full · `x` cancel · `e` editor · `r` refresh · `g/G` scroll/follow · `?` help · `q` quit — in chat: `Ctrl+Z` undo · `Alt+Z` redo · `Ctrl+X` cancel · `Alt+Enter` newline
 
-## Design notes
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- ROADMAP -->
+## Roadmap
+
+- [x] **v0.2** — redaction, budgets, reports, CI mode, repro bundles + hash chain, model routing, worktrees, daemonized runs, offline mode, bench, palette, OTLP export
+- [x] **v0.3** — interactive spec/plan chat (`s`) + `/spec` skill + `ritual chat`
+- [x] **v0.4** — `clean` with chain checkpoints, findings lifecycle (f/d/v + CI contract), chat undo/cancel/queue/highlight, vendored workbench, hard permission-scoping, `ps`/`attach`, `doctor`, consensus tier, `pr-comment`
+- [x] **v0.5** — mutation + secrets gates, invariants constitution, review memory, findings snippets, `costs`, fallback + retry-with-model, sandbox wrapper, CodeRabbit third reviewer, OTel GenAI semconv + IETF audit-trail export, chat undo stack + reattach
+- [ ] **Deferred** — steerable runs (Agent SDK), `ritual mcp-server`, SQLite/fuzzy history, chat fork-at-turn, container worktrees, OTLP receiver + in-TUI span waterfall, tree-sitter repo map
+
+See the full [ROADMAP.md][roadmap-url] for the design rationale behind each item — and the non-goals.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- DESIGN NOTES -->
+## Design Notes
 
 - **Drift-tolerant parsing**: unknown stream-json events render dimmed (`Raw`), never crash; field names verified against live captures in `tests/fixtures/` — the same philosophy covers the cargo-mutants, gitleaks, and CodeRabbit adapters.
 - **Zero-token testing**: `RITUAL_CLAUDE_CMD`/`RITUAL_CODEX_CMD` (and `RITUAL_GH_CMD`, `RITUAL_MUTANTS_CMD`, `RITUAL_GITLEAKS_CMD`, `RITUAL_CODERABBIT_CMD`) swap in fake CLIs from `tests/`; the entire pipeline — including daemon survival, gates, and the audit chain — is E2E-tested without an API call.
 - **Accessibility**: state is never color-only (every status has a distinct glyph); `--ascii` replaces Nerd Font icons; `NO_COLOR` and piped output disable color.
 - **Terminal safety**: one guard owns raw-mode transitions; a panic hook restores your shell; Ctrl-C in a child can't kill the TUI.
 
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- DOCUMENTATION -->
 ## Documentation
 
-- [Guide & tips](docs/guide.md) — the full manual, also rendered in-app on tab `5`
-- [Roadmap](ROADMAP.md) — what shipped per version, what's deferred, design rationale
-- [Multi-LLM playbook](multi-llm-playbook.md) — the workflow's research grounding and setup reference
+- [Guide & tips][guide-url] — the full manual, also rendered in-app on tab `5`
+- [Roadmap][roadmap-url] — what shipped per version, what's deferred, design rationale
+- [Multi-LLM playbook][playbook-url] — the workflow's research grounding and setup reference
 - [srt sandbox settings example](docs/srt-settings.example.json) — starting config for sandboxed runs
 
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- DEVELOPMENT -->
 ## Development
 
-`./check.sh` = fmt + clippy `-D warnings` + tests (226 across unit/CLI/snapshot suites); `bash tests/e2e_live.sh` drives the installed binary through 73 lifecycle checks token-free. Builds land in `/var/tmp/ritual-target` (see `.cargo/config.toml`). The repo dogfoods its own workflow (`CLAUDE.md`); `demo.tape` renders the README demo via [vhs](https://github.com/charmbracelet/vhs).
+`./check.sh` = fmt + clippy `-D warnings` + tests (226 across unit/CLI/snapshot suites); `bash tests/e2e_live.sh` drives the installed binary through 73 lifecycle checks token-free. Builds land in `/var/tmp/ritual-target` (see `.cargo/config.toml`). The repo dogfoods its own workflow (`CLAUDE.md`); `demo.tape` renders the README demo via [vhs][vhs-url].
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- ACKNOWLEDGMENTS -->
+## Acknowledgments
+
+- [ratatui][ratatui-url] — the TUI framework; [lazygit](https://github.com/jesseduffield/lazygit) and [k9s](https://k9scli.io/) set the bar for what a pro TUI owes its user
+- [cargo-mutants](https://mutants.rs/) and [gitleaks](https://github.com/gitleaks/gitleaks) — the engines behind the quality gates
+- [Anthropic sandbox-runtime][srt-url] — supervisor-owned sandboxing done right
+- Meta's [ACH](https://arxiv.org/abs/2501.12862) (mutation-guided test hardening) and the 2026 multi-agent evidence base — the research this workflow is shaped by
+- [Best-README-Template](https://github.com/othneildrew/Best-README-Template) via [awesome-readme](https://github.com/matiassingers/awesome-readme) — this README's skeleton
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ---
 
-*ritual is a solo-power-user tool, built by dogfooding the workflow it drives — every feature above was planned, cross-model-reviewed, and shipped through the pipeline itself.*
+<div align="center">
+<sub>ritual is a solo-power-user tool, built by dogfooding the workflow it drives — every feature above was planned, cross-model-reviewed, and shipped through the pipeline itself.</sub>
+</div>
+
+<!-- MARKDOWN LINKS & IMAGES -->
+[version-shield]: https://img.shields.io/badge/version-0.5.0-9d7cd8?style=for-the-badge
+[tests-shield]: https://img.shields.io/badge/cargo_tests-226_passing-73daca?style=for-the-badge
+[e2e-shield]: https://img.shields.io/badge/live_driver-73%2F73-7aa2f7?style=for-the-badge
+[chain-shield]: https://img.shields.io/badge/audit-tamper--evident-e0af68?style=for-the-badge
+[zero-token-shield]: https://img.shields.io/badge/testing-zero_tokens-bb9af7?style=for-the-badge
+[rust-badge]: https://img.shields.io/badge/Rust_2024-000000?style=for-the-badge&logo=rust&logoColor=white
+[rust-url]: https://www.rust-lang.org/
+[ratatui-badge]: https://img.shields.io/badge/ratatui-0.30-1a1b26?style=for-the-badge
+[ratatui-url]: https://ratatui.rs/
+[tokio-badge]: https://img.shields.io/badge/tokio-async-2b303b?style=for-the-badge
+[tokio-url]: https://tokio.rs/
+[claude-badge]: https://img.shields.io/badge/Claude_Code-D97757?style=for-the-badge&logo=claude&logoColor=white
+[claude-url]: https://claude.com/claude-code
+[codex-badge]: https://img.shields.io/badge/Codex_CLI-412991?style=for-the-badge&logo=openai&logoColor=white
+[codex-url]: https://github.com/openai/codex
+[srt-url]: https://github.com/anthropic-experimental/sandbox-runtime
+[vhs-url]: https://github.com/charmbracelet/vhs
+[roadmap-url]: ROADMAP.md
+[guide-url]: docs/guide.md
+[playbook-url]: multi-llm-playbook.md
+[tests-url]: tests/
+[e2e-url]: tests/e2e_live.sh
