@@ -14,6 +14,7 @@ use std::io::Stdout;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
+use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -27,6 +28,7 @@ fn restore_terminal_best_effort() {
         let _ = disable_raw_mode();
         let _ = crossterm::execute!(
             std::io::stdout(),
+            DisableBracketedPaste,
             LeaveAlternateScreen,
             crossterm::cursor::Show
         );
@@ -58,8 +60,11 @@ impl Term {
         // No mouse capture: ritual is keyboard-first and handles no mouse
         // events, so capturing them would only rob the terminal of its native
         // click-drag text selection (copy a finding's file:line, an error, a
-        // run id) while giving nothing back.
-        crossterm::execute!(stdout, EnterAlternateScreen).context("entering alternate screen")?;
+        // run id) while giving nothing back. Bracketed paste IS enabled so a
+        // multi-line paste into the chat input arrives as one Paste event
+        // instead of newline key presses that would submit mid-paste.
+        crossterm::execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)
+            .context("entering alternate screen")?;
         TERMINAL_ACTIVE.store(true, Ordering::SeqCst);
         let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
         Ok(Self { terminal })
@@ -72,6 +77,7 @@ impl Term {
         disable_raw_mode()?;
         crossterm::execute!(
             self.terminal.backend_mut(),
+            DisableBracketedPaste,
             LeaveAlternateScreen,
             crossterm::cursor::Show
         )?;
@@ -83,7 +89,11 @@ impl Term {
     /// redraw so a resize-while-suspended can't corrupt the buffer.
     pub fn resume(&mut self) -> Result<()> {
         enable_raw_mode()?;
-        crossterm::execute!(self.terminal.backend_mut(), EnterAlternateScreen)?;
+        crossterm::execute!(
+            self.terminal.backend_mut(),
+            EnterAlternateScreen,
+            EnableBracketedPaste
+        )?;
         TERMINAL_ACTIVE.store(true, Ordering::SeqCst);
         self.terminal.hide_cursor()?;
         self.terminal.clear()?;
