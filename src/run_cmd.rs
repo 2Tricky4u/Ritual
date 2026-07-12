@@ -307,6 +307,11 @@ fn run_headless(
 ) -> Result<()> {
     let findings_before = list_findings(&dirs.findings_dir());
 
+    // Refresh the review memory the dual-review skill reads (pure fs, cheap).
+    if stage == StageId::DualReview {
+        let _ = crate::lessons::refresh(dirs);
+    }
+
     set_stage(st, branch, stage, StageStatus::Running, None);
     st.save(dirs)?;
 

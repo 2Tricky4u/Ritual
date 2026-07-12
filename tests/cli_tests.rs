@@ -154,6 +154,52 @@ fn run_plan_review_e2e_with_fake_agent() {
 }
 
 #[test]
+fn lessons_distill_dispositions_and_refresh_before_dual_review() {
+    let tmp = setup_project();
+    std::fs::create_dir_all(tmp.path().join(".ritual/findings")).unwrap();
+    std::fs::write(
+        tmp.path()
+            .join(".ritual/findings/20260710T000000Z-dual-review.json"),
+        r#"{"stage":"dual-review","findings":[
+            {"title":"style nit","file":"src/a.rs","line":1,"action":"dismissed"},
+            {"title":"real leak","file":"src/b.rs","line":7,"action":"fixed"}
+        ]}"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["lessons", "--stdout"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Known noise"))
+        .stdout(predicate::str::contains("style nit (src/a.rs:1)"))
+        .stdout(predicate::str::contains("real leak (src/b.rs:7)"));
+    assert!(tmp.path().join(".ritual/lessons.md").exists());
+
+    // A dual-review run refreshes the file before spawning the agent.
+    std::fs::remove_file(tmp.path().join(".ritual/lessons.md")).unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .env("FAKE_AGENT_DELAY", "0")
+        .env(
+            "FAKE_AGENT_FINDINGS",
+            ".ritual/findings/20260711T210000Z-dual-review.json",
+        )
+        .args(["run", "dual-review"])
+        .assert()
+        .success();
+    assert!(
+        tmp.path().join(".ritual/lessons.md").exists(),
+        "dual-review must refresh the review memory"
+    );
+}
+
+#[test]
 fn run_plan_review_without_findings_needs_attention() {
     let tmp = setup_project();
     std::fs::create_dir_all(tmp.path().join(".ritual/features/main")).unwrap();

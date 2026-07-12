@@ -31,6 +31,10 @@ Two reviewers from different vendors have decorrelated blind spots. The independ
 
 If `${RITUAL_INVARIANTS_FILE:-.ritual/invariants.md}` exists and contains bullets, Read it before reviewing. Every bullet is a non-negotiable acceptance criterion: any diff hunk that violates one becomes a finding of severity major or higher, citing the bullet. Never weaken or reinterpret an invariant to let a review pass.
 
+## Review memory (ritual)
+
+If `.ritual/lessons.md` exists, Read it before reviewing. Items under "Known noise" were already reviewed and dismissed by a human — do not re-report them unless the evidence is materially new. Use "Confirmed real-bug areas" to direct extra scrutiny at the code regions where real bugs actually lived.
+
 ## Guardrails
 
 - If the `codex` tool fails with an auth error, tell the user to run `! codex login`; offer the single-model review rather than silently degrading.

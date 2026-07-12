@@ -676,6 +676,10 @@ impl App {
             return;
         }
         self.findings_before = list_dir(&self.dirs.findings_dir());
+        // Refresh the review memory the dual-review skill reads.
+        if stage == StageId::DualReview {
+            let _ = crate::lessons::refresh(&self.dirs);
+        }
         self.stream.clear();
         self.stream_scroll = None;
         self.tab = Tab::Live;
