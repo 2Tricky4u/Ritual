@@ -791,6 +791,14 @@ impl App {
             self.quit = true;
             return;
         }
+        if key.code == KeyCode::Char('x') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.chat_cancel();
+            return;
+        }
+        if key.code == KeyCode::Char('z') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.chat_undo();
+            return;
+        }
         // Enter submits — handled first because it needs `&mut self` to spawn.
         if key.code == KeyCode::Enter {
             if let Some(msg) = self.chat_take_submit() {
@@ -832,11 +840,81 @@ impl App {
             // scroll = lines up from the bottom (0 = follow tail).
             KeyCode::Up => chat.scroll = chat.scroll.saturating_add(1),
             KeyCode::Down => chat.scroll = chat.scroll.saturating_sub(1),
-            KeyCode::Char(c) => {
+            // Only PLAIN characters type (shift is part of the char itself);
+            // ctrl/alt chords must never insert letters.
+            KeyCode::Char(c) if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
                 chat.input.insert(chat.cursor, c);
                 chat.cursor += 1;
             }
             _ => {}
+        }
+    }
+
+    /// Ctrl+X: kill an in-flight chat edit. The aborted tail task means
+    /// on_chat_exited never fires for this run — reset state here.
+    fn chat_cancel(&mut self) {
+        let in_flight = self.chat.as_ref().is_some_and(|c| c.in_flight);
+        if !in_flight {
+            if let Some(chat) = self.chat.as_mut() {
+                chat.transcript
+                    .push(ChatTurn::System("nothing in flight to cancel".into()));
+            }
+            return;
+        }
+        if let Some(rid) = self.current_chat_run_id.take() {
+            runner::kill_run(&self.dirs, &rid);
+        }
+        if let Some(task) = self.chat_task.take() {
+            task.abort();
+        }
+        if let Some(chat) = self.chat.as_mut() {
+            chat.in_flight = false;
+            chat.transcript.push(ChatTurn::System(
+                "edit cancelled — Ctrl+Z restores the pre-edit document".into(),
+            ));
+            chat.scroll = 0;
+        }
+    }
+
+    /// Ctrl+Z: swap the current target's document with its pre-edit snapshot
+    /// (press again to redo). The snapshot file is written on every chat
+    /// edit, so undo survives TUI restarts and covers CLI chats too.
+    fn chat_undo(&mut self) {
+        if self.chat.as_ref().is_some_and(|c| c.in_flight) {
+            if let Some(chat) = self.chat.as_mut() {
+                chat.transcript.push(ChatTurn::System(
+                    "cannot undo while an edit is in flight — Ctrl+X to cancel first".into(),
+                ));
+            }
+            return;
+        }
+        let Some(target) = self.chat.as_ref().and_then(|c| c.target()).cloned() else {
+            return;
+        };
+        let doc_path = match target.doc {
+            stages::DocKind::Spec => self.dirs.spec_file(&self.slug),
+            stages::DocKind::Plan => self.dirs.plan_file(&self.slug),
+        };
+        let undo = self.dirs.undo_file(&self.slug, target.doc.label());
+        let note = if !undo.exists() {
+            format!("nothing to undo for {}", target.doc.label())
+        } else {
+            let doc_now = std::fs::read_to_string(&doc_path).unwrap_or_default();
+            let snapshot = std::fs::read_to_string(&undo).unwrap_or_default();
+            let swap =
+                std::fs::write(&doc_path, &snapshot).and_then(|_| std::fs::write(&undo, &doc_now));
+            match swap {
+                Ok(()) => "undid last edit — Ctrl+Z again to redo".into(),
+                Err(e) => format!("undo failed: {e}"),
+            }
+        };
+        // Refresh targets against the (possibly) restored content.
+        let targets = self.build_chat_targets();
+        if let Some(chat) = self.chat.as_mut() {
+            chat.transcript.push(ChatTurn::System(note));
+            chat.target_idx = chat.target_idx.min(targets.len().saturating_sub(1));
+            chat.targets = targets;
+            chat.scroll = 0;
         }
     }
 
@@ -927,6 +1005,13 @@ impl App {
             &context,
         );
         self.doc_before = std::fs::read_to_string(&doc_path).unwrap_or_default();
+        // Persist the pre-edit snapshot: the Ctrl+Z undo source (survives
+        // restarts; single-level — each edit replaces it).
+        let _ = std::fs::create_dir_all(self.dirs.feature_dir(&self.slug));
+        let _ = std::fs::write(
+            self.dirs.undo_file(&self.slug, target.doc.label()),
+            &self.doc_before,
+        );
         if let Some(chat) = self.chat.as_mut() {
             chat.transcript.push(ChatTurn::Assistant(Vec::new()));
             chat.in_flight = true;
@@ -1759,6 +1844,88 @@ mod tests {
             app.chat.as_ref().unwrap().input.iter().collect::<String>(),
             "ell"
         );
+    }
+
+    #[test]
+    fn chat_ctrl_chords_do_not_type_letters() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.open_chat();
+        // Ctrl+Z on a fresh chat: no snapshot -> "nothing to undo" note, and
+        // crucially no literal 'z' lands in the input.
+        app.chat_input(
+            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL),
+            &tx,
+        );
+        assert!(app.chat.as_ref().unwrap().input.is_empty());
+        assert!(matches!(
+            app.chat.as_ref().unwrap().transcript.last(),
+            Some(ChatTurn::System(n)) if n.contains("nothing to undo")
+        ));
+        // Alt+q: swallowed, not typed.
+        app.chat_input(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::ALT), &tx);
+        assert!(app.chat.as_ref().unwrap().input.is_empty());
+        // Shift-produced uppercase still types.
+        app.chat_input(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT), &tx);
+        assert_eq!(
+            app.chat.as_ref().unwrap().input.iter().collect::<String>(),
+            "H"
+        );
+    }
+
+    #[test]
+    fn chat_undo_swaps_doc_and_snapshot() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.open_chat();
+        let spec = app.dirs.spec_file(&app.slug);
+        // Simulate an edit cycle: snapshot the old content, then "Claude"
+        // writes new content (this is what spawn_doc_chat does pre-run).
+        std::fs::write(&spec, "OLD SPEC\n").unwrap();
+        std::fs::write(app.dirs.undo_file(&app.slug, "spec"), "OLD SPEC\n").unwrap();
+        std::fs::write(&spec, "NEW SPEC\n").unwrap();
+
+        let ctrl_z = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL);
+        app.chat_input(ctrl_z, &tx);
+        assert_eq!(std::fs::read_to_string(&spec).unwrap(), "OLD SPEC\n");
+        // Swap = redo on second press.
+        app.chat_input(ctrl_z, &tx);
+        assert_eq!(std::fs::read_to_string(&spec).unwrap(), "NEW SPEC\n");
+        // Blocked while in flight.
+        app.chat.as_mut().unwrap().in_flight = true;
+        app.chat_input(ctrl_z, &tx);
+        assert_eq!(std::fs::read_to_string(&spec).unwrap(), "NEW SPEC\n");
+        assert!(matches!(
+            app.chat.as_ref().unwrap().transcript.last(),
+            Some(ChatTurn::System(n)) if n.contains("in flight")
+        ));
+    }
+
+    #[test]
+    fn chat_cancel_resets_in_flight() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.open_chat();
+        // Nothing in flight: informational note only.
+        app.chat_input(
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            &tx,
+        );
+        assert!(matches!(
+            app.chat.as_ref().unwrap().transcript.last(),
+            Some(ChatTurn::System(n)) if n.contains("nothing in flight")
+        ));
+        // In flight (no real daemon — kill_run on a missing id is a no-op).
+        app.chat.as_mut().unwrap().in_flight = true;
+        app.current_chat_run_id = Some("20260712T000000Z-0-0-spec-chat".into());
+        app.chat_input(
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            &tx,
+        );
+        let chat = app.chat.as_ref().unwrap();
+        assert!(!chat.in_flight, "cancel must clear in_flight");
+        assert!(app.current_chat_run_id.is_none());
+        assert!(matches!(
+            chat.transcript.last(),
+            Some(ChatTurn::System(n)) if n.contains("cancelled")
+        ));
     }
 
     #[test]
