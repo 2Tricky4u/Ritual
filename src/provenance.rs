@@ -121,26 +121,128 @@ pub fn compute_link(prev: &str, archive_bytes: &[u8], meta: &RunMeta) -> Result<
     })
 }
 
-/// The `this` hash of the newest chained run, or GENESIS.
+/// Rolling genesis written by `ritual clean`: stands in for pruned chained
+/// runs so pruning never breaks `verify-log`. Only the latest checkpoint is
+/// kept on disk; lineage is carried by `prev_checkpoint` (the replaced
+/// checkpoint's self_hash, or GENESIS for the first). Trust model: the
+/// checkpoint is the trust anchor for everything it covers — like a git
+/// shallow clone, history behind it is attested by one hash, everything
+/// after it stays fully tamper-evident.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Checkpoint {
+    /// run_id of the NEWEST pruned chained run this checkpoint covers.
+    pub as_of_run_id: String,
+    /// chain.this of that run — the link the oldest surviving run chains from.
+    pub link_hash: String,
+    /// Cumulative chained runs pruned under this lineage.
+    pub pruned_runs: usize,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// self_hash of the checkpoint this replaced, or GENESIS for the first.
+    pub prev_checkpoint: String,
+    /// sha256 of the canonical JSON of self with self_hash blanked —
+    /// mirrors compute_link's "canonical minus the hash field" pattern.
+    pub self_hash: String,
+}
+
+pub fn checkpoint_path(runs_dir: &Path) -> std::path::PathBuf {
+    runs_dir.join("checkpoint.json")
+}
+
+pub fn compute_checkpoint_hash(cp: &Checkpoint) -> Result<String> {
+    let mut blank = cp.clone();
+    blank.self_hash = String::new();
+    let canonical = serde_json::to_vec(&blank).context("serializing checkpoint for hash")?;
+    Ok(sha256_hex(&canonical))
+}
+
+/// Ok(None) when absent; Err when present but unreadable/unparseable —
+/// verify_log treats that as a broken chain, not a missing checkpoint.
+pub fn load_checkpoint(runs_dir: &Path) -> Result<Option<Checkpoint>> {
+    let path = checkpoint_path(runs_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let cp: Checkpoint =
+        serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    Ok(Some(cp))
+}
+
+/// Atomic write (tmp + rename), like State::save.
+pub fn write_checkpoint(runs_dir: &Path, cp: &Checkpoint) -> Result<()> {
+    let path = checkpoint_path(runs_dir);
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(cp)?)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
+/// The `this` hash of the newest chained run, else the checkpoint link
+/// (pruned-everything case: the next run chains onto the checkpoint), else
+/// GENESIS.
 pub fn last_link(runs_dir: &Path) -> String {
-    crate::history::load_all(runs_dir)
-        .ok()
-        .and_then(|metas| metas.into_iter().find_map(|m| m.chain.map(|c| c.this)))
-        .unwrap_or_else(|| GENESIS.to_string())
+    if let Ok(metas) = crate::history::load_all(runs_dir)
+        && let Some(hash) = metas.into_iter().find_map(|m| m.chain.map(|c| c.this))
+    {
+        return hash;
+    }
+    if let Ok(Some(cp)) = load_checkpoint(runs_dir) {
+        return cp.link_hash;
+    }
+    GENESIS.to_string()
 }
 
 #[derive(Debug, PartialEq)]
 pub enum VerifyOutcome {
-    Ok { runs: usize },
-    Broken { run_id: String, reason: String },
+    Ok {
+        runs: usize,
+        checkpoint: Option<Checkpoint>,
+    },
+    Broken {
+        run_id: String,
+        reason: String,
+    },
 }
 
-/// Walk the chain oldest→newest, recomputing every link.
+/// Walk the chain oldest→newest, recomputing every link. When a checkpoint
+/// exists it becomes the starting link, and chained metas it covers
+/// (run_id <= as_of_run_id) are skipped — that makes a crash between
+/// "checkpoint written" and "files deleted" recoverable instead of Broken.
 pub fn verify_log(runs_dir: &Path) -> Result<VerifyOutcome> {
+    let checkpoint = match load_checkpoint(runs_dir) {
+        Ok(cp) => cp,
+        Err(e) => {
+            return Ok(VerifyOutcome::Broken {
+                run_id: "checkpoint.json".into(),
+                reason: format!("unreadable checkpoint: {e:#}"),
+            });
+        }
+    };
+    if let Some(cp) = &checkpoint
+        && compute_checkpoint_hash(cp)? != cp.self_hash
+    {
+        return Ok(VerifyOutcome::Broken {
+            run_id: "checkpoint.json".into(),
+            reason: "checkpoint self-hash mismatch (checkpoint.json was modified)".into(),
+        });
+    }
+
     let mut metas = crate::history::load_all(runs_dir)?;
     metas.reverse(); // load_all is newest-first
-    let chained: Vec<&RunMeta> = metas.iter().filter(|m| m.chain.is_some()).collect();
-    let mut prev = GENESIS.to_string();
+    let chained: Vec<&RunMeta> = metas
+        .iter()
+        .filter(|m| m.chain.is_some())
+        .filter(|m| {
+            checkpoint
+                .as_ref()
+                .is_none_or(|cp| m.run_id.as_str() > cp.as_of_run_id.as_str())
+        })
+        .collect();
+    let mut prev = checkpoint
+        .as_ref()
+        .map(|cp| cp.link_hash.clone())
+        .unwrap_or_else(|| GENESIS.to_string());
     for meta in &chained {
         let chain = meta.chain.as_ref().unwrap();
         if chain.prev != prev {
@@ -162,6 +264,7 @@ pub fn verify_log(runs_dir: &Path) -> Result<VerifyOutcome> {
     }
     Ok(VerifyOutcome::Ok {
         runs: chained.len(),
+        checkpoint,
     })
 }
 
@@ -196,7 +299,10 @@ mod tests {
         assert_eq!(last_link(tmp.path()), c2.this);
         assert_eq!(
             verify_log(tmp.path()).unwrap(),
-            VerifyOutcome::Ok { runs: 2 }
+            VerifyOutcome::Ok {
+                runs: 2,
+                checkpoint: None
+            }
         );
 
         // Tamper with the first archive: verification must break at run a.
@@ -205,6 +311,114 @@ mod tests {
             VerifyOutcome::Broken { run_id, .. } => assert!(run_id.ends_with("-a")),
             other => panic!("expected broken chain, got {other:?}"),
         }
+    }
+
+    fn mk_checkpoint(as_of: &str, link: &str, pruned: usize, prev_cp: &str) -> Checkpoint {
+        let mut cp = Checkpoint {
+            as_of_run_id: as_of.into(),
+            link_hash: link.into(),
+            pruned_runs: pruned,
+            created_at: chrono::Utc::now(),
+            prev_checkpoint: prev_cp.into(),
+            self_hash: String::new(),
+        };
+        cp.self_hash = compute_checkpoint_hash(&cp).unwrap();
+        cp
+    }
+
+    #[test]
+    fn checkpoint_roundtrip_and_hash() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(load_checkpoint(tmp.path()).unwrap().is_none());
+        let cp = mk_checkpoint("20260711T000001Z-a", "deadbeef", 3, GENESIS);
+        write_checkpoint(tmp.path(), &cp).unwrap();
+        let loaded = load_checkpoint(tmp.path()).unwrap().unwrap();
+        assert_eq!(loaded, cp);
+        assert_eq!(compute_checkpoint_hash(&loaded).unwrap(), loaded.self_hash);
+        // Garbage on disk -> Err (verify_log maps it to Broken).
+        std::fs::write(checkpoint_path(tmp.path()), "not json").unwrap();
+        assert!(load_checkpoint(tmp.path()).is_err());
+    }
+
+    #[test]
+    fn verify_starts_from_checkpoint_and_skips_covered_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Full chain a -> b -> c.
+        let c1 = mk_run(tmp.path(), "20260711T000001Z-a", GENESIS);
+        let c2 = mk_run(tmp.path(), "20260711T000002Z-b", &c1.this);
+        let c3 = mk_run(tmp.path(), "20260711T000003Z-c", &c2.this);
+        // Checkpoint covering a+b, as clean would write it.
+        let cp = mk_checkpoint("20260711T000002Z-b", &c2.this, 2, GENESIS);
+        write_checkpoint(tmp.path(), &cp).unwrap();
+
+        // Crash-recovery window: a and b still on disk but covered -> skipped.
+        match verify_log(tmp.path()).unwrap() {
+            VerifyOutcome::Ok { runs, checkpoint } => {
+                assert_eq!(runs, 1); // only c is walked
+                assert_eq!(checkpoint.unwrap().pruned_runs, 2);
+            }
+            other => panic!("expected ok, got {other:?}"),
+        }
+
+        // After deletion (the normal post-clean state) it still verifies.
+        for id in ["20260711T000001Z-a", "20260711T000002Z-b"] {
+            std::fs::remove_file(tmp.path().join(format!("{id}.meta.json"))).unwrap();
+            std::fs::remove_file(tmp.path().join(format!("{id}.jsonl"))).unwrap();
+        }
+        assert!(matches!(
+            verify_log(tmp.path()).unwrap(),
+            VerifyOutcome::Ok { runs: 1, .. }
+        ));
+        // last_link is still the newest surviving run.
+        assert_eq!(last_link(tmp.path()), c3.this);
+    }
+
+    #[test]
+    fn tampered_checkpoint_breaks_verification() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c1 = mk_run(tmp.path(), "20260711T000001Z-a", GENESIS);
+        let c2 = mk_run(tmp.path(), "20260711T000002Z-b", &c1.this);
+        let cp = mk_checkpoint("20260711T000001Z-a", &c1.this, 1, GENESIS);
+        write_checkpoint(tmp.path(), &cp).unwrap();
+        let _ = c2;
+
+        // Field edit without re-hashing -> self-hash mismatch at the checkpoint.
+        let mut forged = cp.clone();
+        forged.pruned_runs = 999;
+        write_checkpoint(tmp.path(), &forged).unwrap();
+        match verify_log(tmp.path()).unwrap() {
+            VerifyOutcome::Broken { run_id, reason } => {
+                assert_eq!(run_id, "checkpoint.json");
+                assert!(reason.contains("self-hash"));
+            }
+            other => panic!("expected broken, got {other:?}"),
+        }
+
+        // Consistently re-hashed forgery of link_hash -> breaks at the first
+        // surviving run instead (prev-link mismatch).
+        let forged = mk_checkpoint("20260711T000001Z-a", "0000forged", 1, GENESIS);
+        write_checkpoint(tmp.path(), &forged).unwrap();
+        match verify_log(tmp.path()).unwrap() {
+            VerifyOutcome::Broken { run_id, .. } => assert!(run_id.ends_with("-b")),
+            other => panic!("expected broken, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn last_link_falls_back_to_checkpoint_when_all_runs_pruned() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(last_link(tmp.path()), GENESIS);
+        let cp = mk_checkpoint("20260711T000005Z-x", "cafebabe", 5, GENESIS);
+        write_checkpoint(tmp.path(), &cp).unwrap();
+        assert_eq!(last_link(tmp.path()), "cafebabe");
+
+        // The next run chains onto the checkpoint link and verifies.
+        let c = mk_run(tmp.path(), "20260711T000006Z-y", "cafebabe");
+        assert!(matches!(
+            verify_log(tmp.path()).unwrap(),
+            VerifyOutcome::Ok { runs: 1, .. }
+        ));
+        assert_eq!(last_link(tmp.path()), c.this);
     }
 
     #[test]

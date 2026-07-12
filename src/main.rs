@@ -137,9 +137,14 @@ fn main() -> Result<()> {
             rt.block_on(ritual::runner::daemon_main(&dirs, &run_id))?;
         }
         Some(Command::VerifyLog) => match ritual::provenance::verify_log(&dirs.runs_dir())? {
-            ritual::provenance::VerifyOutcome::Ok { runs } => {
-                println!("chain intact: {runs} chained run(s) verified");
-            }
+            ritual::provenance::VerifyOutcome::Ok { runs, checkpoint } => match checkpoint {
+                Some(cp) => println!(
+                    "chain intact: checkpoint({}, {} pruned) + {runs} run(s) verified",
+                    cp.created_at.format("%Y-%m-%d"),
+                    cp.pruned_runs
+                ),
+                None => println!("chain intact: {runs} chained run(s) verified"),
+            },
             ritual::provenance::VerifyOutcome::Broken { run_id, reason } => {
                 eprintln!("CHAIN BROKEN at {run_id}: {reason}");
                 std::process::exit(1);
