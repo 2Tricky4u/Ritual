@@ -233,8 +233,12 @@ fn main() -> Result<()> {
         }) => {
             ritual::bench::bench(&cfg, &dirs, &stage, runs, golden.as_deref())?;
         }
-        Some(Command::Export { out }) => {
-            ritual::export::otlp_json(&dirs, out.as_deref())?;
+        Some(Command::Export { out, audit_trail }) => {
+            if audit_trail {
+                ritual::export::audit_trail(&dirs, out.as_deref())?;
+            } else {
+                ritual::export::otlp_json(&dirs, out.as_deref())?;
+            }
         }
         Some(Command::Chat {
             message,
