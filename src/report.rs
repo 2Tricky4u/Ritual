@@ -131,17 +131,18 @@ pub fn generate(
     if metas.is_empty() {
         md.push_str("_no recorded runs_\n\n");
     } else {
-        md.push_str("| when (UTC) | stage | agent | ok | cost | tokens out | duration |\n|---|---|---|---|---|---|---|\n");
+        md.push_str("| when (UTC) | stage | agent | model | ok | cost | tokens out | duration |\n|---|---|---|---|---|---|---|---|\n");
         let mut total_cost = 0.0;
         for m in &metas {
             total_cost += m.total_cost_usd.unwrap_or(0.0);
             md.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
                 m.started_at
                     .map(|d| d.format("%m-%d %H:%M").to_string())
                     .unwrap_or_else(|| "?".into()),
                 m.stage,
                 m.agent,
+                m.model.as_deref().unwrap_or("-"),
                 if m.ok { "yes" } else { "NO" },
                 m.total_cost_usd
                     .map(|c| format!("${c:.3}"))

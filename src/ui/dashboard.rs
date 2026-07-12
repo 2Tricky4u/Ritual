@@ -280,10 +280,17 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             icon = SPINNER[app.spinner % SPINNER.len()];
         }
         let selected = i == app.selected;
+        // Attempt history at a glance: ×N once a stage has been re-run.
+        let attempts = app.stage_attempts(*id);
+        let suffix = if attempts > 1 {
+            format!(" ×{attempts}")
+        } else {
+            String::new()
+        };
         if selected {
             // PmenuSel: purple row, dark text.
             let spans = vec![Span::styled(
-                format!("  {icon} {}", id.label()),
+                format!("  {icon} {}{suffix}", id.label()),
                 Style::default().fg(t.on_accent()).bg(t.bg_selection()),
             )];
             lines.push(fill_row(spans, w, t.bg_selection()));
@@ -298,7 +305,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             let spans = vec![
                 Span::styled(format!("  {icon} "), Style::default().fg(icon_color).bg(bg)),
                 Span::styled(
-                    id.label().to_string(),
+                    format!("{}{suffix}", id.label()),
                     Style::default().fg(label_color).bg(bg),
                 ),
             ];

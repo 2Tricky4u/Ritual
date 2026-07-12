@@ -102,6 +102,8 @@ pub struct App {
     chat_task: Option<JoinHandle<()>>,
     current_chat_run_id: Option<String>,
     doc_before: String,
+    /// One-shot model override consumed by the next stage build (retry-with).
+    pending_model_override: Option<String>,
 }
 
 /// Command palette state: typed filter + selection over matching entries.
@@ -224,6 +226,7 @@ impl App {
             chat_task: None,
             current_chat_run_id: None,
             doc_before: String::new(),
+            pending_model_override: None,
         })
     }
 
@@ -243,6 +246,23 @@ impl App {
         for (i, (name, _)) in self.cfg.commands.iter().enumerate() {
             entries.push((format!("cmd: {name}"), Action::Custom(i)));
         }
+        // Retry-with-model: offered only where it can act — a failed (or
+        // needs-attention) headless stage, with [retry] models configured.
+        if let Some(feature) = self.state.features.get(&self.slug) {
+            for id in [StageId::PlanReview, StageId::DualReview] {
+                if matches!(
+                    feature.stage(id).status,
+                    StageStatus::Failed | StageStatus::NeedsAttention
+                ) {
+                    for (i, m) in self.cfg.retry_models.iter().enumerate() {
+                        entries.push((
+                            format!("retry {} with {m}", id.label()),
+                            Action::RetryStage(id, i),
+                        ));
+                    }
+                }
+            }
+        }
         entries
             .into_iter()
             .filter(|(label, _)| keymap::fuzzy_match(&filter, label))
@@ -251,6 +271,15 @@ impl App {
 
     pub fn selected_stage(&self) -> StageId {
         PIPELINE[self.selected.min(PIPELINE.len() - 1)]
+    }
+
+    /// How many runs this stage has recorded (×N marker once retried).
+    pub fn stage_attempts(&self, id: StageId) -> usize {
+        self.state
+            .features
+            .get(&self.slug)
+            .map(|f| f.stage(id).runs.len())
+            .unwrap_or(0)
     }
 
     /// Today's spend from loaded metas (status-bar budget segment).
@@ -515,6 +544,14 @@ impl App {
                 self.tab = Tab::Live;
                 self.on_enter(tx);
             }
+            Action::RetryStage(id, model_idx) => {
+                self.pending_model_override = self.cfg.retry_models.get(model_idx).cloned();
+                if let Some(idx) = PIPELINE.iter().position(|s| *s == id) {
+                    self.selected = idx;
+                }
+                self.tab = Tab::Live;
+                self.on_enter(tx);
+            }
         }
     }
 
@@ -579,7 +616,15 @@ impl App {
             return;
         };
         let stage = self.selected_stage();
-        let cmd = match stages::build(stage, &self.cfg, &self.dirs, &self.slug, None) {
+        let model_override = self.pending_model_override.take();
+        let cmd = match stages::build(
+            stage,
+            &self.cfg,
+            &self.dirs,
+            &self.slug,
+            None,
+            model_override.as_deref(),
+        ) {
             Ok(c) => c,
             Err(e) => {
                 self.status_msg = Some(format!("{e:#}"));
@@ -2336,6 +2381,40 @@ mod tests {
                 .iter()
                 .any(|(l, a)| l == "cmd: deploy preview" && matches!(a, Action::Custom(0)))
         );
+    }
+
+    #[test]
+    fn retry_with_model_appears_only_for_failed_stages_and_sets_override() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.cfg.retry_models = vec!["claude-sonnet-5".into()];
+        app.palette = Some(PaletteState {
+            input: "retry".into(),
+            selected: 0,
+        });
+
+        // Healthy pipeline -> no retry entries.
+        assert!(
+            !app.palette_filtered()
+                .iter()
+                .any(|(l, _)| l.starts_with("retry")),
+            "no retry offers while nothing failed"
+        );
+
+        // A failed dual-review offers each alternate model.
+        app.set_stage(StageId::DualReview, StageStatus::Failed, None);
+        let entries = app.palette_filtered();
+        assert!(entries.iter().any(|(l, a)| {
+            l == "retry dual-review with claude-sonnet-5"
+                && matches!(a, Action::RetryStage(StageId::DualReview, 0))
+        }));
+        // Interactive stages never offer retries even when failed.
+        app.set_stage(StageId::Implement, StageStatus::Failed, None);
+        assert!(
+            !app.palette_filtered()
+                .iter()
+                .any(|(l, _)| l.contains("retry implement"))
+        );
+        let _ = tx; // dispatch would spawn — consumption is on_enter's take()
     }
 
     #[test]

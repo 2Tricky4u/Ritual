@@ -40,6 +40,8 @@ pub enum Action {
     FindingDismiss,
     ToggleResolved,
     RunStage(StageId),
+    /// Re-run a failed stage with `[retry] models[i]` (palette-only, dynamic).
+    RetryStage(StageId, usize),
     /// User-defined [commands] entry by index (palette-only).
     Custom(usize),
 }
