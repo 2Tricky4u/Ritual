@@ -19,11 +19,19 @@ A fast, eldritch-themed TUI that drives a **multi-LLM coding workflow**: Claude 
  enter run · : commands · j/k move · ? help          $1.42/$5.00  ⠹ plan-review
 ```
 
+## Features (v0.5)
+
+**Quality gates** — `ritual mutants` mutates only your diff (cargo-mutants) and turns every mutant the tests failed to kill into an anchored finding (a proven test gap, advisory); `ritual secrets` gitleaks-scans exactly what changed (incl. untracked files) and its critical findings **block until dismissed or fingerprinted** — auto-run before every dual-review. `.ritual/invariants.md` is the project constitution: every bullet becomes an acceptance criterion re-injected into each review stage. `ritual lessons` distills your f/d dispositions into review memory the critic reads first — it stops re-flagging what you already dismissed.
+
+**Attempts + resilience** — `fallback_model` keeps headless runs alive through provider overloads; `[retry] models` offers *retry `<stage>` with `<model>`* in the palette for failed stages (`run --model` on the CLI); the sidebar shows `×N` attempts and history/reports grow a model column. `ritual costs` breaks spend down per stage with cache-hit economics.
+
+**Ensemble + audit** — optional CodeRabbit CLI third reviewer (findings land unconfirmed; dual-review verifies → three-source signal). Optional `[sandbox]` wrapper spawns every headless run under Anthropic's `srt` (or any prefix) from the single spawn chokepoint. `ritual export` now carries OTel GenAI-semconv attributes, and `--audit-trail` emits IETF draft-sharif agent-audit-trail records (JCS-canonical, SHA-256-chained). Findings carry verbatim source **snippets**; chat undo is a 10-deep stack (`Alt+Z` redo) and reopening chat reattaches to a still-running edit.
+
 ## Features (v0.4)
 
 **The pipeline** — per-branch stages `spec → plan → plan-review → tests-red → implement → dual-review`; one-key launch; headless stages stream live; interactive stages hand you a real attached `claude` session and resume the TUI on exit.
 
-**Chat to author the spec/plan** (`s`) — a split view with the live document on the left (focused section highlighted in place) and a conversation on the right: type an instruction and Claude edits `spec.md` (or `plan.md`) in place while you watch, scopable to the whole doc or one `##` section (`Tab` to switch — a missing plan is *drafted from the spec*). `Ctrl+Z` undo/redo (persisted snapshot), `Ctrl+X` cancel, `Alt+Enter` multi-line, messages queue while an edit runs. The agent is hard-scoped at the permission layer: it can read the project but write only the targeted document. Also headless: `ritual chat "<msg>" [--plan] [--section …]`.
+**Chat to author the spec/plan** (`s`) — a split view with the live document on the left (focused section highlighted in place) and a conversation on the right: type an instruction and Claude edits `spec.md` (or `plan.md`) in place while you watch, scopable to the whole doc or one `##` section (`Tab` to switch — a missing plan is *drafted from the spec*). `Ctrl+Z`/`Alt+Z` undo/redo (persisted 10-deep stack), `Ctrl+X` cancel, `Alt+Enter` multi-line, messages queue while an edit runs. The agent is hard-scoped at the permission layer: it can read the project but write only the targeted document. Also headless: `ritual chat "<msg>" [--plan] [--section …]`.
 
 **Findings lifecycle** — on the findings tab, `f` marks fixed and `d` dismisses (write-through to the JSON; `v` shows/hides resolved). The exit-code/CI contract follows: a confirmed critical blocks until resolved. `ritual pr-comment [N] [--inline]` posts the open findings to the branch's GitHub PR, redacted.
 

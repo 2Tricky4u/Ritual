@@ -676,12 +676,13 @@ fn draw_greeter(f: &mut Frame, t: &Theme, area: Rect) {
 
     // Super-concise feature map: fixed-width rows so the centered block
     // keeps a clean label column.
-    let guide: [(&str, &str); 10] = [
+    let guide: [(&str, &str); 11] = [
         ("pipeline", "spec → plan → review → tests → impl → dual"),
         ("chat", "s — chat to write/edit the spec or plan live"),
         ("runs", "daemons: quit freely, reattach · a takeover"),
         ("findings", "f fix · d dismiss · Q quickfix · o nvim"),
-        ("money", "daily budget · per-run caps · --force"),
+        ("gates", "mutants · secrets · lessons · invariants"),
+        ("money", "daily budget · per-run caps · costs"),
         ("safety", "redaction · verify-log chain · repro"),
         ("ci", "--ci → JUnit · --json + exit codes"),
         ("parallel", "new --worktree · [ ] switch features"),

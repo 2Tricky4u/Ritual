@@ -70,11 +70,14 @@ file in place — you watch it change on the left as it happens.
 - Each message acts on the document as it stands now, with your last
   few messages as context — so "make it 3 attempts, not 5" works. The
   file is the memory; no session state to manage.
-- `⟨Ctrl+Z⟩` **undo** — swaps the document with its pre-edit snapshot
-  (press again to redo). Works across restarts and for CLI chats too;
-  single-level: each edit replaces the snapshot.
+- `⟨Ctrl+Z⟩` **undo** walks back through the last 10 edits (persisted —
+  survives restarts, covers CLI chats too); `⟨Alt+Z⟩` **redo** walks
+  forward again. A new edit invalidates the redo branch, like any editor.
 - `⟨Ctrl+X⟩` **cancel** an in-flight edit (kills the daemon, drops any
   queued messages).
+- Closed the TUI mid-edit? Press `⟨s⟩` again: if the daemonized edit is
+  still running, the chat **reattaches** — transcript replayed, completion
+  lands normally.
 - `⟨Alt+Enter⟩` inserts a newline (the input box grows); `⟨enter⟩`
   while an edit runs **queues** the message (up to 3, sent in order).
 - `⟨↑⟩`/`⟨↓⟩` scroll the transcript, `⟨esc⟩` closes (a running edit
@@ -89,8 +92,13 @@ the one document you targeted (enforced at the permission layer).
 
 ## Findings workflow
 
-1. Run dual-review; findings land in `.ritual/findings/*.json`.
+1. Run dual-review; findings land in `.ritual/findings/*.json`. Other
+   emitters drop files in the same dir and show up in the same list:
+   `ritual mutants` (test gaps), `ritual secrets` (gitleaks hits), and
+   the optional CodeRabbit reviewer.
 2. Tab 2: severity pills (crit/major/minor), `◆ both` = cross-model.
+   The selected finding shows its **snippet** — the 1-3 verbatim source
+   lines the reviewer anchored it to.
 3. `Q` sends all locations to nvim's quickfix; `o` opens the selected
    one in your **running** nvim (auto-discovers the server socket);
    `e` uses $EDITOR.
@@ -106,13 +114,100 @@ blocks scripts/CI **until you mark it fixed or dismissed**. In CI:
 `ritual run dual-review --ci` writes JUnit XML to `.ritual/ci/` and
 exits nonzero on unresolved blocking findings.
 
+Your dispositions feed back into reviews: `ritual lessons` (auto-run
+before every dual-review) distills them into `.ritual/lessons.md` —
+dismissed findings become a "known noise, do not re-flag" list the
+reviewer reads first, fixed ones mark where real bugs actually lived.
+The critic stops re-reporting what you already threw out.
+
+## Invariants (the project constitution)
+
+`ritual init` scaffolds `.ritual/invariants.md`. Fill it with the
+non-negotiables — one bullet each ("parsers never panic on unknown
+input", "state mutations flow through AppMsg"). Once it has real
+bullets, every review stage receives it and treats each bullet as an
+acceptance criterion: violations become major+ findings, /tdd derives
+tests from the invariants a change touches, and the chat agent refuses
+to write spec/plan content that contradicts one. Re-injected per stage,
+so a standing constraint can never silently fall out of context.
+`doctor` shows whether it's active. Commit it — worktrees still resolve
+the shared main-root `.ritual`.
+
+## Quality gates
+
+**Mutation gate — `ritual mutants`.** After implement goes green:
+mutates only the code your diff touched (`cargo mutants --in-diff`),
+runs the tests, and records every mutant the suite FAILED to kill as a
+major finding with the mutated code as its snippet — proof of a test
+gap, file:line-anchored. Advisory by design (major never blocks CI);
+adjudicate with `f`/`d`. Baseline-red trees are refused with advice.
+`[mutants] cmd` swaps the runner (TS/JS: point it at Stryker with a
+wrapper that emits the same outcomes.json — recipe out of scope here).
+
+**Secrets gate — `ritual secrets`.** Scans exactly what changed
+(tracked modifications + untracked files — the "agent wrote a .env"
+surface) with one `gitleaks dir` pass over a staged copy, so hits are
+file:line-anchored and `.gitleaksignore` fingerprints keep matching.
+Hits are critical/confirmed findings → they **block** until dismissed
+or fingerprinted (the finding carries a paste-ready fingerprint). Runs
+automatically before every dual-review when gitleaks is installed
+(`pacman -S gitleaks`); silently skipped otherwise.
+
+## Third reviewer (CodeRabbit, optional)
+
+`[coderabbit] enabled = true` runs the CodeRabbit CLI before each
+dual-review (`coderabbit auth login` once; free tier = 3 reviews/hour;
+**cloud-backed — your diff leaves the machine**). Its comments land as
+single-source *unconfirmed* findings that never block; the dual-review
+skill verifies or refutes each one and only then adds `coderabbit` to a
+finding's sources — three sources is the strongest signal there is.
+
+## Sandboxing headless runs (optional)
+
+```toml
+[sandbox]
+enabled = true
+wrapper = "srt --settings /home/you/.config/ritual/srt-settings.json"
+```
+
+Every headless agent run gets spawned as `<wrapper> <agent argv>` —
+pipeline, chat, bench, and resumed daemons alike, because there is a
+single spawn chokepoint. The wrapper is supervisor-owned config the
+agent can't edit, and it's recorded in each run's meta for repro.
+Recipe for Anthropic's sandbox-runtime: `npm i -g
+@anthropic-ai/sandbox-runtime`, `pacman -S bubblewrap socat ripgrep`,
+start from `docs/srt-settings.example.json` (allow-lists your project,
+target dir, and the agent vendors' domains; denies ~/.ssh). Caveat:
+file-watchers that scan outside the sandbox trip violations. Interactive
+stages are never wrapped — they own your terminal.
+
+## Retry with another model
+
+```toml
+fallback_model = "claude-sonnet-5"   # overload? switch, don't die
+[retry]
+models = ["claude-opus-4-8", "claude-sonnet-5"]
+```
+
+`fallback_model` rides every headless claude run as `--fallback-model`:
+a retryable API error hours into a review switches models instead of
+failing the run. `[retry] models` adds palette entries — *retry
+dual-review with claude-opus-4-8* — that appear only when a headless
+stage failed or needs attention; `ritual run <stage> --model <m>` is
+the CLI form. The pipeline sidebar shows `×N` once a stage has multiple
+attempts, and history/report grow a model column so attempts compare.
+
 ## Money
 
 - Per-run caps: `budget_plan_review_usd` (default $5),
   `budget_dual_review_usd` ($10) — passed to claude as a hard budget.
 - Daily ceiling: `budget_daily_usd` — refuses new runs past it;
   `--force` overrides once. Statusline meter shows spend vs cap.
-- `ritual history` = the ledger (`--json` for scripts).
+- `ritual history` = the ledger (`--json` for scripts); the footer now
+  shows today's **cache-hit rate**.
+- `ritual costs` = the analytics: today / 7 days / all-time totals, a
+  per-stage table sorted by spend with per-stage cache economics, and
+  the daily-budget gauge (`--json` for scripts).
 
 ## Safety & provenance
 
@@ -167,8 +262,18 @@ or pin one: `nvim_server = "/path/to/socket"` — or launch with
 - `ritual clean` — prune old runs safely (`--keep N`, `--dry-run`)
 - `ritual verify-log` — check the tamper-evident chain
 - `ritual repro <run-id>` — reproducibility bundle + env diff
-- `ritual bench <stage>` — N repeated runs, scored (`--golden`)
-- `ritual export` — OTLP-JSON spans of all runs
+- `ritual bench <stage>` — N repeated runs, scored + spread stats
+  (`--golden` adds recall and cost-per-hit)
+- `ritual costs` — per-stage, cache-aware spend analytics (`--json`)
+- `ritual lessons` — regenerate the review memory (`--stdout`)
+- `ritual mutants` — mutation-kill gate over the diff (`--base`)
+- `ritual secrets` — gitleaks over changed files; exits 1 on leaks
+- `ritual skills diff` — vendored workbench vs installed skills
+- `ritual export` — OTLP-JSON spans of all runs, with OTel GenAI
+  semconv attributes (`--audit-trail` emits IETF
+  draft-sharif-agent-audit-trail records instead: JCS-canonical,
+  SHA-256 hash-chained JSONL — the compliance-shaped view of the
+  same history the chain already protects)
 
 ## Config
 
@@ -184,12 +289,31 @@ budget_doc_chat_usd = 0.50    # per spec/plan chat message
 check_timeout_secs = 600
 offline = false               # block runs (metered/plane mode)
 nvim_server = ""              # empty = auto-discover
+fallback_model = ""           # overload fallback for headless claude runs
 
 [keys]                        # rebind anything
 check-full = "F"
 
 [models]                      # route stages to models
 plan-review = "opus"
+
+[retry]                       # palette offers for failed stages
+models = []
+
+[mutants]                     # mutation-kill gate
+cmd = "cargo mutants"
+timeout_secs = 300
+enabled = false               # advisory flag for doctor/guide hints
+
+[secrets]                     # gitleaks gate (auto before dual-review)
+enabled = true
+
+[sandbox]                     # wrap headless runs (srt recipe above)
+enabled = false
+wrapper = ""
+
+[coderabbit]                  # third reviewer (cloud-backed, off by default)
+enabled = false
 
 [commands]                    # your own palette entries
 "deploy preview" = "./scripts/preview.sh"
