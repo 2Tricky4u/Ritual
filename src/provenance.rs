@@ -64,7 +64,7 @@ pub fn collect(cfg: &Config, dirs: &RitualDirs) -> ReproBundle {
 
     let mut skill_hashes = BTreeMap::new();
     if let Some(home) = dirs::home_dir() {
-        for skill in ["plan-review", "tdd", "dual-review"] {
+        for skill in ["plan-review", "tdd", "dual-review", "spec"] {
             let p = home.join(format!(".claude/skills/{skill}/SKILL.md"));
             if let Ok(bytes) = std::fs::read(&p) {
                 skill_hashes.insert(skill.to_string(), sha256_hex(&bytes));

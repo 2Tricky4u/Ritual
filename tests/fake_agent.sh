@@ -29,6 +29,12 @@ while IFS= read -r line; do
   sleep "$delay"
 done < "$fixture"
 
+# Simulate the /spec skill editing a document in place (appends a marker line).
+if [ -n "${FAKE_AGENT_SPEC_EDIT:-}" ]; then
+  mkdir -p "$(dirname "$FAKE_AGENT_SPEC_EDIT")"
+  printf 'A concrete change applied by the fake agent.\n' >> "$FAKE_AGENT_SPEC_EDIT"
+fi
+
 if [ -n "${FAKE_AGENT_FINDINGS:-}" ]; then
   mkdir -p "$(dirname "$FAKE_AGENT_FINDINGS")"
   cat > "$FAKE_AGENT_FINDINGS" <<'EOF'

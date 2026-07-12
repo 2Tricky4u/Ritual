@@ -122,6 +122,14 @@ fn main() -> Result<()> {
         Some(Command::Export { out }) => {
             ritual::export::otlp_json(&dirs, out.as_deref())?;
         }
+        Some(Command::Chat {
+            message,
+            plan,
+            section,
+            force,
+        }) => {
+            run_cmd::run_doc_chat(&cfg, &dirs, &message.join(" "), plan, section, force)?;
+        }
         Some(Command::InternalSpawn { run_id }) => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()

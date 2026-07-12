@@ -556,6 +556,108 @@ fn project_with_one_run() -> tempfile::TempDir {
 }
 
 #[test]
+fn chat_edits_spec_and_marks_stage_done() {
+    let tmp = setup_project();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["new", "Chatty", "Feature"])
+        .assert()
+        .success();
+    let spec = tmp.path().join(".ritual/features/main/spec.md");
+    let before = std::fs::read_to_string(&spec).unwrap(); // template, no real content yet
+
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .env("FAKE_AGENT_DELAY", "0")
+        .env("FAKE_AGENT_SPEC_EDIT", ".ritual/features/main/spec.md")
+        .args(["chat", "add a retry invariant", "--section", "Goal"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("spec updated"));
+
+    let after = std::fs::read_to_string(&spec).unwrap();
+    assert_ne!(before, after, "the chat should have edited spec.md");
+    assert!(after.contains("A concrete change applied by the fake agent."));
+
+    // The spec stage is now done; a run was recorded.
+    let state = std::fs::read_to_string(tmp.path().join(".ritual/state.json")).unwrap();
+    assert!(state.contains(r#""spec""#));
+    assert!(state.contains(r#""status": "done""#));
+    let runs: Vec<_> = std::fs::read_dir(tmp.path().join(".ritual/runs"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        runs.iter()
+            .any(|f| f.contains("spec-chat") && f.ends_with(".meta.json")),
+        "spec-chat meta missing: {runs:?}"
+    );
+}
+
+#[test]
+fn chat_can_target_the_plan_and_creates_it() {
+    let tmp = setup_project();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["new", "Planny"])
+        .assert()
+        .success();
+    let plan = tmp.path().join(".ritual/features/main/plan.md");
+    assert!(!plan.exists());
+
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .env("FAKE_AGENT_DELAY", "0")
+        .env("FAKE_AGENT_SPEC_EDIT", ".ritual/features/main/plan.md")
+        .args(["chat", "outline the steps", "--plan"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("plan updated"));
+
+    assert!(plan.exists());
+    assert!(
+        std::fs::read_to_string(&plan)
+            .unwrap()
+            .contains("A concrete change")
+    );
+}
+
+#[test]
+fn chat_reports_no_change_when_the_agent_edits_nothing() {
+    let tmp = setup_project();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["new", "Idle"])
+        .assert()
+        .success();
+    // No FAKE_AGENT_SPEC_EDIT: the agent streams but touches no file.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .env("FAKE_AGENT_DELAY", "0")
+        .args(["chat", "do nothing useful"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no change to spec"));
+
+    // Spec stays pending (not marked done).
+    let state = std::fs::read_to_string(tmp.path().join(".ritual/state.json")).unwrap();
+    assert!(!state.contains(r#""status": "done""#));
+}
+
+#[test]
 fn rapid_back_to_back_runs_do_not_clobber_each_other() {
     // Regression: second-precision run ids used to collide when two runs
     // landed in the same second, overwriting each other's archive/meta/status.
