@@ -108,7 +108,17 @@ pub struct DaySummary {
     pub runs: usize,
     pub cost_usd: f64,
     pub output_tokens: u64,
+    pub input_tokens: u64,
+    pub cache_read: u64,
     pub latest_rate_limit: Option<RateLimitInfo>,
+}
+
+impl DaySummary {
+    /// Share of today's prompt tokens served from cache.
+    pub fn cache_hit_pct(&self) -> Option<f64> {
+        let prompt = self.input_tokens + self.cache_read;
+        (prompt > 0).then(|| 100.0 * self.cache_read as f64 / prompt as f64)
+    }
 }
 
 /// Today's recorded spend for a project (budget preflights, status bar).
@@ -134,9 +144,87 @@ pub fn today_summary(metas: &[RunMeta]) -> DaySummary {
         s.cost_usd += m.total_cost_usd.unwrap_or(0.0);
         if let Some(u) = &m.usage {
             s.output_tokens += u.output_tokens;
+            s.input_tokens += u.input_tokens;
+            s.cache_read += u.cache_read_input_tokens;
         }
     }
     s
+}
+
+/// Per-stage cost rollup for `ritual costs` and the report.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct StageCostSummary {
+    pub stage: String,
+    pub runs: usize,
+    pub total_usd: f64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read: u64,
+    pub cache_creation: u64,
+}
+
+impl StageCostSummary {
+    /// Share of prompt tokens served from cache — the cache economics gauge.
+    pub fn cache_hit_pct(&self) -> Option<f64> {
+        let prompt = self.input_tokens + self.cache_read;
+        (prompt > 0).then(|| 100.0 * self.cache_read as f64 / prompt as f64)
+    }
+}
+
+/// Which runs a cost rollup covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CostWindow {
+    Today,
+    Week,
+    All,
+}
+
+impl CostWindow {
+    pub fn label(&self) -> &'static str {
+        match self {
+            CostWindow::Today => "today",
+            CostWindow::Week => "7 days",
+            CostWindow::All => "all time",
+        }
+    }
+
+    fn contains(&self, m: &RunMeta) -> bool {
+        let Some(t) = m.started_at else {
+            return *self == CostWindow::All;
+        };
+        match self {
+            CostWindow::Today => t.date_naive() == Utc::now().date_naive(),
+            CostWindow::Week => Utc::now().signed_duration_since(t) <= chrono::Duration::days(7),
+            CostWindow::All => true,
+        }
+    }
+}
+
+/// Group cost + token totals by stage (sorted by spend, biggest first).
+pub fn by_stage(metas: &[RunMeta], window: CostWindow) -> Vec<StageCostSummary> {
+    let mut out: Vec<StageCostSummary> = Vec::new();
+    for m in metas.iter().filter(|m| window.contains(m)) {
+        let entry = match out.iter_mut().find(|s| s.stage == m.stage) {
+            Some(e) => e,
+            None => {
+                out.push(StageCostSummary {
+                    stage: m.stage.clone(),
+                    ..Default::default()
+                });
+                out.last_mut().unwrap()
+            }
+        };
+        entry.runs += 1;
+        entry.total_usd += m.total_cost_usd.unwrap_or(0.0);
+        if let Some(u) = &m.usage {
+            entry.input_tokens += u.input_tokens;
+            entry.output_tokens += u.output_tokens;
+            entry.cache_read += u.cache_read_input_tokens;
+            entry.cache_creation += u.cache_creation_input_tokens;
+        }
+    }
+    out.sort_by(|a, b| b.total_usd.total_cmp(&a.total_usd));
+    out
 }
 
 #[cfg(test)]
@@ -186,5 +274,71 @@ mod tests {
         assert_eq!(s.runs, 1);
         assert!((s.cost_usd - 0.25).abs() < f64::EPSILON);
         assert_eq!(s.output_tokens, 100);
+    }
+
+    #[test]
+    fn by_stage_rolls_up_costs_and_cache() {
+        let mk = |stage: &str, cost: f64, input: u64, cache: u64| RunMeta {
+            stage: stage.into(),
+            total_cost_usd: Some(cost),
+            started_at: Some(Utc::now()),
+            usage: Some(Usage {
+                input_tokens: input,
+                output_tokens: 10,
+                cache_read_input_tokens: cache,
+                cache_creation_input_tokens: 1,
+            }),
+            ..Default::default()
+        };
+        let metas = vec![
+            mk("dual-review", 2.0, 100, 900),
+            mk("dual-review", 1.0, 100, 900),
+            mk("plan-review", 0.5, 50, 0),
+        ];
+        let rows = by_stage(&metas, CostWindow::All);
+        assert_eq!(rows[0].stage, "dual-review", "biggest spend first");
+        assert_eq!(rows[0].runs, 2);
+        assert!((rows[0].total_usd - 3.0).abs() < 1e-9);
+        assert_eq!(rows[0].cache_read, 1800);
+        assert_eq!(rows[0].cache_hit_pct().unwrap().round(), 90.0);
+        assert_eq!(rows[1].cache_hit_pct().unwrap(), 0.0);
+
+        // No usage at all -> no cache gauge, not a panic.
+        let bare = vec![RunMeta {
+            stage: "x".into(),
+            ..Default::default()
+        }];
+        assert!(
+            by_stage(&bare, CostWindow::All)[0]
+                .cache_hit_pct()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn cost_windows_filter_by_started_at() {
+        let now = Utc::now();
+        let mut old = RunMeta {
+            stage: "dual-review".into(),
+            total_cost_usd: Some(5.0),
+            started_at: Some(now - chrono::Duration::days(30)),
+            ..Default::default()
+        };
+        let fresh = RunMeta {
+            stage: "dual-review".into(),
+            total_cost_usd: Some(1.0),
+            started_at: Some(now),
+            ..Default::default()
+        };
+        let metas = vec![old.clone(), fresh];
+        assert_eq!(by_stage(&metas, CostWindow::Today)[0].runs, 1);
+        assert_eq!(by_stage(&metas, CostWindow::Week)[0].runs, 1);
+        assert_eq!(by_stage(&metas, CostWindow::All)[0].runs, 2);
+
+        // A meta with no timestamp only counts toward the all-time window.
+        old.started_at = None;
+        let metas = vec![old];
+        assert!(by_stage(&metas, CostWindow::Today).is_empty());
+        assert_eq!(by_stage(&metas, CostWindow::All)[0].runs, 1);
     }
 }

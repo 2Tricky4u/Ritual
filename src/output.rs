@@ -214,11 +214,100 @@ pub fn render_history(cfg: &Config, metas: &[RunMeta], summary: &DaySummary, lim
             t,
             p.light_grey,
             &format!(
-                "today: {} runs, ${:.2}, {} output tokens",
-                summary.runs, summary.cost_usd, summary.output_tokens
+                "today: {} runs, ${:.2}, {} output tokens{}",
+                summary.runs,
+                summary.cost_usd,
+                summary.output_tokens,
+                summary
+                    .cache_hit_pct()
+                    .map(|x| format!(", cache {x:.0}%"))
+                    .unwrap_or_default()
             )
         )
     );
+}
+
+/// `ritual costs` — cache-aware spend analytics over the run metas.
+pub fn render_costs(cfg: &Config, metas: &[RunMeta]) {
+    use crate::history::{CostWindow, by_stage};
+    let t = &cfg.theme;
+    let p = t.palette;
+    println!("{}", hex(t, p.purple, "ritual — costs"));
+    println!();
+    if metas.is_empty() {
+        println!("  {}", hex(t, p.light_grey, "no runs yet"));
+        return;
+    }
+    for w in [CostWindow::Today, CostWindow::Week, CostWindow::All] {
+        let rows = by_stage(metas, w);
+        let (cost, runs) = rows
+            .iter()
+            .fold((0.0, 0), |(c, r), s| (c + s.total_usd, r + s.runs));
+        println!(
+            "  {}  {}",
+            hex(t, p.white, &format!("{:<9}", w.label())),
+            hex(t, p.orange, &format!("${cost:.2} across {runs} run(s)")),
+        );
+    }
+    println!();
+    println!(
+        "  {}",
+        hex(
+            t,
+            p.light_grey,
+            &format!(
+                "{:<14} {:>4} {:>9} {:>8} {:>10} {:>10} {:>6}",
+                "stage (all)", "runs", "total", "avg", "in↑", "out↓", "cache"
+            )
+        )
+    );
+    for s in by_stage(metas, CostWindow::All) {
+        let cache = s
+            .cache_hit_pct()
+            .map(|x| format!("{x:.0}%"))
+            .unwrap_or_else(|| "-".into());
+        println!(
+            "  {} {} {} {} {} {} {}",
+            hex(t, p.white, &format!("{:<14}", s.stage)),
+            hex(t, p.light_grey, &format!("{:>4}", s.runs)),
+            hex(
+                t,
+                p.orange,
+                &format!("{:>9}", format!("${:.2}", s.total_usd))
+            ),
+            hex(
+                t,
+                p.light_grey,
+                &format!(
+                    "{:>8}",
+                    format!("${:.2}", s.total_usd / s.runs.max(1) as f64)
+                )
+            ),
+            hex(t, p.light_grey, &format!("{:>10}", s.input_tokens)),
+            hex(t, p.light_grey, &format!("{:>10}", s.output_tokens)),
+            hex(t, p.cyan, &format!("{cache:>6}")),
+        );
+    }
+    if let Some(budget) = cfg.budget_daily_usd {
+        let spent = crate::history::today_summary(metas).cost_usd;
+        let pct = 100.0 * spent / budget;
+        let color = if pct >= 100.0 {
+            p.red
+        } else if pct >= 75.0 {
+            p.orange
+        } else {
+            p.green
+        };
+        println!();
+        println!(
+            "  {}",
+            hex(
+                t,
+                color,
+                &format!("daily budget: ${spent:.2} / ${budget:.2} ({pct:.0}%)")
+            )
+        );
+    }
 }
 
 /// Live rendering of one agent event during `ritual run <stage>`.

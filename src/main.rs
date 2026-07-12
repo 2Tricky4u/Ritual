@@ -93,6 +93,19 @@ fn main() -> Result<()> {
                 println!("no dispositions yet — mark findings fixed (f) or dismissed (d) first")
             }
         },
+        Some(Command::Costs { json }) => {
+            let metas = history::load_all(&dirs.runs_dir())?;
+            if json {
+                let val = serde_json::json!({
+                    "today": history::by_stage(&metas, history::CostWindow::Today),
+                    "week": history::by_stage(&metas, history::CostWindow::Week),
+                    "all_time": history::by_stage(&metas, history::CostWindow::All),
+                });
+                println!("{}", serde_json::to_string_pretty(&val)?);
+            } else {
+                output::render_costs(&cfg, &metas);
+            }
+        }
         Some(Command::History { limit, json }) => {
             let metas = history::load_all(&dirs.runs_dir())?;
             if json {
