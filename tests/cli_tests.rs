@@ -532,3 +532,168 @@ fn run_unknown_stage_is_an_error() {
         .failure()
         .stderr(predicate::str::contains("unknown stage"));
 }
+
+/// Run one plan-review to completion with the fake agent; leaves a chained
+/// meta + raw archive + one findings file. Returns the project tempdir.
+fn project_with_one_run() -> tempfile::TempDir {
+    let tmp = setup_project();
+    std::fs::create_dir_all(tmp.path().join(".ritual/features/main")).unwrap();
+    std::fs::write(tmp.path().join(".ritual/features/main/plan.md"), "# plan").unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .env("FAKE_AGENT_DELAY", "0")
+        .env(
+            "FAKE_AGENT_FINDINGS",
+            ".ritual/findings/20260712T120000Z-plan-review.json",
+        )
+        .args(["run", "plan-review"])
+        .assert()
+        .success();
+    tmp
+}
+
+#[test]
+fn export_emits_valid_otlp_spans_after_a_run() {
+    let tmp = project_with_one_run();
+    let out = Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("export")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    // stdout is OTLP-JSON lines; the last line must parse and describe the run.
+    let line = String::from_utf8_lossy(&out);
+    let line = line.lines().next().expect("at least one span");
+    let v: serde_json::Value = serde_json::from_str(line).expect("valid OTLP JSON");
+    let span = &v["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+    assert_eq!(span["name"], "ritual:plan-review");
+    assert_eq!(span["status"]["code"], 1);
+}
+
+#[test]
+fn export_to_file_writes_spans() {
+    let tmp = project_with_one_run();
+    let out_path = tmp.path().join("spans.jsonl");
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["export", "--out"])
+        .arg(&out_path)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("span(s) exported"));
+    let text = std::fs::read_to_string(&out_path).unwrap();
+    assert!(text.contains("ritual:plan-review"));
+}
+
+#[test]
+fn bench_runs_headless_stage_and_prints_scorecard() {
+    let tmp = setup_project();
+    std::fs::create_dir_all(tmp.path().join(".ritual/features/main")).unwrap();
+    std::fs::write(tmp.path().join(".ritual/features/main/plan.md"), "# plan").unwrap();
+
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .env("FAKE_AGENT_DELAY", "0")
+        .args(["bench", "plan-review", "--runs", "2"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("bench: plan-review × 2 run(s)"))
+        .stdout(predicate::str::contains("ok-rate 100%"));
+}
+
+#[test]
+fn bench_rejects_interactive_stages() {
+    let tmp = setup_project();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .env("FAKE_AGENT_DELAY", "0")
+        .args(["bench", "spec", "--runs", "1"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("only supports headless"));
+}
+
+#[test]
+fn repro_prints_recorded_bundle_and_env_comparison() {
+    let tmp = project_with_one_run();
+    // Discover the run id from history --json.
+    let out = Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["history", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let hist: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let run_id = hist[0]["run_id"].as_str().expect("run_id present");
+
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .args(["repro", run_id])
+        .assert()
+        .success()
+        // The recorded bundle is pretty-printed (always has this key)...
+        .stdout(predicate::str::contains("git_commit"))
+        // ...followed by an environment comparison verdict.
+        .stdout(predicate::str::contains("environment"));
+}
+
+#[test]
+fn repro_unknown_run_is_an_error() {
+    let tmp = setup_project();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["repro", "no-such-run"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no run"));
+}
+
+#[test]
+fn verify_log_detects_a_tampered_archive() {
+    let tmp = project_with_one_run();
+    // Sanity: the fresh chain verifies.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("verify-log")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("chain intact"));
+
+    // Tamper with the raw archive after the fact.
+    let archive = std::fs::read_dir(tmp.path().join(".ritual/runs"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_string_lossy().ends_with(".jsonl"))
+        .expect("raw archive exists");
+    std::fs::write(archive.path(), "tampered!\n").unwrap();
+
+    // verify-log must now break and exit nonzero.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("verify-log")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("CHAIN BROKEN"));
+}

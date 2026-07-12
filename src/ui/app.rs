@@ -1145,3 +1145,254 @@ pub async fn run(cfg: Config, dirs: RitualDirs) -> Result<()> {
     drop(term); // restores the terminal
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::Feature;
+
+    /// A throwaway App backed by a temp `.ritual/`. The single seeded feature
+    /// is "detached" (no git in the tempdir).
+    fn test_app() -> (
+        tempfile::TempDir,
+        App,
+        mpsc::Sender<AppMsg>,
+        mpsc::Receiver<AppMsg>,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".ritual")).unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        let app = App::new(Config::default(), dirs).unwrap();
+        // Keep the receiver alive so pure-state dispatches that never send
+        // still hold a valid channel.
+        let (tx, rx) = mpsc::channel(64);
+        (tmp, app, tx, rx)
+    }
+
+    #[test]
+    fn next_tab_cycles_through_all_five_including_guide() {
+        let (_t, mut app, _tx, _rx) = test_app();
+        let seen: Vec<Tab> = (0..6)
+            .map(|_| {
+                let cur = app.tab;
+                app.next_tab();
+                cur
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                Tab::Live,
+                Tab::Findings,
+                Tab::History,
+                Tab::Plan,
+                Tab::Guide,
+                Tab::Live, // wrapped
+            ]
+        );
+    }
+
+    #[test]
+    fn dispatch_tab_guide_selects_guide_tab() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.dispatch(Action::TabGuide, &tx);
+        assert_eq!(app.tab, Tab::Guide);
+    }
+
+    #[test]
+    fn nav_scrolls_the_tab_specific_buffer() {
+        let (_t, mut app, tx, _rx) = test_app();
+
+        app.tab = Tab::Plan;
+        app.dispatch(Action::Down, &tx);
+        app.dispatch(Action::Down, &tx);
+        assert_eq!(app.plan_scroll, 2);
+        assert_eq!(
+            app.guide_scroll, 0,
+            "guide buffer must not move on plan tab"
+        );
+
+        app.tab = Tab::Guide;
+        app.dispatch(Action::Down, &tx);
+        assert_eq!(app.guide_scroll, 1);
+        assert_eq!(app.plan_scroll, 2, "plan buffer must not move on guide tab");
+
+        // Up never underflows past zero.
+        app.tab = Tab::Plan;
+        app.plan_scroll = 0;
+        app.dispatch(Action::Up, &tx);
+        assert_eq!(app.plan_scroll, 0);
+    }
+
+    #[test]
+    fn scroll_top_resets_the_active_tab_only() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.plan_scroll = 9;
+        app.guide_scroll = 9;
+
+        app.tab = Tab::Plan;
+        app.dispatch(Action::ScrollTop, &tx);
+        assert_eq!(app.plan_scroll, 0);
+        assert_eq!(app.guide_scroll, 9);
+
+        app.tab = Tab::Guide;
+        app.dispatch(Action::ScrollTop, &tx);
+        assert_eq!(app.guide_scroll, 0);
+    }
+
+    #[test]
+    fn nav_wraps_pipeline_selection_on_history_tab() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.tab = Tab::History; // the tab that drives sidebar selection
+        app.selected = 0;
+        app.dispatch(Action::Up, &tx); // wrap backwards to the last stage
+        assert_eq!(app.selected, PIPELINE.len() - 1);
+        app.dispatch(Action::Down, &tx); // wrap forward to the first
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn selected_stage_clamps_out_of_range_index() {
+        let (_t, mut app, _tx, _rx) = test_app();
+        app.selected = 999;
+        assert_eq!(app.selected_stage(), PIPELINE[PIPELINE.len() - 1]);
+    }
+
+    #[test]
+    fn feature_order_lists_needs_you_features_first() {
+        let (_t, mut app, _tx, _rx) = test_app();
+        // Two extra features; "beta" has a failed stage (needs you).
+        let mut alpha = Feature::new("alpha", "Alpha");
+        alpha.updated_at = chrono::Utc::now();
+        let mut beta = Feature::new("beta", "Beta");
+        beta.stages.get_mut(&StageId::Implement).unwrap().status = StageStatus::Failed;
+        app.state.features.insert("alpha".into(), alpha);
+        app.state.features.insert("beta".into(), beta);
+
+        assert!(app.feature_needs_you("beta"));
+        assert!(!app.feature_needs_you("alpha"));
+        let order = app.feature_order();
+        assert_eq!(order.first().map(String::as_str), Some("beta"));
+    }
+
+    #[test]
+    fn select_feature_cycles_branch_and_slug() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.state
+            .features
+            .insert("other".into(), Feature::new("other", "Other"));
+        let start = app.slug.clone();
+        app.dispatch(Action::FeatureNext, &tx);
+        assert_ne!(app.slug, start, "slug should move to the other feature");
+        // The viewed branch tracks the feature.
+        assert_eq!(app.branch, app.state.features[&app.slug].branch);
+    }
+
+    #[test]
+    fn palette_filter_matches_fuzzy_and_surfaces_custom_commands() {
+        let (_t, mut app, _tx, _rx) = test_app();
+        app.cfg.commands = vec![("deploy preview".into(), "echo hi".into())];
+
+        app.palette = Some(PaletteState {
+            input: "guide".into(),
+            selected: 0,
+        });
+        let labels: Vec<String> = app.palette_filtered().into_iter().map(|(l, _)| l).collect();
+        assert!(labels.iter().any(|l| l.contains("guide tab")));
+
+        // Custom command is fuzzy-reachable and dispatches Action::Custom.
+        app.palette = Some(PaletteState {
+            input: "cmddeploy".into(),
+            selected: 0,
+        });
+        let matches = app.palette_filtered();
+        assert!(
+            matches
+                .iter()
+                .any(|(l, a)| l == "cmd: deploy preview" && matches!(a, Action::Custom(0)))
+        );
+    }
+
+    #[test]
+    fn palette_input_types_navigates_and_executes() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.palette = Some(PaletteState::default());
+
+        // Typing filters and resets the cursor.
+        for c in "go to guide".chars() {
+            app.palette_input(KeyCode::Char(c), &tx);
+        }
+        assert_eq!(app.palette.as_ref().unwrap().input, "go to guide");
+        assert_eq!(app.palette.as_ref().unwrap().selected, 0);
+
+        // Enter executes the top match and closes the palette.
+        app.palette_input(KeyCode::Enter, &tx);
+        assert!(app.palette.is_none());
+        assert_eq!(app.tab, Tab::Guide);
+    }
+
+    #[test]
+    fn palette_input_esc_closes_without_acting() {
+        let (_t, mut app, tx, _rx) = test_app();
+        let before = app.tab;
+        app.palette = Some(PaletteState::default());
+        app.palette_input(KeyCode::Esc, &tx);
+        assert!(app.palette.is_none());
+        assert_eq!(app.tab, before);
+    }
+
+    #[test]
+    fn palette_down_is_bounded_by_match_count() {
+        let (_t, mut app, tx, _rx) = test_app();
+        // A filter that matches exactly one entry: Down must not advance past it.
+        app.palette = Some(PaletteState {
+            input: "quitritual".into(),
+            selected: 0,
+        });
+        let n = app.palette_filtered().len();
+        assert_eq!(n, 1, "expected a single match for the test");
+        app.palette_input(KeyCode::Down, &tx);
+        assert_eq!(app.palette.as_ref().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn after_attached_spec_marks_done_only_with_real_content() {
+        let (_t, mut app, _tx, _rx) = test_app();
+        let spec = app.dirs.spec_file(&app.slug);
+        std::fs::create_dir_all(spec.parent().unwrap()).unwrap();
+
+        // Only comments/blank lines -> stays pending.
+        std::fs::write(&spec, "# title\n<!-- note -->\n\n").unwrap();
+        app.after_attached(Some(StageId::Spec), true);
+        assert_eq!(app.stage_status(StageId::Spec), StageStatus::Pending);
+
+        // Real content -> done.
+        std::fs::write(&spec, "# title\n\nImplement the widget.\n").unwrap();
+        app.after_attached(Some(StageId::Spec), true);
+        assert_eq!(app.stage_status(StageId::Spec), StageStatus::Done);
+    }
+
+    #[test]
+    fn after_attached_plan_requires_a_written_file() {
+        let (_t, mut app, _tx, _rx) = test_app();
+        // No plan.md yet -> needs attention.
+        app.after_attached(Some(StageId::Plan), true);
+        assert_eq!(app.stage_status(StageId::Plan), StageStatus::NeedsAttention);
+
+        // Write the plan -> done.
+        let plan = app.dirs.plan_file(&app.slug);
+        std::fs::create_dir_all(plan.parent().unwrap()).unwrap();
+        std::fs::write(&plan, "# Plan\n").unwrap();
+        app.after_attached(Some(StageId::Plan), true);
+        assert_eq!(app.stage_status(StageId::Plan), StageStatus::Done);
+    }
+
+    #[test]
+    fn after_attached_review_stage_follows_child_exit() {
+        let (_t, mut app, _tx, _rx) = test_app();
+        app.after_attached(Some(StageId::DualReview), true);
+        assert_eq!(app.stage_status(StageId::DualReview), StageStatus::Done);
+        app.after_attached(Some(StageId::DualReview), false);
+        assert_eq!(app.stage_status(StageId::DualReview), StageStatus::Failed);
+    }
+}

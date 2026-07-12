@@ -376,3 +376,117 @@ fn list_findings(dir: &Path) -> Vec<String> {
         })
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dirs_with_run(cost: f64, when: chrono::DateTime<Utc>) -> (tempfile::TempDir, RitualDirs) {
+        let tmp = tempfile::tempdir().unwrap();
+        let runs = tmp.path().join(".ritual/runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        std::fs::write(
+            runs.join("20260711T000000Z-x.meta.json"),
+            format!(
+                r#"{{"run_id":"r","stage":"plan-review","ok":true,"total_cost_usd":{cost},"started_at":"{}"}}"#,
+                when.to_rfc3339()
+            ),
+        )
+        .unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        (tmp, dirs)
+    }
+
+    #[test]
+    fn budget_none_when_unset() {
+        let (_t, dirs) = dirs_with_run(99.0, Utc::now());
+        let cfg = Config {
+            budget_daily_usd: None,
+            ..Config::default()
+        };
+        assert_eq!(budget_exceeded(&cfg, &dirs), None);
+    }
+
+    #[test]
+    fn budget_none_when_under_ceiling() {
+        let (_t, dirs) = dirs_with_run(0.50, Utc::now());
+        let cfg = Config {
+            budget_daily_usd: Some(5.0),
+            ..Config::default()
+        };
+        assert_eq!(budget_exceeded(&cfg, &dirs), None);
+    }
+
+    #[test]
+    fn budget_trips_when_at_or_over_ceiling() {
+        let (_t, dirs) = dirs_with_run(6.0, Utc::now());
+        let cfg = Config {
+            budget_daily_usd: Some(5.0),
+            ..Config::default()
+        };
+        let (spent, budget) = budget_exceeded(&cfg, &dirs).expect("should trip");
+        assert_eq!(budget, 5.0);
+        assert!(spent >= 5.0);
+    }
+
+    #[test]
+    fn budget_ignores_yesterdays_spend() {
+        let yesterday = Utc::now() - chrono::Duration::days(1);
+        let (_t, dirs) = dirs_with_run(100.0, yesterday);
+        let cfg = Config {
+            budget_daily_usd: Some(5.0),
+            ..Config::default()
+        };
+        // Only today's spend counts toward the daily ceiling.
+        assert_eq!(budget_exceeded(&cfg, &dirs), None);
+    }
+
+    #[test]
+    fn set_stage_records_timestamps_and_run_ids() {
+        let mut st = State::default();
+        set_stage(
+            &mut st,
+            "main",
+            StageId::PlanReview,
+            StageStatus::Running,
+            None,
+        );
+        let running = st.features["main"].stage(StageId::PlanReview);
+        assert_eq!(running.status, StageStatus::Running);
+        assert!(running.started_at.is_some());
+        assert!(running.finished_at.is_none());
+        assert!(running.runs.is_empty());
+
+        set_stage(
+            &mut st,
+            "main",
+            StageId::PlanReview,
+            StageStatus::Done,
+            Some("run-42".into()),
+        );
+        let done = st.features["main"].stage(StageId::PlanReview);
+        assert_eq!(done.status, StageStatus::Done);
+        assert!(done.finished_at.is_some());
+        assert_eq!(done.runs, vec!["run-42".to_string()]);
+    }
+
+    #[test]
+    fn timeout_returns_status_for_fast_command() {
+        let mut cmd = std::process::Command::new("true");
+        let status = run_with_timeout(cmd, 5).expect("fast command should complete");
+        assert!(status.success());
+        // The `mut` binding is consumed by run_with_timeout; re-bind to prove
+        // a failing command reports non-success rather than None.
+        cmd = std::process::Command::new("false");
+        let status = run_with_timeout(cmd, 5).expect("completes, just non-zero");
+        assert!(!status.success());
+    }
+
+    #[test]
+    fn timeout_kills_a_hung_command() {
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("30");
+        // 0s deadline: the first poll is already past due, so it is killed.
+        assert!(run_with_timeout(cmd, 0).is_none());
+    }
+}

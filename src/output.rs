@@ -354,3 +354,58 @@ pub fn render_init(cfg: &Config, report: &InitReport) {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clip_flattens_newlines_into_spaces() {
+        assert_eq!(clip("a\nb\nc", 80), "a b c");
+    }
+
+    #[test]
+    fn clip_truncates_with_ellipsis_past_max() {
+        let out = clip(&"x".repeat(50), 10);
+        assert_eq!(out.chars().count(), 11); // 10 + ellipsis
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn clip_leaves_short_strings_untouched() {
+        assert_eq!(clip("short", 80), "short");
+    }
+
+    #[test]
+    fn clip_counts_chars_not_bytes() {
+        // No panic on a multi-byte boundary, and exact char count.
+        assert_eq!(clip("ααααα", 3), "ααα…");
+    }
+
+    #[test]
+    fn stage_icon_is_distinct_per_status_in_ascii() {
+        // In ASCII mode every status still gets a distinct, non-empty glyph —
+        // state is never color-only.
+        let t = Theme {
+            icons: crate::theme::IconSet::Ascii,
+            ..Theme::default()
+        };
+        let icons: Vec<String> = [
+            StageStatus::Pending,
+            StageStatus::Running,
+            StageStatus::Done,
+            StageStatus::Failed,
+            StageStatus::NeedsAttention,
+            StageStatus::Skipped,
+        ]
+        .iter()
+        .map(|s| stage_icon(&t, *s))
+        .collect();
+        assert!(icons.iter().all(|i| !i.trim().is_empty()));
+        // Done and Failed must not look identical.
+        assert_ne!(
+            stage_icon(&t, StageStatus::Done),
+            stage_icon(&t, StageStatus::Failed)
+        );
+    }
+}
