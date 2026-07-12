@@ -1,9 +1,15 @@
 # ritual — roadmap
 
-> **Status (v0.2, 2026-07-12): everything below through v0.4 is SHIPPED**, except the
+> **Status (v0.4.0, 2026-07-12): everything below through v0.4 is SHIPPED**, except the
 > in-app version-check note (deferred — `ritual --version` covers it) and full
 > session-state persistence (the load-bearing part — daemonized runs + reattach —
 > shipped; scroll/tab restoration was judged not worth the complexity).
+> v0.3 added the interactive spec/plan chat (+ /spec skill). v0.4 added the
+> whole-system batch: `clean` with tamper-evident chain checkpoints, the
+> findings lifecycle (f/d/v + CI contract), chat undo/cancel/multiline/queue
+> + in-place section highlight, the vendored workbench (`init --skills`),
+> hard permission-scoping for doc-chat, `ps`/`attach`, `doctor`, the dark
+> consensus tier, and `pr-comment`.
 > This file is kept as the design rationale for what was built.
 
 Feature candidates researched July 2026 across three sources: what makes professional TUIs beloved (lazygit, k9s, yazi, zellij, atuin…), what AI-coding orchestrators ship (Claude Squad, vibe-kanban, Plandex, aider, goose…), and what research engineers / embedded technicians / ops actually need (MLflow, 21 CFR Part 11 audit trails, Zephyr HIL pipelines, gitleaks…). Ranked by value ÷ effort **for this codebase** — most items build directly on existing pieces (raw run archives, run meta, check.sh abstraction, config layering).

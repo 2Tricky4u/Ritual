@@ -33,16 +33,22 @@ suggestions.
   close the terminal — the run survives. Reopen `ritual` and it
   reattaches (resurrection), or press `a` to take the session over in
   interactive claude (`--resume`).
+- From ANY terminal: `ritual ps` lists live daemons (chat edits too),
+  `ritual attach <run-id>` streams one right there (`--kill` stops it).
 - `x` cancels the running stage (kills the whole process group).
 - Sidebar **needs-you** badge = a stage finished and wants a decision.
 - `c` / `C` run `check.sh fast` / full — same script the hook runs.
 - Everything is also a palette command: `:` then fuzzy-type
   (`rpl` → *run plan-review*).
+- Something off? `ritual doctor` checks every prerequisite — agents,
+  auth, MCP wiring, skills drift, hooks, check.sh, disk space
+  (`--deep` also runs the fast checks).
 
 ## Tabs
 
 - **1 live** — agent stream; greeter when idle
-- **2 findings** — j/k select · enter/e editor · o nvim · Q quickfix
+- **2 findings** — j/k select · f fix · d dismiss · v resolved ·
+  enter/e editor · o nvim · Q quickfix
 - **3 history** — past runs: cost, tokens, duration
 - **4 plan** — rendered plan.md (falls back to spec)
 - **5 guide** — this page
@@ -57,19 +63,29 @@ chat: the **live document is on the left, the conversation on the
 right**. Type an instruction (`⟨enter⟩` sends), and Claude edits the
 file in place — you watch it change on the left as it happens.
 
-- `⟨Tab⟩` cycles the **target**: the whole spec, one of its sections,
-  then the plan and its sections (once a plan exists). The header shows
-  the current target; the left pane focuses it.
+- `⟨Tab⟩` cycles the **target**: the whole spec, each of its sections,
+  then the plan. No plan yet? The target reads *plan (draft from spec)*
+  and your first message drafts one FROM the spec. The left pane shows
+  the whole document with the focused section highlighted in place.
 - Each message acts on the document as it stands now, with your last
   few messages as context — so "make it 3 attempts, not 5" works. The
   file is the memory; no session state to manage.
+- `⟨Ctrl+Z⟩` **undo** — swaps the document with its pre-edit snapshot
+  (press again to redo). Works across restarts and for CLI chats too;
+  single-level: each edit replaces the snapshot.
+- `⟨Ctrl+X⟩` **cancel** an in-flight edit (kills the daemon, drops any
+  queued messages).
+- `⟨Alt+Enter⟩` inserts a newline (the input box grows); `⟨enter⟩`
+  while an edit runs **queues** the message (up to 3, sent in order).
 - `⟨↑⟩`/`⟨↓⟩` scroll the transcript, `⟨esc⟩` closes (a running edit
   finishes on its own — it's a daemon like any other run).
 - From a script: `ritual chat "tighten the goal to one sentence"`,
   `--section "Behavior…"` to scope it, `--plan` to target the plan.
 
 The spec stage flips to **done** when the document gains real content.
-Runs cost `budget_doc_chat_usd` at most (default $0.50/message).
+Runs cost `budget_doc_chat_usd` at most (default $0.50/message), and
+the agent is **hard-scoped**: it can read the project but write only
+the one document you targeted (enforced at the permission layer).
 
 ## Findings workflow
 
@@ -78,10 +94,17 @@ Runs cost `budget_doc_chat_usd` at most (default $0.50/message).
 3. `Q` sends all locations to nvim's quickfix; `o` opens the selected
    one in your **running** nvim (auto-discovers the server socket);
    `e` uses $EDITOR.
-4. Fix, re-run `C`, then re-review or accept.
+4. Fix, re-run `C`, then **close the loop**: `⟨f⟩` marks the selected
+   finding fixed, `⟨d⟩` dismisses it (either toggles back on re-press),
+   writing into the findings JSON. Resolved findings recede from the
+   list; `⟨v⟩` shows/hides them (`ritual findings --all` on the CLI).
+5. On a GitHub project, `ritual pr-comment` posts the open findings to
+   the branch's PR (redacted; `--inline` adds file:line review comments).
 
-In CI: `ritual run dual-review --ci` writes JUnit XML to `.ritual/ci/`
-and exits nonzero on blocking findings.
+The exit-code contract follows the lifecycle: a confirmed critical
+blocks scripts/CI **until you mark it fixed or dismissed**. In CI:
+`ritual run dual-review --ci` writes JUnit XML to `.ritual/ci/` and
+exits nonzero on unresolved blocking findings.
 
 ## Money
 
@@ -100,6 +123,14 @@ and exits nonzero on blocking findings.
   `ritual verify-log` proves nobody edited history.
 - **Repro bundles**: `ritual repro <run-id>` shows the exact model,
   CLI versions, git sha and diffs them against your current env.
+- **Pruning without breaking the chain**: `ritual clean` (default:
+  keep the newest 50) deletes old run artifacts but never touches live
+  runs, state-referenced runs, or today's runs (the budget ledger).
+  Pruned chained runs are attested by a **checkpoint** — a rolling
+  genesis, like a git shallow clone — so `verify-log` stays intact:
+  `chain intact: checkpoint(2026-07-12, 34 pruned) + 16 run(s)
+  verified`. Tampering with the checkpoint breaks verification like
+  tampering with any run. `--dry-run` previews.
 
 ## Parallel features
 
@@ -121,12 +152,19 @@ or pin one: `nvim_server = "/path/to/socket"` — or launch with
 
 - `ritual` — the dashboard
 - `ritual init` — scaffold .ritual/, check.sh, CLAUDE.md
+  (`--skills` also installs the vendored workbench into `~/.claude`:
+  all 13 skills, the code-reviewer agent, both hooks — one clone
+  reproduces the whole setup)
+- `ritual doctor` — check every prerequisite (`--deep` runs checks)
 - `ritual status` — pipeline state (`--json`)
 - `ritual run <stage>` — headless stage (`--force`, `--ci`)
 - `ritual chat <msg>` — edit spec/plan (`--plan`, `--section`)
-- `ritual findings` / `history` — browse artifacts (`--json`)
+- `ritual ps` / `attach <run-id>` — live daemons; follow or `--kill`
+- `ritual findings` / `history` — browse artifacts (`--json`, `--all`)
+- `ritual pr-comment [N]` — findings → GitHub PR (`--inline`)
 - `ritual report [--pdf]` — feature report from all artifacts
 - `ritual new [--worktree B]` — name/create a feature
+- `ritual clean` — prune old runs safely (`--keep N`, `--dry-run`)
 - `ritual verify-log` — check the tamper-evident chain
 - `ritual repro <run-id>` — reproducibility bundle + env diff
 - `ritual bench <stage>` — N repeated runs, scored (`--golden`)
@@ -155,7 +193,29 @@ plan-review = "opus"
 
 [commands]                    # your own palette entries
 "deploy preview" = "./scripts/preview.sh"
+
+[consensus]                   # third-model arbitration (off by default)
+enabled = false
 ```
+
+## Consensus tier (optional third model)
+
+For a genuinely contested plan-review disagreement, a third vendor can
+arbitrate: one stance argues for, one against, and the verdict lands
+under the disagreement — clearly labeled as an opinion, not truth.
+Use sparingly: the evidence says ungrounded debate is the weakest
+pattern; prefer a discriminating test when one exists.
+
+Setup (once): get a free-tier Gemini key (aistudio.google.com), then
+
+```
+claude mcp add --scope user pal --env GEMINI_API_KEY=<key> -- \
+  uvx --from git+https://github.com/BeehiveInnovations/pal-mcp-server.git pal-mcp-server
+```
+
+and set `[consensus] enabled = true`. plan-review then may escalate at
+most ONE unresolved critical/major item per review via the `/consensus`
+skill. `ritual doctor` shows the pal server's status.
 
 ## Tips
 
