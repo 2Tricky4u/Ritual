@@ -20,6 +20,16 @@ if [ "${1:-}" = "--version" ]; then
   echo "fake-agent 0.0.0"
   exit 0
 fi
+# `<fake> auth status` = the claude auth probe (doctor / sidebar).
+if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then
+  echo '{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"fake"}'
+  exit 0
+fi
+# `<fake> mcp list` = MCP registry probe.
+if [ "${1:-}" = "mcp" ] && [ "${2:-}" = "list" ]; then
+  echo "codex: codex mcp-server - ✓ connected"
+  exit 0
+fi
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fixture="${FAKE_AGENT_FIXTURE:-$dir/fixtures/claude_toolrich.jsonl}"
 delay="${FAKE_AGENT_DELAY:-0.05}"

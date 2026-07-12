@@ -335,6 +335,46 @@ pub fn render_run_summary(cfg: &Config, meta: &RunMeta, new_findings: &[String])
     }
 }
 
+pub fn render_doctor(cfg: &Config, results: &[crate::doctor::CheckResult]) {
+    use crate::doctor::CheckStatus;
+    let t = &cfg.theme;
+    let p = t.palette;
+    println!("{}", hex(t, p.purple, "ritual doctor"));
+    println!();
+    let width = results.iter().map(|r| r.name.len()).max().unwrap_or(0);
+    for r in results {
+        let (glyph, color) = match r.status {
+            CheckStatus::Pass => (t.icon_done(), p.green),
+            CheckStatus::Warn => (t.icon_attention(), p.yellow),
+            CheckStatus::Fail => (t.icon_failed(), p.red),
+            CheckStatus::Skipped => (t.icon_skipped(), p.light_grey),
+        };
+        println!(
+            "  {} {}  {}",
+            hex(t, color, glyph),
+            hex(t, p.white, &format!("{:<width$}", r.name)),
+            hex(t, p.light_grey, &r.detail)
+        );
+    }
+    let fails = results
+        .iter()
+        .filter(|r| r.status == CheckStatus::Fail)
+        .count();
+    let warns = results
+        .iter()
+        .filter(|r| r.status == CheckStatus::Warn)
+        .count();
+    println!();
+    println!(
+        "  {}",
+        hex(
+            t,
+            if fails > 0 { p.red } else { p.light_grey },
+            &format!("{fails} failure(s), {warns} warning(s)")
+        )
+    );
+}
+
 pub fn render_clean(cfg: &Config, report: &crate::clean::CleanReport) {
     let t = &cfg.theme;
     let p = t.palette;

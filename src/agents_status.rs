@@ -25,7 +25,7 @@ pub struct ClaudeAuth {
     pub subscription_type: Option<String>,
 }
 
-fn run_capture(argv: &[String], extra: &[&str]) -> Option<std::process::Output> {
+pub(crate) fn run_capture(argv: &[String], extra: &[&str]) -> Option<std::process::Output> {
     let (bin, args) = argv.split_first()?;
     std::process::Command::new(bin)
         .args(args)
@@ -34,12 +34,12 @@ fn run_capture(argv: &[String], extra: &[&str]) -> Option<std::process::Output> 
         .ok()
 }
 
-fn probe_claude_auth(cfg: &Config) -> Option<ClaudeAuth> {
+pub(crate) fn probe_claude_auth(cfg: &Config) -> Option<ClaudeAuth> {
     let out = run_capture(&cfg.claude_cmd, &["auth", "status"])?;
     serde_json::from_slice(&out.stdout).ok()
 }
 
-fn probe_codex_cli(cfg: &Config) -> Option<bool> {
+pub(crate) fn probe_codex_cli(cfg: &Config) -> Option<bool> {
     let (bin, args) = cfg.codex_cmd.split_first()?;
     std::process::Command::new(bin)
         .args(args)
@@ -51,18 +51,23 @@ fn probe_codex_cli(cfg: &Config) -> Option<bool> {
         .map(|s| s.success())
 }
 
-/// `claude mcp list` is plain text and slow (live health checks) — parse the
-/// codex line tolerantly; anything unexpected reads as unknown, not error.
-fn probe_mcp_codex(cfg: &Config) -> Option<bool> {
+/// `claude mcp list` is plain text and slow (live health checks) — parse one
+/// server's line tolerantly; anything unexpected reads as unknown, not error.
+pub(crate) fn probe_mcp_server(cfg: &Config, name: &str) -> Option<bool> {
     let out = run_capture(&cfg.claude_cmd, &["mcp", "list"])?;
     let text = String::from_utf8_lossy(&out.stdout);
+    let prefix = format!("{name}:");
     for line in text.lines() {
         let lower = line.to_lowercase();
-        if lower.starts_with("codex:") {
+        if lower.starts_with(&prefix) {
             return Some(lower.contains("connected") && !lower.contains("needs"));
         }
     }
     None
+}
+
+fn probe_mcp_codex(cfg: &Config) -> Option<bool> {
+    probe_mcp_server(cfg, "codex")
 }
 
 /// Fire all probes on a blocking thread; one message when done.

@@ -516,6 +516,50 @@ fn worktree_feature_shares_state_and_resolves_dirs() {
 }
 
 #[test]
+fn doctor_passes_healthy_and_fails_without_check_sh() {
+    let tmp = setup_project();
+    // Skills installed into a fake home so the drift check passes.
+    let fake_home = tmp.path().join("claude-home");
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_HOME", &fake_home)
+        .args(["init", "--skills"])
+        .assert()
+        .success();
+    std::fs::write(
+        fake_home.join("settings.json"),
+        r#"{"hooks":{"PostToolUse":[{"hooks":[{"command":"~/.claude/hooks/check-on-edit.sh"}]}]}}"#,
+    )
+    .unwrap();
+
+    // Healthy project: exit 0 (fake agent answers auth/mcp probes).
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_HOME", &fake_home)
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("0 failure(s)"));
+
+    // Remove check.sh: hard failure, exit 1.
+    std::fs::remove_file(tmp.path().join("check.sh")).unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_HOME", &fake_home)
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .arg("doctor")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("missing"));
+}
+
+#[test]
 fn ps_and_attach_follow_and_kill_live_runs() {
     let tmp = setup_project();
     std::fs::create_dir_all(tmp.path().join(".ritual/features/main")).unwrap();

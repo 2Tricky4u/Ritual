@@ -42,6 +42,16 @@ pub struct FileConfig {
     /// `[commands]` table: name -> shell template with {{branch}}, {{run_id}},
     /// {{finding.file}}, {{finding.line}} placeholders (lazygit-style).
     pub commands: Option<HashMap<String, String>>,
+    /// `[consensus]` table: the optional third-model arbitration tier.
+    pub consensus: Option<ConsensusFileConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ConsensusFileConfig {
+    /// Grant plan-review the mcp__pal__consensus tool (needs the pal MCP
+    /// server + a Gemini key — see the guide). Default false.
+    pub enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +74,7 @@ pub struct Config {
     pub offline: bool,
     pub commands: Vec<(String, String)>,
     pub nvim_server: Option<String>,
+    pub consensus_enabled: bool,
 }
 
 impl Default for Config {
@@ -86,6 +97,7 @@ impl Default for Config {
             offline: false,
             commands: Vec::new(),
             nvim_server: None,
+            consensus_enabled: false,
         }
     }
 }
@@ -177,6 +189,11 @@ impl Config {
                     cfg.commands.push((name, template));
                 }
                 cfg.commands.sort_by(|a, b| a.0.cmp(&b.0));
+            }
+            if let Some(c) = fc.consensus
+                && let Some(enabled) = c.enabled
+            {
+                cfg.consensus_enabled = enabled;
             }
         }
 

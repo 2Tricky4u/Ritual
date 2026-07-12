@@ -156,6 +156,16 @@ fn main() -> Result<()> {
         }) => {
             run_cmd::run_doc_chat(&cfg, &dirs, &message.join(" "), plan, section, force)?;
         }
+        Some(Command::Doctor { deep }) => {
+            let results = ritual::doctor::run(&cfg, &dirs, deep);
+            output::render_doctor(&cfg, &results);
+            if results
+                .iter()
+                .any(|r| r.status == ritual::doctor::CheckStatus::Fail)
+            {
+                std::process::exit(1);
+            }
+        }
         Some(Command::Ps) => {
             run_cmd::ps(&dirs)?;
         }
