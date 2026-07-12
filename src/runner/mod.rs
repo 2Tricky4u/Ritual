@@ -74,7 +74,22 @@ pub enum RunState {
 }
 
 pub fn new_run_id(stage: &str) -> String {
-    format!("{}-{}", Utc::now().format("%Y%m%dT%H%M%SZ"), stage)
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static RUN_SEQ: AtomicU64 = AtomicU64::new(0);
+    // Uniqueness matters: two runs launched in the same second used to collide
+    // on run_id and clobber each other's archive/meta/status files (found by
+    // end-to-end testing — rapid back-to-back `ritual run`). Millisecond
+    // precision keeps ids chronologically sortable (history/chain rely only on
+    // lexicographic order); the pid disambiguates concurrent processes; the
+    // per-process counter guarantees uniqueness within a single process.
+    let seq = RUN_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "{}-{:x}-{:x}-{}",
+        Utc::now().format("%Y%m%dT%H%M%S%3fZ"),
+        std::process::id(),
+        seq,
+        stage
+    )
 }
 
 fn status_path(dirs: &RitualDirs, run_id: &str) -> PathBuf {
@@ -428,6 +443,31 @@ impl RunMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: run ids must be unique even when generated in a tight loop
+    /// within the same millisecond. Second-precision ids used to collide,
+    /// letting two same-second runs clobber each other's files (found by e2e).
+    #[test]
+    fn run_ids_are_unique_and_time_ordered() {
+        let ids: Vec<String> = (0..1000).map(|_| new_run_id("plan-review")).collect();
+        let unique: std::collections::HashSet<&String> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "run ids collided");
+        // Every id retains the stage suffix and is filesystem-safe.
+        assert!(ids.iter().all(|id| id.ends_with("-plan-review")));
+        assert!(ids.iter().all(|id| !id.contains('/') && !id.contains(' ')));
+        // The millisecond timestamp prefix (before the first '-') is
+        // monotonically nondecreasing across a burst — that is what makes
+        // `history` sort newest-first correctly.
+        let stamps: Vec<&str> = ids.iter().map(|id| id.split('-').next().unwrap()).collect();
+        for w in stamps.windows(2) {
+            assert!(
+                w[0] <= w[1],
+                "timestamp went backwards: {} > {}",
+                w[0],
+                w[1]
+            );
+        }
+    }
 
     /// Regression: tail_run must not declare a run vanished while the daemon
     /// is still booting (status sidecar appears late). Found live during the

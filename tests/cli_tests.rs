@@ -556,6 +556,49 @@ fn project_with_one_run() -> tempfile::TempDir {
 }
 
 #[test]
+fn rapid_back_to_back_runs_do_not_clobber_each_other() {
+    // Regression: second-precision run ids used to collide when two runs
+    // landed in the same second, overwriting each other's archive/meta/status.
+    let tmp = setup_project();
+    std::fs::create_dir_all(tmp.path().join(".ritual/features/main")).unwrap();
+    std::fs::write(tmp.path().join(".ritual/features/main/plan.md"), "# plan").unwrap();
+
+    for _ in 0..3 {
+        Command::cargo_bin("ritual")
+            .unwrap()
+            .current_dir(tmp.path())
+            .env("RITUAL_CLAUDE_CMD", fake_agent())
+            .env("RITUAL_CODEX_CMD", fake_agent())
+            .env("FAKE_AGENT_DELAY", "0")
+            .args(["run", "plan-review", "--force"])
+            .assert()
+            .success();
+    }
+
+    let entries: Vec<String> = std::fs::read_dir(tmp.path().join(".ritual/runs"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    let metas = entries.iter().filter(|f| f.ends_with(".meta.json")).count();
+    let archives = entries.iter().filter(|f| f.ends_with(".jsonl")).count();
+    assert_eq!(metas, 3, "expected 3 distinct metas, got: {entries:?}");
+    assert_eq!(
+        archives, 3,
+        "expected 3 distinct archives, got: {entries:?}"
+    );
+
+    // And the tamper-evident chain still verifies across all three.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("verify-log")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("3 chained run(s) verified"));
+}
+
+#[test]
 fn export_emits_valid_otlp_spans_after_a_run() {
     let tmp = project_with_one_run();
     let out = Command::cargo_bin("ritual")
