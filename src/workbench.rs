@@ -78,6 +78,62 @@ pub const EXTRAS: &[VendoredFile] = &[
 /// merged automatically (`ritual doctor` checks for the hook block).
 pub const SETTINGS_SNIPPET: &str = include_str!("../workbench/settings-snippet.json");
 
+/// One skill's installed-vs-vendored state (`ritual skills diff`).
+#[derive(Debug)]
+pub enum SkillDiff {
+    Identical,
+    Missing,
+    Differs {
+        repo_lines: usize,
+        installed_lines: usize,
+        /// 1-based first differing line + both sides' content there.
+        first: (usize, String, String),
+    },
+}
+
+/// Compare every vendored skill against the installed copy under
+/// `<claude_home>/skills/<name>/SKILL.md` — read-only companion to
+/// `install()` (doctor only hashes; this says WHERE they diverge).
+pub fn diff(claude_home: &Path) -> Vec<(&'static str, SkillDiff)> {
+    SKILLS
+        .iter()
+        .map(|(name, repo)| {
+            let path = claude_home.join("skills").join(name).join("SKILL.md");
+            let status = match std::fs::read_to_string(&path) {
+                Err(_) => SkillDiff::Missing,
+                Ok(installed) if installed == *repo => SkillDiff::Identical,
+                Ok(installed) => {
+                    let (mut line, mut a, mut b) = (1, String::new(), String::new());
+                    for (i, pair) in repo
+                        .lines()
+                        .map(Some)
+                        .chain(std::iter::repeat(None))
+                        .zip(installed.lines().map(Some).chain(std::iter::repeat(None)))
+                        .enumerate()
+                    {
+                        match pair {
+                            (None, None) => break,
+                            (ra, ia) if ra != ia => {
+                                line = i + 1;
+                                a = ra.unwrap_or("<end of file>").to_string();
+                                b = ia.unwrap_or("<end of file>").to_string();
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    SkillDiff::Differs {
+                        repo_lines: repo.lines().count(),
+                        installed_lines: installed.lines().count(),
+                        first: (line, a, b),
+                    }
+                }
+            };
+            (*name, status)
+        })
+        .collect()
+}
+
 #[derive(Debug, Default)]
 pub struct InstallReport {
     pub created: Vec<String>,

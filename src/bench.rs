@@ -154,6 +154,14 @@ pub fn bench(
         avg_findings,
         total_cost
     );
+    // Spread matters for model comparisons: a cheap-but-erratic config and a
+    // steady one can share a mean.
+    let costs: Vec<f64> = scores.iter().map(|s| s.cost_usd).collect();
+    let durations: Vec<f64> = scores.iter().map(|s| s.duration_s).collect();
+    let (cm, cs, clo, chi) = stats(&costs);
+    let (dm, ds, dlo, dhi) = stats(&durations);
+    println!("cost ${cm:.3} ±{cs:.3} (min ${clo:.3}, max ${chi:.3})");
+    println!("duration {dm:.1}s ±{ds:.1} (min {dlo:.1}s, max {dhi:.1}s)");
     if !golden_titles.is_empty() {
         let avg_recall = scores
             .iter()
@@ -161,8 +169,27 @@ pub fn bench(
             .sum::<f64>()
             / runs.max(1) as f64;
         println!("golden recall {:.0}%", avg_recall * 100.0);
+        // The aider-leaderboard metric: what does one caught bug cost here?
+        let hits: usize = scores.iter().map(|s| s.matched_golden).sum();
+        match hits {
+            0 => println!("cost per golden hit: n/a (0 hits)"),
+            h => println!("cost per golden hit: ${:.3}", total_cost / h as f64),
+        }
     }
     Ok(())
+}
+
+/// (mean, population std-dev, min, max) — empty input yields zeros.
+fn stats(xs: &[f64]) -> (f64, f64, f64, f64) {
+    if xs.is_empty() {
+        return (0.0, 0.0, 0.0, 0.0);
+    }
+    let n = xs.len() as f64;
+    let mean = xs.iter().sum::<f64>() / n;
+    let var = xs.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n;
+    let min = xs.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    (mean, var.sqrt(), min, max)
 }
 
 fn list(dir: &Path) -> Vec<String> {
@@ -173,4 +200,25 @@ fn list(dir: &Path) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stats;
+
+    #[test]
+    fn stats_mean_spread_and_extremes() {
+        let (mean, sd, min, max) = stats(&[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]);
+        assert!((mean - 5.0).abs() < 1e-9);
+        assert!((sd - 2.0).abs() < 1e-9); // classic population-σ example
+        assert_eq!(min, 2.0);
+        assert_eq!(max, 9.0);
+
+        let (m, s, lo, hi) = stats(&[]);
+        assert_eq!((m, s, lo, hi), (0.0, 0.0, 0.0, 0.0));
+
+        let (m, s, lo, hi) = stats(&[3.5]);
+        assert_eq!((m, s), (3.5, 0.0));
+        assert_eq!((lo, hi), (3.5, 3.5));
+    }
 }

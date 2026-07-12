@@ -64,6 +64,11 @@ pub enum Command {
     /// Scan changed files (tracked + untracked) for leaked secrets via
     /// gitleaks; hits become critical findings and exit nonzero
     Secrets,
+    /// Vendored workbench skills vs the installed ~/.claude copies
+    Skills {
+        #[command(subcommand)]
+        cmd: SkillsCmd,
+    },
     /// Per-stage cost analytics: today / 7 days / all time, cache-hit rates,
     /// daily-budget gauge
     Costs {
@@ -192,4 +197,11 @@ pub enum Command {
     /// Internal: detached run executor (do not invoke by hand)
     #[command(name = "_spawn", hide = true)]
     InternalSpawn { run_id: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SkillsCmd {
+    /// Per-skill status (identical | differs | missing) with the first
+    /// divergent line; `ritual init --skills --force` pushes repo -> home
+    Diff,
 }
