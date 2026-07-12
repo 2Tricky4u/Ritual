@@ -2034,6 +2034,361 @@ mod tests {
     }
 
     #[test]
+    fn cancel_run_kills_the_daemon_and_fails_the_stage() {
+        use std::os::unix::process::CommandExt;
+        let (_t, mut app, _tx, _rx) = test_app();
+        std::fs::create_dir_all(app.dirs.runs_dir()).unwrap();
+
+        // No active run: a notice, not a panic.
+        app.cancel_run();
+        assert!(app.status_msg.as_deref().unwrap().contains("no active run"));
+
+        // A live own-group child stands in for the detached daemon.
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        std::fs::write(
+            app.dirs.runs_dir().join("r-cancel.status"),
+            format!(
+                r#"{{"pid":{},"stage":"dual-review","branch":"main"}}"#,
+                child.id()
+            ),
+        )
+        .unwrap();
+        app.current_run_id = Some("r-cancel".into());
+        app.running = Some(StageId::DualReview);
+
+        app.cancel_run();
+        assert!(!child.wait().unwrap().success(), "SIGTERM delivered");
+        assert!(app.running.is_none());
+        assert!(app.current_run_id.is_none());
+        assert_eq!(
+            app.state
+                .features
+                .get(&app.slug)
+                .unwrap()
+                .stage(StageId::DualReview)
+                .status,
+            StageStatus::Failed
+        );
+        assert!(app.status_msg.as_deref().unwrap().contains("cancelled"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn on_chat_exited_matrix_and_queue_drain() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.open_chat(&tx);
+        let spec = app.dirs.spec_file(&app.slug);
+        let ok_outcome = || {
+            Ok(RunOutcome {
+                meta: crate::history::RunMeta {
+                    ok: true,
+                    total_cost_usd: Some(0.02),
+                    ..Default::default()
+                },
+                archive: std::path::PathBuf::new(),
+            })
+        };
+
+        // ok + changed doc -> spec marked done, "updated" note.
+        app.doc_before = std::fs::read_to_string(&spec).unwrap_or_default();
+        std::fs::write(&spec, "# Feature: x\n\n## Goal\nreal content now\n").unwrap();
+        app.chat.as_mut().unwrap().in_flight = true;
+        app.current_chat_run_id = Some("r1".into());
+        app.on_chat_exited(ok_outcome(), &tx);
+        assert_eq!(
+            app.state
+                .features
+                .get(&app.slug)
+                .unwrap()
+                .stage(StageId::Spec)
+                .status,
+            StageStatus::Done
+        );
+        assert!(matches!(
+            app.chat.as_ref().unwrap().transcript.last(),
+            Some(ChatTurn::System(n)) if n.contains("updated")
+        ));
+
+        // ok + unchanged doc -> "no change" note, stage stays done.
+        app.doc_before = std::fs::read_to_string(&spec).unwrap();
+        app.chat.as_mut().unwrap().in_flight = true;
+        app.current_chat_run_id = Some("r2".into());
+        app.on_chat_exited(ok_outcome(), &tx);
+        assert!(matches!(
+            app.chat.as_ref().unwrap().transcript.last(),
+            Some(ChatTurn::System(n)) if n.contains("no change")
+        ));
+
+        // Err -> failure note, in_flight reset.
+        app.chat.as_mut().unwrap().in_flight = true;
+        app.on_chat_exited(Err(anyhow::anyhow!("agent exploded")), &tx);
+        let chat = app.chat.as_ref().unwrap();
+        assert!(!chat.in_flight);
+        assert!(matches!(
+            chat.transcript.last(),
+            Some(ChatTurn::System(n)) if n.contains("chat failed")
+        ));
+
+        // Queue drain: a pending message becomes the next User turn in flight.
+        app.chat
+            .as_mut()
+            .unwrap()
+            .pending
+            .push_back("next msg".into());
+        app.chat.as_mut().unwrap().in_flight = true;
+        app.on_chat_exited(ok_outcome(), &tx);
+        let chat = app.chat.as_ref().unwrap();
+        assert!(
+            chat.transcript
+                .iter()
+                .any(|t| matches!(t, ChatTurn::User(m) if m == "next msg")),
+            "queued message drained as a user turn"
+        );
+        assert!(chat.in_flight, "drained message is immediately in flight");
+        assert!(chat.pending.is_empty());
+        if let Some(task) = app.chat_task.take() {
+            task.abort();
+        }
+
+        // Chat closed mid-run: completion must not panic.
+        app.chat = None;
+        app.on_chat_exited(ok_outcome(), &tx);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resume_run_edges() {
+        let (_t, mut app, tx, _rx) = test_app();
+        std::fs::create_dir_all(app.dirs.runs_dir()).unwrap();
+
+        // Unparseable stage (a chat run) is never resumed into the pipeline.
+        let chat_status = runner::RunStatus {
+            pid: std::process::id(),
+            stage: "spec-chat".into(),
+            branch: "main".into(),
+        };
+        app.resume_run("r-chat".into(), chat_status, &tx);
+        assert!(app.running.is_none());
+
+        // Missing request.json falls back to the Claude agent and reattaches.
+        let status = runner::RunStatus {
+            pid: std::process::id(),
+            stage: "plan-review".into(),
+            branch: "main".into(),
+        };
+        app.resume_run("r-noreq".into(), status, &tx);
+        assert_eq!(app.running, Some(StageId::PlanReview));
+        assert_eq!(app.current_run_id.as_deref(), Some("r-noreq"));
+        assert!(app.status_msg.as_deref().unwrap().contains("reattached"));
+        if let Some(task) = app.run_task.take() {
+            task.abort();
+        }
+    }
+
+    #[test]
+    fn reconcile_finalizes_every_stale_shape() {
+        let (_t, mut app, _tx, _rx) = test_app();
+        let runs = app.dirs.runs_dir();
+        std::fs::create_dir_all(&runs).unwrap();
+        // Finished-ok (unwatched), finished-failed, vanished, and no-run.
+        std::fs::write(
+            runs.join("r-ok.meta.json"),
+            r#"{"run_id":"r-ok","ok":true}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            runs.join("r-bad.meta.json"),
+            r#"{"run_id":"r-bad","ok":false}"#,
+        )
+        .unwrap();
+        // A still-live run must be left alone for resurrection.
+        std::fs::write(
+            runs.join("r-live.status"),
+            format!(
+                r#"{{"pid":{},"stage":"spec","branch":"detached"}}"#,
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        {
+            let branch = app.branch.clone();
+            let f = app.state.feature_for_branch_mut(&branch);
+            let mut set = |id: StageId, runs: Vec<String>| {
+                let e = f.stages.entry(id).or_default();
+                e.status = StageStatus::Running;
+                e.runs = runs;
+            };
+            set(StageId::PlanReview, vec!["r-ok".into()]);
+            set(StageId::DualReview, vec!["r-bad".into()]);
+            set(StageId::TestsRed, vec!["r-gone".into()]);
+            set(StageId::Implement, vec![]);
+            set(StageId::Spec, vec!["r-live".into()]);
+        }
+
+        app.reconcile_stale_runs();
+        let f = app.state.features.get(&app.slug).unwrap();
+        assert_eq!(
+            f.stage(StageId::PlanReview).status,
+            StageStatus::NeedsAttention
+        );
+        assert_eq!(f.stage(StageId::DualReview).status, StageStatus::Failed);
+        assert_eq!(f.stage(StageId::TestsRed).status, StageStatus::Failed);
+        assert_eq!(
+            f.stage(StageId::Implement).status,
+            StageStatus::NeedsAttention
+        );
+        assert_eq!(f.stage(StageId::Spec).status, StageStatus::Running);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_custom_expands_every_template_placeholder() {
+        let (_t, mut app, tx, _rx) = test_app();
+        std::fs::create_dir_all(app.dirs.findings_dir()).unwrap();
+        std::fs::write(
+            app.dirs
+                .findings_dir()
+                .join("20260712T000000Z-dual-review.json"),
+            r#"{"stage":"dual-review","findings":[
+                {"title":"t","file":"src/a.rs","line":42,"severity":"major",
+                 "verdict":"confirmed","action":"pending"}]}"#,
+        )
+        .unwrap();
+        app.reload_artifacts();
+        app.current_run_id = Some("r-777".into());
+        app.cfg.commands = vec![(
+            "dump".into(),
+            "printf '%s|%s|%s|%s' '{{branch}}' '{{finding.file}}' '{{finding.line}}' '{{run_id}}' > custom-out.txt".into(),
+        )];
+
+        app.run_custom(0, &tx);
+        let out = app.dirs.work_root.join("custom-out.txt");
+        for _ in 0..100 {
+            if out.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let text = std::fs::read_to_string(&out).expect("custom command ran");
+        assert_eq!(text, format!("{}|src/a.rs|42|r-777", app.branch));
+    }
+
+    #[test]
+    fn takeover_notices_when_nothing_is_resumable() {
+        let (_t, mut app, _tx, _rx) = test_app();
+        // No recorded runs for the selected stage.
+        app.takeover();
+        assert!(
+            app.status_msg
+                .as_deref()
+                .unwrap()
+                .contains("no recorded runs")
+        );
+        // A recorded run without a session id.
+        let branch = app.branch.clone();
+        let f = app.state.feature_for_branch_mut(&branch);
+        f.stages.entry(StageId::Spec).or_default().runs = vec!["r-nosession".into()];
+        app.selected = 0; // spec
+        app.takeover();
+        assert!(
+            app.status_msg
+                .as_deref()
+                .unwrap()
+                .contains("recorded no session id")
+        );
+        assert!(app.pending_attached.is_none());
+    }
+
+    #[test]
+    fn dismissing_the_last_visible_finding_clamps_selection() {
+        let (_t, mut app, _tx, _rx) = test_app();
+        std::fs::create_dir_all(app.dirs.findings_dir()).unwrap();
+        std::fs::write(
+            app.dirs
+                .findings_dir()
+                .join("20260712T000000Z-dual-review.json"),
+            r#"{"stage":"dual-review","findings":[
+                {"title":"first","severity":"critical","verdict":"confirmed"},
+                {"title":"second","severity":"minor","verdict":"confirmed"}]}"#,
+        )
+        .unwrap();
+        app.reload_artifacts();
+        app.tab = Tab::Findings;
+
+        app.selected_finding = 1;
+        app.finding_set_action("dismissed"); // the LAST visible one
+        assert_eq!(app.selected_finding, 0, "selection clamped down");
+        app.finding_set_action("dismissed"); // now the list is empty
+        assert_eq!(app.selected_finding, 0);
+        // Toggling resolved back on keeps the selection in range.
+        app.show_resolved = true;
+        app.clamp_selected_finding();
+        assert!(app.selected_finding < 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn chat_targets_grow_plan_sections_after_the_draft_lands() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.open_chat(&tx);
+        // Before: the plan target exists but is missing (draft-from-spec).
+        let plan_idx = {
+            let chat = app.chat.as_ref().unwrap();
+            let idx = chat
+                .targets
+                .iter()
+                .position(|t| t.doc == stages::DocKind::Plan)
+                .expect("plan offered even when missing");
+            assert!(chat.targets[idx].missing);
+            assert!(
+                !chat
+                    .targets
+                    .iter()
+                    .any(|t| t.doc == stages::DocKind::Plan && t.section.is_some()),
+                "no plan sections yet"
+            );
+            idx
+        };
+        app.chat.as_mut().unwrap().target_idx = plan_idx;
+
+        // The "edit" drafts the plan; completion rebuilds the target list.
+        app.doc_before = String::new();
+        std::fs::write(
+            app.dirs.plan_file(&app.slug),
+            "# Plan\n\n## Steps\n1. do it\n\n## Risks\nnone\n",
+        )
+        .unwrap();
+        app.chat.as_mut().unwrap().in_flight = true;
+        app.on_chat_exited(
+            Ok(RunOutcome {
+                meta: crate::history::RunMeta {
+                    ok: true,
+                    ..Default::default()
+                },
+                archive: std::path::PathBuf::new(),
+            }),
+            &tx,
+        );
+        let chat = app.chat.as_ref().unwrap();
+        assert!(
+            chat.targets
+                .iter()
+                .any(|t| t.doc == stages::DocKind::Plan && t.section.as_deref() == Some("Steps")),
+            "plan sections appear after the draft: {:?}",
+            chat.targets.iter().map(|t| t.label()).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            app.state
+                .features
+                .get(&app.slug)
+                .unwrap()
+                .stage(StageId::Plan)
+                .status,
+            StageStatus::Done
+        );
+    }
+
+    #[test]
     fn finding_lifecycle_marks_and_clamps() {
         let (_t, mut app, tx, _rx) = test_app();
         std::fs::create_dir_all(app.dirs.findings_dir()).unwrap();
