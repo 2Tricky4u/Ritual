@@ -19,9 +19,33 @@ fn main() -> Result<()> {
                 .build()?;
             rt.block_on(ui::app::run(cfg, dirs))?;
         }
-        Some(Command::Init { force }) => {
+        Some(Command::Init { force, skills }) => {
             let report = scaffold::init(&dirs.project_root, force)?;
             output::render_init(&cfg, &report);
+            if skills {
+                let home = match std::env::var_os("RITUAL_CLAUDE_HOME") {
+                    Some(h) => std::path::PathBuf::from(h), // test seam
+                    None => dirs::home_dir()
+                        .context("no home directory")?
+                        .join(".claude"),
+                };
+                let r = ritual::workbench::install(&home, force)?;
+                println!(
+                    "workbench → {}: {} created, {} updated, {} unchanged",
+                    home.display(),
+                    r.created.len(),
+                    r.updated.len(),
+                    r.identical.len()
+                );
+                for s in &r.skipped {
+                    println!("  skipped {s} (local file differs — --force to overwrite)");
+                }
+                if !r.created.is_empty() || !r.updated.is_empty() {
+                    println!(
+                        "  settings.json blocks are NOT auto-merged — see workbench/settings-snippet.json"
+                    );
+                }
+            }
         }
         Some(Command::Status { json }) => {
             let state = State::load(&dirs)?;
