@@ -304,6 +304,43 @@ ok "audit-trail exports"      0 "audit record(s) exported" -- bash -c "cd '$PROJ
   '$RITUAL' export --audit-trail --out '$ROOT/audit.jsonl'"
 ok "audit chain re-verifies"  0 "chain ok" -- "$ROOT/bin/verify-audit" "$ROOT/audit.jsonl"
 
+echo "── v0.5.1: aged clean, live attach --kill, undo stack ───────────────"
+# Aged UNCHAINED runs actually get PRUNED (today's stay protected) — the
+# real deletion path, not just today-protection.
+for i in 1 2; do
+  printf '{"run_id":"20260101T00000%sZ-old","stage":"plan-review","ok":true,"started_at":"2026-01-01T00:00:0%sZ"}\n' "$i" "$i" \
+    > "$PROJ/.ritual/runs/20260101T00000${i}Z-old.meta.json"
+  printf 'line\n' > "$PROJ/.ritual/runs/20260101T00000${i}Z-old.jsonl"
+done
+ok "clean prunes aged runs"   0 "2 group(s) deleted" -- bash -c "cd '$PROJ' && '$RITUAL' clean --keep 0"
+ok "aged meta actually gone"  1 "-" -- test -f "$PROJ/.ritual/runs/20260101T000001Z-old.meta.json"
+
+# A live slow run shows in ps and dies to attach --kill.
+( cd "$PROJ" && RITUAL_CLAUDE_CMD="$FAKE" RITUAL_CODEX_CMD="$FAKE" FAKE_AGENT_DELAY=2 \
+  "$RITUAL" run plan-review >/dev/null 2>&1 ) &
+SLOW_LAUNCHER=$!
+sleep 1.5
+LIVE_ID="$(cd "$PROJ" && "$RITUAL" ps 2>/dev/null | awk 'NR==2{print $1}')"
+ok "ps lists the live run"    0 "plan-review" -- bash -c "cd '$PROJ' && '$RITUAL' ps"
+ok "attach --kill stops it"   0 "killed" -- bash -c "cd '$PROJ' && '$RITUAL' attach '$LIVE_ID' --kill"
+wait "$SLOW_LAUNCHER" 2>/dev/null
+sleep 0.5
+
+# A second chat edit deepens the persisted undo stack (v0.5.1: stack, not swap).
+ok "chat edit deepens undo"   0 "-" -- bash -c "cd '$PROJ' && \
+  RITUAL_CLAUDE_CMD='$FAKE' RITUAL_CODEX_CMD='$FAKE' FAKE_AGENT_DELAY=0 \
+  FAKE_AGENT_SPEC_EDIT='.ritual/features/main/spec.md' \
+  '$RITUAL' chat 'tighten the goal once more'"
+UNDO_EXPECT=2
+[ "${RITUAL_LIVE_SMOKE:-0}" = "1" ] && UNDO_EXPECT=3 # the live smoke chats once more
+ok "undo stack depth $UNDO_EXPECT" 0 "$UNDO_EXPECT" -- bash -c "ls '$PROJ/.ritual/features/main/.undo/spec' | wc -l"
+
+# audit-trail zero-run guard in a completely fresh project.
+FRESH="$ROOT/fresh"
+mkdir -p "$FRESH" && git -C "$FRESH" init -q -b main
+( cd "$FRESH" && "$RITUAL" init >/dev/null 2>&1 )
+ok "audit-trail on empty history" 0 "0 audit record(s)" -- bash -c "cd '$FRESH' && '$RITUAL' export --audit-trail 2>&1"
+
 echo "── daemon survives launcher death ───────────────────────────────────"
 # Slow agent; kill the launcher mid-run; the detached daemon must still
 # write its meta. Detect by a *new* meta appearing (run_id is time-based, so
