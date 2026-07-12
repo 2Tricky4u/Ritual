@@ -48,12 +48,17 @@ suggestions.
 
 - **1 live** — agent stream; greeter when idle
 - **2 findings** — j/k select · f fix · d dismiss · v resolved ·
-  enter/e editor · o nvim · Q quickfix
-- **3 history** — past runs: cost, tokens, duration
+  `/` filter · enter/e editor · o nvim · Q quickfix
+- **3 history** — past runs: cost, tokens, duration · `/` filter
 - **4 plan** — rendered plan.md (falls back to spec)
 - **5 guide** — this page
 
 `tab` cycles; `j/k` scroll or select; `g` top; `G` follow the tail.
+`/` opens a live filter on the findings/history lists (type to narrow,
+Enter to keep it and navigate, Esc to clear — it drops when you leave
+the tab). The statusline carries a spend sparkline of recent runs, and
+pasting multi-line text into the chat input keeps its newlines instead
+of submitting at the first one.
 All keys are rebindable in `[keys]` (see config below).
 
 ## Chat to author the spec (or plan)

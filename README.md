@@ -282,7 +282,7 @@ blame = "git log --oneline -3 -- {{finding.file}}"
 
 All rebindable via `[keys]`:
 
-`enter` run/open · `s` chat: edit spec/plan · `:` palette · `j/k` move · `tab` `1-5` panes (`5` = in-app guide & tips) · `f/d/v` finding fix/dismiss/show-resolved · `[` `]` features · `a` takeover · `o` open in nvim · `Q` findings → quickfix · `c/C` check fast/full · `x` cancel · `e` editor · `r` refresh · `g/G` scroll/follow · `?` help · `q` quit — in chat: `Ctrl+Z` undo · `Alt+Z` redo · `Ctrl+X` cancel · `Alt+Enter` newline
+`enter` run/open · `s` chat: edit spec/plan · `:` palette · `j/k` move · `tab` `1-5` panes (`5` = in-app guide & tips) · `f/d/v` finding fix/dismiss/show-resolved · `/` filter list · `[` `]` features · `a` takeover · `o` open in nvim · `Q` findings → quickfix · `c/C` check fast/full · `x` cancel · `e` editor · `r` refresh · `g/G` scroll/follow · `?` help · `q` quit — in chat: `Ctrl+Z` undo · `Alt+Z` redo · `Ctrl+X` cancel · `Alt+Enter` newline
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
