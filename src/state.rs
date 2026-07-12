@@ -411,6 +411,20 @@ mod tests {
         assert!(State::load(&dirs).is_err());
     }
 
+    proptest::proptest! {
+        #[test]
+        fn branch_slug_is_always_fs_safe_and_idempotent(branch in "\\PC{0,64}") {
+            let slug = branch_slug(&branch);
+            proptest::prop_assert!(!slug.is_empty());
+            proptest::prop_assert!(
+                slug.chars().all(|c| c.is_ascii_alphanumeric() || ".-_".contains(c)),
+                "unsafe char in {slug:?}"
+            );
+            proptest::prop_assert!(!slug.starts_with('-') && !slug.ends_with('-'));
+            proptest::prop_assert_eq!(branch_slug(&slug), slug);
+        }
+    }
+
     #[test]
     fn branch_slug_degenerate_inputs() {
         assert_eq!(branch_slug(""), "detached");

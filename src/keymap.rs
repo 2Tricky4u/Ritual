@@ -326,6 +326,25 @@ mod tests {
         assert!(Keymap::default().with_overrides(&bad).is_err());
     }
 
+    proptest::proptest! {
+        #[test]
+        fn parse_chord_roundtrips_generated_chords(
+            key in "[a-z]",
+            ctrl: bool,
+            alt: bool,
+        ) {
+            let mut chord = String::new();
+            if ctrl { chord.push_str("ctrl+"); }
+            if alt { chord.push_str("alt+"); }
+            chord.push_str(&key);
+            let parsed = parse_chord(&chord).unwrap();
+            let c = key.chars().next().unwrap();
+            proptest::prop_assert_eq!(parsed.code, KeyCode::Char(c));
+            proptest::prop_assert_eq!(parsed.mods.contains(KeyModifiers::CONTROL), ctrl);
+            proptest::prop_assert_eq!(parsed.mods.contains(KeyModifiers::ALT), alt);
+        }
+    }
+
     #[test]
     fn override_is_a_rebind_not_an_alias_and_steals_collisions() {
         // Rebind: check-full loses shift+C when moved to F.

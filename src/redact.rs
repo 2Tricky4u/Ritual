@@ -124,6 +124,27 @@ mod tests {
         Redactor::new(true).line(line)
     }
 
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(128))]
+
+        #[test]
+        fn never_panics_and_disabled_is_identity(line in "\\PC{0,200}") {
+            let _ = Redactor::new(true).line(&line);
+            proptest::prop_assert_eq!(Redactor::new(false).line(&line), line);
+        }
+
+        #[test]
+        fn planted_aws_keys_never_survive(
+            prefix in "[a-zA-Z ]{0,20}",
+            key_tail in "[0-9A-Z]{16}",
+            suffix in "[a-zA-Z ]{0,20}",
+        ) {
+            let key = format!("AKIA{key_tail}");
+            let out = Redactor::new(true).line(&format!("{prefix} {key} {suffix}"));
+            proptest::prop_assert!(!out.contains(&key), "{}", out);
+        }
+    }
+
     #[test]
     fn google_and_slack_keys_are_redacted() {
         let google = format!("cfg AIza{}", "Ab1-".repeat(8) + "Ab1");
