@@ -155,6 +155,24 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
         ),
     });
 
+    // -- mutation gate -----------------------------------------------------------
+    if cfg.mutants_enabled {
+        let runnable = agents_status::run_capture(&cfg.mutants_cmd, &["--version"])
+            .is_some_and(|o| o.status.success());
+        out.push(if runnable {
+            check("mutants", CheckStatus::Pass, "runner available")
+        } else {
+            check(
+                "mutants",
+                CheckStatus::Warn,
+                format!(
+                    "`{}` not runnable (cargo install cargo-mutants)",
+                    cfg.mutants_cmd.join(" ")
+                ),
+            )
+        });
+    }
+
     // -- invariants constitution -----------------------------------------------
     out.push(match crate::stages::meaningful_invariants(dirs) {
         Some(_) => check(

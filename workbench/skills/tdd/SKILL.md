@@ -18,10 +18,10 @@ Tests-first is the single biggest quality lever in agentic coding, and tests des
 
 3. **Merge and harden.** Combine Codex's list with your own additions. Discard tautological tests (tests that restate the implementation) and tests of framework behavior. If Codex flagged untestable spec points, surface them to the user before proceeding.
 
-4. **Write the tests — red first.** Implement the merged list in the project's test framework. Run them: **every new test must fail** before implementation exists. A new test that already passes is not testing the new behavior — rewrite or delete it. Commit the failing tests if in a git repo.
+4. **Write the tests — red first.** Implement the merged list in the project's test framework. Run them: **every new test must fail** before implementation exists. A new test that already passes is not testing the new behavior — rewrite or delete it. For invariant-style behaviors, also emit property tests alongside the example tests (`proptest!` in Rust) — example and property tests catch different bug classes. Commit the failing tests if in a git repo.
 
 5. **Implement until green.** Write the implementation. The `check.sh` hook gives you lint/typecheck feedback on every edit; run the test suite as you go. Iterate on the code, not the tests.
 
 6. **The tests are the contract.** Never weaken, skip, or delete a failing test to make the suite pass without explicitly flagging it to the user with the reason. If a test turns out to be wrong, say so and show the correction.
 
-7. **Finish.** Run the full `./check.sh` (or the project's full suite). Report: the test list vs. the original contract (what's covered, what isn't), and final suite status.
+7. **Finish.** Run the full `./check.sh` (or the project's full suite). Report: the test list vs. the original contract (what's covered, what isn't), and final suite status. In a ritual project, suggest `ritual mutants` as the follow-up — surviving mutants are test gaps the suite silently tolerates.

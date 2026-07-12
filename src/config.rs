@@ -49,6 +49,19 @@ pub struct FileConfig {
     pub consensus: Option<ConsensusFileConfig>,
     /// argv for the GitHub CLI (pr-comment), e.g. "gh".
     pub gh_cmd: Option<String>,
+    /// `[mutants]` table: the mutation-kill gate (`ritual mutants`).
+    pub mutants: Option<MutantsFileConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct MutantsFileConfig {
+    /// Runner argv, default "cargo mutants" (Stryker recipe: see the guide).
+    pub cmd: Option<String>,
+    /// Per-test-run timeout passed to the tool (default 300).
+    pub timeout_secs: Option<u64>,
+    /// Advisory flag for doctor + guide hints; the command always works.
+    pub enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -82,6 +95,9 @@ pub struct Config {
     pub nvim_server: Option<String>,
     pub consensus_enabled: bool,
     pub gh_cmd: Vec<String>,
+    pub mutants_cmd: Vec<String>,
+    pub mutants_timeout_secs: u64,
+    pub mutants_enabled: bool,
 }
 
 impl Default for Config {
@@ -107,6 +123,9 @@ impl Default for Config {
             nvim_server: None,
             consensus_enabled: false,
             gh_cmd: vec!["gh".into()],
+            mutants_cmd: vec!["cargo".into(), "mutants".into()],
+            mutants_timeout_secs: 300,
+            mutants_enabled: false,
         }
     }
 }
@@ -210,6 +229,17 @@ impl Config {
             if let Some(g) = fc.gh_cmd {
                 cfg.gh_cmd = split_cmd(&g)?;
             }
+            if let Some(m) = fc.mutants {
+                if let Some(c) = m.cmd {
+                    cfg.mutants_cmd = split_cmd(&c)?;
+                }
+                if let Some(t) = m.timeout_secs {
+                    cfg.mutants_timeout_secs = t;
+                }
+                if let Some(e) = m.enabled {
+                    cfg.mutants_enabled = e;
+                }
+            }
         }
 
         // Env overrides (also the test seam).
@@ -221,6 +251,9 @@ impl Config {
         }
         if let Ok(c) = std::env::var("RITUAL_GH_CMD") {
             cfg.gh_cmd = split_cmd(&c)?;
+        }
+        if let Ok(c) = std::env::var("RITUAL_MUTANTS_CMD") {
+            cfg.mutants_cmd = split_cmd(&c)?;
         }
 
         // CLI flags win.
