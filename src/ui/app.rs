@@ -1123,6 +1123,10 @@ impl App {
             stage.label()
         ));
         let dirs = self.dirs.clone();
+        // The agent is in the persisted request (RunStatus doesn't carry it).
+        let agent = runner::load_request(&self.dirs, &run_id)
+            .map(|r| r.agent)
+            .unwrap_or(runner::AgentKind::Claude);
         let tx_events = tx.clone();
         let tx_done = tx.clone();
         self.run_task = Some(tokio::spawn(async move {
@@ -1134,7 +1138,7 @@ impl App {
                     }
                 }
             });
-            let outcome = runner::tail_run(&dirs, runner::AgentKind::Claude, &run_id, etx).await;
+            let outcome = runner::tail_run(&dirs, agent, &run_id, etx).await;
             let _ = forward.await;
             let _ = tx_done.send(AppMsg::RunExited(Box::new(outcome))).await;
         }));
@@ -1437,6 +1441,17 @@ impl App {
     }
 }
 
+/// The newest live run the TUI can resume. Chat runs ("spec-chat" etc.) have
+/// stages that don't parse to a StageId and stay daemon-only — a newer live
+/// chat run must never shadow an older pipeline run (follow chat runs with
+/// `ritual attach` instead).
+fn newest_resumable_run(dirs: &RitualDirs) -> Option<(String, runner::RunStatus)> {
+    runner::live_runs(dirs)
+        .into_iter()
+        .rev()
+        .find(|(_, s)| StageId::parse(&s.stage).is_some())
+}
+
 fn list_dir(dir: &std::path::Path) -> Vec<String> {
     std::fs::read_dir(dir)
         .map(|rd| {
@@ -1494,7 +1509,7 @@ pub async fn run(cfg: Config, dirs: RitualDirs) -> Result<()> {
     // Finalize stages whose runs completed while nobody was watching, then
     // reattach to any run that is still alive.
     app.reconcile_stale_runs();
-    if let Some((run_id, status)) = crate::runner::live_runs(&app.dirs).into_iter().next_back() {
+    if let Some((run_id, status)) = newest_resumable_run(&app.dirs) {
         app.resume_run(run_id, status, &tx);
     }
     let watcher = crate::watcher::spawn(app.dirs.work_root.clone(), tx.clone()).ok();
@@ -1582,6 +1597,34 @@ mod tests {
 
     fn send(app: &mut App, tx: &mpsc::Sender<AppMsg>, code: KeyCode) {
         app.chat_input(KeyEvent::new(code, KeyModifiers::NONE), tx);
+    }
+
+    #[test]
+    fn resurrection_skips_live_chat_runs_for_older_pipeline_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runs = tmp.path().join(".ritual/runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        let pid = std::process::id(); // our own pid: definitely alive
+        // Older pipeline run + newer chat run, both "live".
+        std::fs::write(
+            runs.join("20260712T000001Z-1-1-plan-review.status"),
+            format!(r#"{{"pid":{pid},"stage":"plan-review","branch":"main"}}"#),
+        )
+        .unwrap();
+        std::fs::write(
+            runs.join("20260712T000002Z-1-2-spec-chat.status"),
+            format!(r#"{{"pid":{pid},"stage":"spec-chat","branch":"main"}}"#),
+        )
+        .unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        let (run_id, status) =
+            newest_resumable_run(&dirs).expect("pipeline run should be resumable");
+        assert!(run_id.ends_with("plan-review"), "picked {run_id}");
+        assert_eq!(status.stage, "plan-review");
+
+        // Only chat runs live -> nothing to resume (they stay daemon-only).
+        std::fs::remove_file(runs.join("20260712T000001Z-1-1-plan-review.status")).unwrap();
+        assert!(newest_resumable_run(&dirs).is_none());
     }
 
     #[test]
