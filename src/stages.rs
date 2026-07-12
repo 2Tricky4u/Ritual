@@ -29,6 +29,17 @@ const PLAN_REVIEW_TOOLS: &str =
     "Read Glob Grep Edit Write Bash(git *) mcp__codex__codex mcp__codex__codex-reply";
 const DUAL_REVIEW_TOOLS: &str =
     "Task Read Glob Grep Edit Write Bash mcp__codex__codex mcp__codex__codex-reply";
+
+/// plan-review's tool grant, plus the third-model consensus tool when the
+/// (dark-by-default) escalation tier is enabled — the skill only escalates
+/// genuinely contested findings, and only when the pal MCP server exists.
+fn plan_review_tools(cfg: &Config) -> String {
+    if cfg.consensus_enabled {
+        format!("{PLAN_REVIEW_TOOLS} mcp__pal__consensus")
+    } else {
+        PLAN_REVIEW_TOOLS.to_string()
+    }
+}
 /// The doc-chat agent may read anything but edit ONLY the one document it's
 /// given. Path rules are gitignore-style; a single leading '/' anchors at the
 /// settings source, so a filesystem-absolute path needs '//'. Enforced by
@@ -199,7 +210,7 @@ pub fn build(
                         "--permission-mode".into(),
                         "acceptEdits".into(),
                         "--allowedTools".into(),
-                        PLAN_REVIEW_TOOLS.into(),
+                        plan_review_tools(cfg),
                         "--max-budget-usd".into(),
                         cfg.budget_plan_review_usd.to_string(),
                     ],
@@ -303,6 +314,22 @@ mod tests {
         assert!(cmd.argv.contains(&"stream-json".to_string()));
         assert!(cmd.argv.contains(&"--max-budget-usd".to_string()));
         assert!(cmd.env.iter().any(|(k, _)| k == "RITUAL_FINDINGS_DIR"));
+    }
+
+    #[test]
+    fn consensus_tool_is_granted_only_when_enabled() {
+        let (_tmp, mut cfg, dirs) = setup();
+        std::fs::create_dir_all(dirs.feature_dir("s")).unwrap();
+        std::fs::write(dirs.plan_file("s"), "# plan").unwrap();
+
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None).unwrap();
+        let tools = cmd.argv.iter().find(|a| a.contains("mcp__codex")).unwrap();
+        assert!(!tools.contains("mcp__pal__consensus"), "dark by default");
+
+        cfg.consensus_enabled = true;
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None).unwrap();
+        let tools = cmd.argv.iter().find(|a| a.contains("mcp__codex")).unwrap();
+        assert!(tools.contains("mcp__pal__consensus"));
     }
 
     #[test]
