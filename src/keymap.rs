@@ -36,6 +36,7 @@ pub enum Action {
     NvimOpen,
     NvimQuickfix,
     SpecChat,
+    Filter,
     FindingFix,
     FindingDismiss,
     ToggleResolved,
@@ -81,6 +82,7 @@ pub const ACTIONS: &[(&str, Action, &str)] = &[
         "send findings to nvim quickfix",
     ),
     ("spec-chat", Action::SpecChat, "chat: edit spec/plan"),
+    ("filter", Action::Filter, "filter findings/history"),
     ("finding-fix", Action::FindingFix, "finding: mark fixed"),
     (
         "finding-dismiss",
@@ -198,6 +200,7 @@ impl Default for Keymap {
             ("o", "nvim-open"),
             ("Q", "nvim-quickfix"),
             ("s", "spec-chat"),
+            ("/", "filter"),
             ("f", "finding-fix"),
             ("d", "finding-dismiss"),
             ("v", "toggle-resolved"),
