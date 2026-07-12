@@ -185,6 +185,36 @@ mod tests {
     }
 
     #[test]
+    fn try_comment_key_variant_matrix() {
+        let json = r#"[
+            {"filename":"a.rs","message":"m1","start_line":1,"level":"critical"},
+            {"file_path":"b.rs","description":"m2","line_start":2,"priority":"error","code":"let x;"},
+            {"path":"c.rs","summary":"m3","line":3,"severity":"major","codeSnippet":"y()"},
+            {"file":"d.rs","comment":"   "},
+            {"file":"e.rs","comment":"m5","line":"not-a-number"}
+        ]"#;
+        let f = findings_from_agent_json(json, false);
+        assert_eq!(f.len(), 4, "whitespace-only comment dropped: {f:#?}");
+
+        assert_eq!(f[0].file.as_deref(), Some("a.rs"));
+        assert_eq!(f[0].title, "m1");
+        assert_eq!(f[0].line, Some(1));
+        assert_eq!(f[0].severity, Severity::Major, "critical caps at major");
+
+        assert_eq!(f[1].file.as_deref(), Some("b.rs"));
+        assert_eq!(f[1].line, Some(2));
+        assert_eq!(f[1].severity, Severity::Major, "error maps to major");
+        assert_eq!(f[1].snippet.as_deref(), Some("let x;"));
+
+        assert_eq!(f[2].severity, Severity::Major);
+        assert_eq!(f[2].snippet.as_deref(), Some("y()"));
+
+        // A non-numeric line is tolerated as no anchor, not a parse failure.
+        assert_eq!(f[3].file.as_deref(), Some("e.rs"));
+        assert_eq!(f[3].line, None);
+    }
+
+    #[test]
     fn junk_and_schema_drift_yield_zero_findings_not_errors() {
         assert!(findings_from_agent_json("not json at all", true).is_empty());
         assert!(findings_from_agent_json("{}", true).is_empty());

@@ -164,6 +164,44 @@ mod tests {
     }
 
     #[test]
+    fn missing_doc_and_nonexistent_depth_are_harmless() {
+        let (_t, dirs, doc) = setup();
+        push(&dirs, "s", "spec", "v0").unwrap();
+        // Doc file never written: undo restores the snapshot; redo brings
+        // back the "missing" state as empty content.
+        assert!(undo(&dirs, "s", "spec", &doc).unwrap());
+        assert_eq!(std::fs::read_to_string(&doc).unwrap(), "v0");
+        assert!(redo(&dirs, "s", "spec", &doc).unwrap());
+        assert_eq!(std::fs::read_to_string(&doc).unwrap(), "");
+        // Depth on a feature/doc that never had snapshots.
+        assert_eq!(depth(&dirs, "elsewhere", "plan"), 0);
+    }
+
+    #[test]
+    fn full_undo_redo_walk_after_cap_pruning() {
+        let (_t, dirs, doc) = setup();
+        for i in 0..CAP + 2 {
+            push(&dirs, "s", "spec", &format!("v{i}")).unwrap();
+        }
+        std::fs::write(&doc, "final").unwrap();
+
+        // Only CAP snapshots survive: walk all the way back...
+        let mut undos = 0;
+        while undo(&dirs, "s", "spec", &doc).unwrap() {
+            undos += 1;
+        }
+        assert_eq!(undos, CAP);
+        assert_eq!(std::fs::read_to_string(&doc).unwrap(), "v2", "oldest kept");
+        // ...and redo all the way forward to the exact final content.
+        let mut redos = 0;
+        while redo(&dirs, "s", "spec", &doc).unwrap() {
+            redos += 1;
+        }
+        assert_eq!(redos, CAP);
+        assert_eq!(std::fs::read_to_string(&doc).unwrap(), "final");
+    }
+
+    #[test]
     fn cap_prunes_oldest_and_legacy_file_migrates() {
         let (_t, dirs, doc) = setup();
         // Pre-0.5 single-level snapshot becomes the deepest entry...

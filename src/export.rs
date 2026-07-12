@@ -419,6 +419,73 @@ mod tests {
     }
 
     #[test]
+    fn audit_trail_zero_runs_is_a_sane_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".ritual/runs")).unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        let out = tmp.path().join("audit.jsonl");
+        audit_trail(&dirs, Some(&out)).unwrap();
+        let text = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(text.lines().filter(|l| !l.trim().is_empty()).count(), 0);
+    }
+
+    #[test]
+    fn synth_uuid_shape_is_deterministic_v4() {
+        for i in 0..64 {
+            let u = synth_uuid(&format!("seed-{i}"));
+            assert!(is_uuid(&u), "{u}");
+            assert_eq!(u.as_bytes()[14], b'4', "version nibble: {u}");
+            assert!(
+                matches!(u.as_bytes()[19], b'8' | b'9' | b'a' | b'b'),
+                "variant nibble: {u}"
+            );
+            assert_eq!(u, synth_uuid(&format!("seed-{i}")), "deterministic");
+        }
+        assert!(!is_uuid("not-a-uuid"));
+        assert!(!is_uuid("11111111x2222-4333-8444-555555555555"));
+    }
+
+    #[test]
+    fn audit_trail_passes_real_session_uuids_and_maps_codex_provider() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runs = tmp.path().join(".ritual/runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        let real = "11111111-2222-4333-8444-555555555555";
+        write_meta(
+            &runs,
+            "20260711T000000Z-x.meta.json",
+            &format!(
+                r#"{{"run_id":"rx","stage":"plan-review","agent":"codex","ok":true,
+                    "session_id":"{real}","started_at":"2026-07-11T00:00:00Z"}}"#
+            ),
+        );
+        let dirs = RitualDirs::new(tmp.path());
+        let out = tmp.path().join("audit.jsonl");
+        audit_trail(&dirs, Some(&out)).unwrap();
+        let rec: Value = serde_json::from_str(
+            std::fs::read_to_string(&out)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            rec["session_id"], real,
+            "real UUIDs pass through unsynthesized"
+        );
+        assert_eq!(rec["agent_id"], "urn:ritual:agent:codex");
+
+        // And the OTLP side maps codex to the openai provider.
+        let lines = export_to_string(&tmp);
+        let span = first_span(&lines[0]);
+        assert_eq!(
+            attr(span, "gen_ai.provider.name").unwrap()["stringValue"],
+            "openai"
+        );
+    }
+
+    #[test]
     fn failed_run_maps_to_error_status_code() {
         let tmp = tempfile::tempdir().unwrap();
         let runs = tmp.path().join(".ritual/runs");

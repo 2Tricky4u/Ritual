@@ -202,6 +202,21 @@ mod tests {
     }
 
     #[test]
+    fn finding_from_truncates_titles_and_skips_empty_replacement() {
+        let long_fn = "f".repeat(100);
+        let mutant = serde_json::json!({
+            "genre": "FnValue",
+            "function": {"function_name": long_fn},
+            "file": "src/a.rs",
+            "span": {"start": {"line": 1}},
+            "replacement": ""
+        });
+        let f = finding_from(&mutant, 0);
+        assert_eq!(f.title.chars().count(), 80, "hard cap for actionability");
+        assert!(f.snippet.is_none(), "empty replacement -> no snippet");
+    }
+
+    #[test]
     fn tolerates_missing_fields_and_junk() {
         let (report, findings) =
             parse_outcomes(r#"{"outcomes":[{"scenario":{"Mutant":{}},"summary":"MissedMutant"}]}"#)
