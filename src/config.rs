@@ -432,6 +432,99 @@ mod tests {
     }
 
     #[test]
+    fn every_new_table_parses_from_one_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".ritual")).unwrap();
+        std::fs::write(
+            tmp.path().join(".ritual/config.toml"),
+            r#"
+fallback_model = "claude-sonnet-5"
+
+[keys]
+check-full = "F"
+
+[models]
+plan-review = "opus"
+
+[retry]
+models = ["claude-opus-4-8", "claude-sonnet-5"]
+
+[mutants]
+cmd = "cargo mutants"
+timeout_secs = 120
+enabled = true
+
+[secrets]
+enabled = false
+gitleaks_cmd = "my-gitleaks --config x"
+
+[sandbox]
+enabled = true
+wrapper = "srt --settings /s.json"
+
+[coderabbit]
+enabled = true
+cmd = "cr"
+
+[consensus]
+enabled = true
+
+[commands]
+zeta = "echo z"
+alpha = "echo a"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load(tmp.path(), None, false).unwrap();
+        assert_eq!(cfg.fallback_model.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(cfg.models["plan-review"], "opus");
+        assert_eq!(cfg.retry_models, vec!["claude-opus-4-8", "claude-sonnet-5"]);
+        assert_eq!(cfg.mutants_timeout_secs, 120);
+        assert!(cfg.mutants_enabled);
+        assert!(!cfg.secrets_enabled);
+        assert_eq!(cfg.gitleaks_cmd, vec!["my-gitleaks", "--config", "x"]);
+        assert!(cfg.sandbox_enabled);
+        assert_eq!(cfg.sandbox_wrapper, vec!["srt", "--settings", "/s.json"]);
+        assert!(cfg.coderabbit_enabled);
+        assert_eq!(cfg.coderabbit_cmd, vec!["cr"]);
+        assert!(cfg.consensus_enabled);
+        // [commands] sort by name regardless of TOML order.
+        assert_eq!(cfg.commands[0].0, "alpha");
+        assert_eq!(cfg.commands[1].0, "zeta");
+    }
+
+    #[test]
+    fn unknown_fields_and_bad_values_fail_loudly() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".ritual")).unwrap();
+        // Top-level typo.
+        std::fs::write(
+            tmp.path().join(".ritual/config.toml"),
+            "buget_daily_usd = 5.0\n",
+        )
+        .unwrap();
+        assert!(Config::load(tmp.path(), None, false).is_err());
+        // Typo inside a table.
+        std::fs::write(
+            tmp.path().join(".ritual/config.toml"),
+            "[mutants]\ntimeout = 5\n",
+        )
+        .unwrap();
+        assert!(Config::load(tmp.path(), None, false).is_err());
+        // Empty command override.
+        std::fs::write(tmp.path().join(".ritual/config.toml"), "gh_cmd = \"\"\n").unwrap();
+        assert!(Config::load(tmp.path(), None, false).is_err());
+        // Unknown theme.
+        std::fs::write(
+            tmp.path().join(".ritual/config.toml"),
+            "theme = \"neon-abyss\"\n",
+        )
+        .unwrap();
+        let err = format!("{:#}", Config::load(tmp.path(), None, false).unwrap_err());
+        assert!(err.contains("unknown theme"), "{err}");
+    }
+
+    #[test]
     fn flag_beats_file() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join(".ritual")).unwrap();

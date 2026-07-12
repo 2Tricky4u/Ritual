@@ -495,6 +495,49 @@ mod tests {
     }
 
     #[test]
+    fn torture_doc_keeps_lockstep_and_survives_every_construct() {
+        let t = Theme::default();
+        // Every construct at once, deliberately ragged and nested.
+        let md = "# T\n\n\
+            5. five\n6. six\n\n\
+            > outer\n> > inner nested quote\n\n\
+            ```\nno language fence\n```\n\n\
+            | a | b | c |\n|---|---|\n| 1 |\n| x | y | z | extra |\n\n\
+            line one  \nhard break\nsoft break\n\n\
+            | wide | cells |\n|---|---|\n| 你好世界 | ok |\n\n\
+            [link](https://x) and ~~gone~~\n";
+        let r = render(md, &t, 60);
+        assert_eq!(r.lines.len(), r.src.len(), "lockstep on the torture doc");
+        let joined = text_of(&r.lines).join("\n");
+        // Ordered list respects a start offset other than 1.
+        assert!(joined.contains("5. five"), "{joined}");
+        assert!(joined.contains("6. six"));
+        // Language-less fences still render their content.
+        assert!(joined.contains("no language fence"));
+        // Ragged table: every row renders, padded to the widest row.
+        assert!(joined.contains("1"));
+        assert!(joined.contains("extra"));
+        // Nested quotes and breaks survive.
+        assert!(joined.contains("inner nested quote"));
+        assert!(joined.contains("hard break"));
+        // Wide unicode cells don't panic and keep their text.
+        assert!(joined.contains("你好世界"));
+        assert!(joined.contains("link"));
+    }
+
+    #[test]
+    fn empty_table_and_crlf_input_are_harmless() {
+        let t = Theme::default();
+        // A header-only table and CRLF line endings.
+        for md in ["| a |\n|---|\n", "# H\r\n\r\nprose line\r\n"] {
+            let r = render(md, &t, 40);
+            assert_eq!(r.lines.len(), r.src.len(), "lockstep for {md:?}");
+        }
+        let r = render("# H\r\n\r\nprose line\r\n", &t, 40);
+        assert!(text_of(&r.lines).join("\n").contains("prose line"));
+    }
+
+    #[test]
     fn source_map_stays_in_lockstep_and_points_home() {
         let t = Theme::default();
         // Source lines:      0        1 2         3 4        5 6      7 8
