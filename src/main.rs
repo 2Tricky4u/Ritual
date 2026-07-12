@@ -156,6 +156,12 @@ fn main() -> Result<()> {
         }) => {
             run_cmd::run_doc_chat(&cfg, &dirs, &message.join(" "), plan, section, force)?;
         }
+        Some(Command::Ps) => {
+            run_cmd::ps(&dirs)?;
+        }
+        Some(Command::Attach { run_id, kill }) => {
+            run_cmd::attach(&cfg, &dirs, &run_id, kill)?;
+        }
         Some(Command::Clean { keep, dry_run }) => {
             let report = ritual::clean::clean(&dirs, keep, dry_run)?;
             output::render_clean(&cfg, &report);

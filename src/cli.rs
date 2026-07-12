@@ -109,6 +109,16 @@ pub enum Command {
         #[arg(long)]
         out: Option<std::path::PathBuf>,
     },
+    /// List live detached runs (pipeline stages and chat edits)
+    Ps,
+    /// Follow a live detached run from this terminal (or --kill it)
+    Attach {
+        /// Run id (see `ritual ps`)
+        run_id: String,
+        /// SIGTERM the run's process group instead of following it
+        #[arg(long)]
+        kill: bool,
+    },
     /// Prune old run artifacts (protects live, state-referenced, and today's
     /// runs; chained runs are covered by a tamper-evident checkpoint)
     Clean {

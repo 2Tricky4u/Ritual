@@ -516,6 +516,117 @@ fn worktree_feature_shares_state_and_resolves_dirs() {
 }
 
 #[test]
+fn ps_and_attach_follow_and_kill_live_runs() {
+    let tmp = setup_project();
+    std::fs::create_dir_all(tmp.path().join(".ritual/features/main")).unwrap();
+    std::fs::write(tmp.path().join(".ritual/features/main/plan.md"), "# plan").unwrap();
+
+    // Slow run in the background so ps/attach can catch it live.
+    let mut launcher = std::process::Command::new(assert_cmd::cargo::cargo_bin("ritual"))
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .env("FAKE_AGENT_DELAY", "0.4")
+        .env(
+            "FAKE_AGENT_FINDINGS",
+            ".ritual/findings/20260712T180000Z-plan-review.json",
+        )
+        .args(["run", "plan-review"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+
+    // ps shows the live run with its stage.
+    let out = Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("ps")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let ps_out = String::from_utf8_lossy(&out);
+    assert!(
+        ps_out.contains("plan-review"),
+        "ps missed the run: {ps_out}"
+    );
+    let run_id = ps_out
+        .lines()
+        .find(|l| l.contains("plan-review"))
+        .and_then(|l| l.split_whitespace().next())
+        .expect("run id in ps output")
+        .to_string();
+
+    // attach follows it to completion and exits 0.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("attach")
+        .arg(&run_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("attached to"));
+    launcher.wait().unwrap();
+
+    // attach on the now-finished run prints its summary, still exit 0.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("attach")
+        .arg(&run_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("plan-review"));
+
+    // Unknown id: clean error.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["attach", "no-such-run"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no such run"));
+
+    // --kill: start another slow run and terminate it.
+    let mut launcher2 = std::process::Command::new(assert_cmd::cargo::cargo_bin("ritual"))
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .env("FAKE_AGENT_DELAY", "0.5")
+        .args(["run", "plan-review", "--force"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let out = Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("ps")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let run2 = String::from_utf8_lossy(&out)
+        .lines()
+        .find(|l| l.contains("plan-review"))
+        .and_then(|l| l.split_whitespace().next().map(str::to_string))
+        .expect("second live run");
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["attach", &run2, "--kill"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("killed"));
+    let _ = launcher2.wait();
+}
+
+#[test]
 fn detached_run_survives_the_launcher() {
     let tmp = setup_project();
     std::fs::create_dir_all(tmp.path().join(".ritual/features/main")).unwrap();

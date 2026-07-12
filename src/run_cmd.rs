@@ -58,6 +58,110 @@ pub fn execute(
     }
 }
 
+/// Follow a (possibly detached) run to completion, rendering each event —
+/// the shared tail loop behind `ritual run`, `ritual chat`, and `ritual
+/// attach`. Ctrl-C here leaves the daemon alive.
+pub fn follow_run(
+    cfg: &Config,
+    dirs: &RitualDirs,
+    agent: runner::AgentKind,
+    run_id: &str,
+) -> Result<runner::RunOutcome> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let (tx, mut rx) = mpsc::channel(256);
+        let dirs2 = dirs.clone();
+        let rid = run_id.to_string();
+        let handle = tokio::spawn(async move { runner::tail_run(&dirs2, agent, &rid, tx).await });
+        while let Some(ev) = rx.recv().await {
+            crate::output::render_event(cfg, &ev);
+        }
+        handle.await?
+    })
+}
+
+/// `ritual ps` — live detached runs (pipeline and chat alike).
+pub fn ps(dirs: &RitualDirs) -> Result<()> {
+    let live = runner::live_runs(dirs);
+    if live.is_empty() {
+        println!("no live runs");
+        return Ok(());
+    }
+    println!(
+        "{:<44} {:<12} {:<16} {:>8} {:>6}",
+        "run_id", "stage", "branch", "pid", "age"
+    );
+    for (run_id, status) in live {
+        println!(
+            "{:<44} {:<12} {:<16} {:>8} {:>6}",
+            run_id,
+            status.stage,
+            status.branch,
+            status.pid,
+            run_age(&run_id)
+        );
+    }
+    Ok(())
+}
+
+/// Humanized age from the run id's millisecond timestamp prefix.
+fn run_age(run_id: &str) -> String {
+    let Some(ts) = run_id.split('-').next() else {
+        return "?".into();
+    };
+    let Ok(t) = chrono::NaiveDateTime::parse_from_str(ts, "%Y%m%dT%H%M%S%3fZ") else {
+        return "?".into();
+    };
+    let secs = (Utc::now().naive_utc() - t).num_seconds().max(0);
+    match secs {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s => format!("{}h", s / 3600),
+    }
+}
+
+/// `ritual attach <run-id>` — follow a live detached run from any terminal
+/// (or --kill it); finished runs print their summary.
+pub fn attach(cfg: &Config, dirs: &RitualDirs, run_id: &str, kill: bool) -> Result<()> {
+    match runner::run_state(dirs, run_id) {
+        runner::RunState::Running(status) => {
+            if kill {
+                let killed = runner::kill_run(dirs, run_id);
+                anyhow::ensure!(killed, "could not signal {run_id}");
+                println!("{run_id} ({}) killed", status.stage);
+                return Ok(());
+            }
+            // The agent lives in the persisted request, not the status file.
+            let agent = runner::load_request(dirs, run_id)
+                .map(|r| r.agent)
+                .unwrap_or(runner::AgentKind::Claude);
+            println!(
+                "attached to {run_id} ({} on {})",
+                status.stage, status.branch
+            );
+            let outcome = follow_run(cfg, dirs, agent, run_id)?;
+            crate::output::render_run_summary(cfg, &outcome.meta, &[]);
+            anyhow::ensure!(outcome.meta.ok, "run '{run_id}' failed");
+            Ok(())
+        }
+        runner::RunState::Finished(meta) => {
+            anyhow::ensure!(!kill, "run '{run_id}' already finished");
+            crate::output::render_run_summary(cfg, &meta, &[]);
+            anyhow::ensure!(meta.ok, "run '{run_id}' failed");
+            Ok(())
+        }
+        runner::RunState::Vanished => {
+            let any_trace = ["jsonl", "request.json", "status"]
+                .iter()
+                .any(|ext| dirs.runs_dir().join(format!("{run_id}.{ext}")).exists());
+            if any_trace {
+                anyhow::bail!("run '{run_id}' vanished (daemon died before writing meta)");
+            }
+            anyhow::bail!("no such run '{run_id}' — see `ritual ps` or `ritual history`");
+        }
+    }
+}
+
 /// Some((spent, budget)) when the daily ceiling is hit.
 pub fn budget_exceeded(cfg: &Config, dirs: &RitualDirs) -> Option<(f64, f64)> {
     let budget = cfg.budget_daily_usd?;
@@ -223,18 +327,7 @@ fn run_headless(
     runner::spawn_detached(dirs, &req, &run_id)?;
     println!("run {run_id} started (detached — survives this terminal)");
 
-    let rt = tokio::runtime::Runtime::new()?;
-    let outcome = rt.block_on(async {
-        let (tx, mut rx) = mpsc::channel(256);
-        let dirs2 = dirs.clone();
-        let rid = run_id.clone();
-        let handle =
-            tokio::spawn(async move { runner::tail_run(&dirs2, req.agent, &rid, tx).await });
-        while let Some(ev) = rx.recv().await {
-            crate::output::render_event(cfg, &ev);
-        }
-        handle.await?
-    })?;
+    let outcome = follow_run(cfg, dirs, req.agent, &run_id)?;
 
     let new_findings: Vec<String> = list_findings(&dirs.findings_dir())
         .into_iter()
@@ -397,18 +490,7 @@ pub fn run_doc_chat(
     runner::spawn_detached(dirs, &req, &run_id)?;
     println!("chat {run_id} started (detached — survives this terminal)");
 
-    let rt = tokio::runtime::Runtime::new()?;
-    let outcome = rt.block_on(async {
-        let (tx, mut rx) = mpsc::channel(256);
-        let dirs2 = dirs.clone();
-        let rid = run_id.clone();
-        let handle =
-            tokio::spawn(async move { runner::tail_run(&dirs2, req.agent, &rid, tx).await });
-        while let Some(ev) = rx.recv().await {
-            crate::output::render_event(cfg, &ev);
-        }
-        handle.await?
-    })?;
+    let outcome = follow_run(cfg, dirs, req.agent, &run_id)?;
 
     if !outcome.meta.ok {
         anyhow::bail!("chat edit failed — see the stream above");
