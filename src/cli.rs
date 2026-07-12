@@ -54,6 +54,13 @@ pub enum Command {
         #[arg(long)]
         stdout: bool,
     },
+    /// Mutation-kill gate: mutate the diff, run the tests, and record every
+    /// SURVIVING mutant as a major finding (a test gap)
+    Mutants {
+        /// Base ref to diff against (defaults to base_ref from config)
+        #[arg(long)]
+        base: Option<String>,
+    },
     /// Per-stage cost analytics: today / 7 days / all time, cache-hit rates,
     /// daily-budget gauge
     Costs {

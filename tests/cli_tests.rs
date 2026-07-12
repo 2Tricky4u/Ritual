@@ -154,6 +154,88 @@ fn run_plan_review_e2e_with_fake_agent() {
 }
 
 #[test]
+fn mutants_turns_survivors_into_findings() {
+    let tmp = setup_project();
+    let fake = format!("{}/tests/fake_mutants.sh", env!("CARGO_MANIFEST_DIR"));
+    // A commit on main + an uncommitted change give `git diff main` content.
+    std::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(tmp.path())
+        .status()
+        .unwrap();
+    std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "init",
+        ])
+        .current_dir(tmp.path())
+        .status()
+        .unwrap();
+
+    // Empty diff -> explicit no-op.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_MUTANTS_CMD", &fake)
+        .arg("mutants")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("nothing to mutate"));
+
+    // Modify a TRACKED file (untracked ones never appear in `git diff`).
+    std::fs::write(
+        tmp.path().join("Cargo.toml"),
+        "[package]\nname=\"x\"\nversion=\"0.2.0\"\n",
+    )
+    .unwrap();
+    let argv_log = tmp.path().join("mutants-argv.log");
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_MUTANTS_CMD", &fake)
+        .env("FAKE_MUTANTS_ARGV_LOG", &argv_log)
+        .arg("mutants")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 caught, 1 missed"))
+        .stdout(predicate::str::contains("surviving mutant(s)"));
+
+    // The tool got the diff-scoped invocation.
+    let argv = std::fs::read_to_string(&argv_log).unwrap();
+    assert!(argv.contains("--in-diff"));
+    assert!(argv.contains("--no-shuffle"));
+    assert!(argv.contains("--timeout"));
+
+    // The survivor is now a major/confirmed finding in the findings dir.
+    let findings: Vec<_> = std::fs::read_dir(tmp.path().join(".ritual/findings"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().ends_with("-mutants.json"))
+        .collect();
+    assert_eq!(findings.len(), 1);
+    let text = std::fs::read_to_string(findings[0].path()).unwrap();
+    assert!(text.contains("surviving mutant: FnValue in canned_fn"));
+    assert!(text.contains(r#""severity": "major""#));
+    assert!(text.contains("mutated to: true"));
+
+    // Baseline-red (exit 4) is a hard error with advice.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_MUTANTS_CMD", &fake)
+        .env("FAKE_MUTANTS_EXIT", "4")
+        .arg("mutants")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("baseline tests already failing"));
+}
+
+#[test]
 fn costs_rolls_up_per_stage_with_cache_rates() {
     let tmp = setup_project();
     std::fs::create_dir_all(tmp.path().join(".ritual/runs")).unwrap();

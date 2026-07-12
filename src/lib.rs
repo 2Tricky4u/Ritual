@@ -10,6 +10,7 @@ pub mod findings;
 pub mod history;
 pub mod keymap;
 pub mod lessons;
+pub mod mutants;
 pub mod notify;
 pub mod nvim;
 pub mod output;

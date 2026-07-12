@@ -93,6 +93,30 @@ fn main() -> Result<()> {
                 println!("no dispositions yet — mark findings fixed (f) or dismissed (d) first")
             }
         },
+        Some(Command::Mutants { base }) => {
+            let r = ritual::mutants::run(&cfg, &dirs, base.as_deref())?;
+            if r.empty_diff {
+                println!(
+                    "no diff against {} — nothing to mutate",
+                    base.as_deref().unwrap_or(&cfg.base_ref)
+                );
+            } else {
+                println!(
+                    "mutants: {} caught, {} missed, {} unviable, {} timeout",
+                    r.caught, r.missed, r.unviable, r.timeout
+                );
+                match r.findings_path {
+                    Some(p) => println!(
+                        "{} surviving mutant(s) → {} — test gaps; review with `ritual findings` or the TUI (f/d)",
+                        r.missed,
+                        p.display()
+                    ),
+                    None => println!(
+                        "no surviving mutants — the tests discriminate every mutation in the diff"
+                    ),
+                }
+            }
+        }
         Some(Command::Costs { json }) => {
             let metas = history::load_all(&dirs.runs_dir())?;
             if json {
