@@ -217,14 +217,17 @@ impl Default for Keymap {
 
 impl Keymap {
     /// Apply `[keys]` overrides: `action-name = "chord"`. An unknown action
-    /// name is a config error; rebinding replaces that action's default
-    /// chord(s) only when the new chord collides.
+    /// name or unparseable chord is a config error. An override is a REBIND,
+    /// not an alias: the action's previous chord(s) are removed first, and
+    /// whatever action held the new chord loses it (least surprise — the help
+    /// overlay and muscle memory see exactly one binding per rebound action).
     pub fn with_overrides(mut self, overrides: &HashMap<String, String>) -> Result<Self> {
         for (name, chord_str) in overrides {
             let action =
                 action_by_name(name).with_context(|| format!("[keys]: unknown action '{name}'"))?;
             let chord = parse_chord(chord_str)
                 .with_context(|| format!("[keys]: bad chord for '{name}'"))?;
+            self.map.retain(|_, a| *a != action);
             self.map.insert(chord, action);
         }
         Ok(self)
@@ -321,6 +324,62 @@ mod tests {
         let mut bad = HashMap::new();
         bad.insert("summon-shoggoth".to_string(), "s".to_string());
         assert!(Keymap::default().with_overrides(&bad).is_err());
+    }
+
+    #[test]
+    fn override_is_a_rebind_not_an_alias_and_steals_collisions() {
+        // Rebind: check-full loses shift+C when moved to F.
+        let mut o = HashMap::new();
+        o.insert("check-full".to_string(), "F".to_string());
+        let km = Keymap::default().with_overrides(&o).unwrap();
+        assert_eq!(
+            km.resolve(KeyCode::Char('F'), KeyModifiers::NONE),
+            Some(Action::CheckFull)
+        );
+        assert_eq!(
+            km.resolve(KeyCode::Char('C'), KeyModifiers::SHIFT),
+            None,
+            "old chord removed — a rebind, not an alias"
+        );
+        assert_eq!(km.chords_for(Action::CheckFull).len(), 1);
+
+        // Collision: stealing q from Quit unbinds q there; Quit keeps ctrl+c.
+        let mut o = HashMap::new();
+        o.insert("check-full".to_string(), "q".to_string());
+        let km = Keymap::default().with_overrides(&o).unwrap();
+        assert_eq!(
+            km.resolve(KeyCode::Char('q'), KeyModifiers::NONE),
+            Some(Action::CheckFull)
+        );
+        assert_eq!(
+            km.resolve(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            Some(Action::Quit)
+        );
+        assert_eq!(km.resolve(KeyCode::Char('C'), KeyModifiers::SHIFT), None);
+    }
+
+    #[test]
+    fn bad_chord_in_override_is_a_config_error() {
+        let mut o = HashMap::new();
+        o.insert("quit".to_string(), "hyper+q".to_string());
+        let err = format!("{:#}", Keymap::default().with_overrides(&o).unwrap_err());
+        assert!(err.contains("bad chord"), "{err}");
+    }
+
+    #[test]
+    fn chords_for_lists_every_binding_sorted() {
+        let km = Keymap::default();
+        let quit = km.chords_for(Action::Quit);
+        assert_eq!(quit.len(), 2, "q and ctrl+c: {quit:?}");
+        let shown: Vec<String> = quit.iter().map(|c| format!("{c:?}")).collect();
+        let mut sorted = shown.clone();
+        sorted.sort();
+        assert_eq!(shown, sorted);
+        // Palette-only dynamic actions have no chord.
+        assert!(
+            km.chords_for(Action::RetryStage(crate::state::StageId::DualReview, 0))
+                .is_empty()
+        );
     }
 
     #[test]
