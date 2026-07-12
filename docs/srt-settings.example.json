@@ -1,5 +1,5 @@
 {
-  "$comment": "Example settings for Anthropic's sandbox-runtime (srt) wrapping ritual's headless agent runs. Install: npm i -g @anthropic-ai/sandbox-runtime; Arch deps: pacman -S bubblewrap socat ripgrep. Point [sandbox] wrapper at it: wrapper = \"srt --settings /home/you/.config/ritual/srt-settings.json --\" (check `srt --help` for whether your version wants `--` before the command). Tune allowWrite to YOUR project layout; /var/tmp/ritual-target is this repo's cargo target dir.",
+  "$comment": "Example settings for Anthropic's sandbox-runtime (srt >= 1.0) wrapping ritual's headless agent runs. Install: npm i -g @anthropic-ai/sandbox-runtime; Arch deps: pacman -S bubblewrap socat ripgrep. Point [sandbox] wrapper at it: wrapper = \"srt --settings /home/you/.config/ritual/srt-settings.json\". srt 1.0's schema requires all four lists present (network.allowedDomains + deniedDomains, filesystem.allowWrite + denyWrite) — an omitted list is a hard error, so keep the empty [] entries below. Tune allowWrite to YOUR project layout; /var/tmp/ritual-target is this repo's cargo target dir. Validate with: srt --settings this-file -c 'echo ok'.",
   "network": {
     "allowedDomains": [
       "api.anthropic.com",
@@ -14,7 +14,8 @@
       "crates.io",
       "static.crates.io",
       "index.crates.io"
-    ]
+    ],
+    "deniedDomains": []
   },
   "filesystem": {
     "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg"],
