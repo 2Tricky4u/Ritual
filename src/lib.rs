@@ -9,6 +9,7 @@ pub mod export;
 pub mod findings;
 pub mod history;
 pub mod keymap;
+pub mod lessons;
 pub mod notify;
 pub mod nvim;
 pub mod output;

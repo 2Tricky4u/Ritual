@@ -81,6 +81,18 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Some(Command::Lessons { stdout }) => match ritual::lessons::refresh(&dirs)? {
+            Some(path) => {
+                if stdout {
+                    print!("{}", std::fs::read_to_string(&path)?);
+                } else {
+                    println!("lessons → {}", path.display());
+                }
+            }
+            None => {
+                println!("no dispositions yet — mark findings fixed (f) or dismissed (d) first")
+            }
+        },
         Some(Command::History { limit, json }) => {
             let metas = history::load_all(&dirs.runs_dir())?;
             if json {

@@ -220,6 +220,10 @@ impl RitualDirs {
     pub fn invariants_file(&self) -> PathBuf {
         self.root().join("invariants.md")
     }
+    /// Generated review memory (ritual lessons) the dual-review skill reads.
+    pub fn lessons_file(&self) -> PathBuf {
+        self.root().join("lessons.md")
+    }
     pub fn runs_dir(&self) -> PathBuf {
         self.root().join("runs")
     }
