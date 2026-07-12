@@ -55,6 +55,18 @@ pub struct FileConfig {
     pub secrets: Option<SecretsFileConfig>,
     /// `[sandbox]` table: wrap headless agent runs in an external sandbox.
     pub sandbox: Option<SandboxFileConfig>,
+    /// `[coderabbit]` table: third reviewer via the CodeRabbit CLI (dark).
+    pub coderabbit: Option<CodeRabbitFileConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CodeRabbitFileConfig {
+    /// Run a CodeRabbit review before dual-review (default false — needs an
+    /// account, is cloud-backed, and free tier allows 3 reviews/hour).
+    pub enabled: Option<bool>,
+    /// CLI argv override, default "coderabbit".
+    pub cmd: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -126,6 +138,8 @@ pub struct Config {
     pub gitleaks_cmd: Vec<String>,
     pub sandbox_enabled: bool,
     pub sandbox_wrapper: Vec<String>,
+    pub coderabbit_enabled: bool,
+    pub coderabbit_cmd: Vec<String>,
 }
 
 impl Default for Config {
@@ -158,6 +172,8 @@ impl Default for Config {
             gitleaks_cmd: vec!["gitleaks".into()],
             sandbox_enabled: false,
             sandbox_wrapper: Vec::new(),
+            coderabbit_enabled: false,
+            coderabbit_cmd: vec!["coderabbit".into()],
         }
     }
 }
@@ -288,6 +304,14 @@ impl Config {
                     cfg.sandbox_wrapper = split_cmd(&w)?;
                 }
             }
+            if let Some(c) = fc.coderabbit {
+                if let Some(e) = c.enabled {
+                    cfg.coderabbit_enabled = e;
+                }
+                if let Some(cmd) = c.cmd {
+                    cfg.coderabbit_cmd = split_cmd(&cmd)?;
+                }
+            }
         }
 
         // Env overrides (also the test seam).
@@ -305,6 +329,9 @@ impl Config {
         }
         if let Ok(c) = std::env::var("RITUAL_GITLEAKS_CMD") {
             cfg.gitleaks_cmd = split_cmd(&c)?;
+        }
+        if let Ok(c) = std::env::var("RITUAL_CODERABBIT_CMD") {
+            cfg.coderabbit_cmd = split_cmd(&c)?;
         }
 
         // CLI flags win.

@@ -236,6 +236,67 @@ fn mutants_turns_survivors_into_findings() {
 }
 
 #[test]
+fn coderabbit_reviews_land_as_unconfirmed_findings() {
+    let tmp = setup_project();
+    let fake = format!("{}/tests/fake_coderabbit.sh", env!("CARGO_MANIFEST_DIR"));
+    std::fs::write(
+        tmp.path().join(".ritual/config.toml"),
+        "[coderabbit]\nenabled = true\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(tmp.path().join(".ritual/features/main")).unwrap();
+
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .env("RITUAL_CODERABBIT_CMD", &fake)
+        .env("FAKE_AGENT_DELAY", "0")
+        .env(
+            "FAKE_AGENT_FINDINGS",
+            ".ritual/findings/20260711T230000Z-dual-review.json",
+        )
+        .args(["run", "dual-review"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("coderabbit review →"));
+
+    let path = std::fs::read_dir(tmp.path().join(".ritual/findings"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .ends_with("-coderabbit.json")
+        })
+        .expect("coderabbit findings file")
+        .path();
+    let text = std::fs::read_to_string(path).unwrap();
+    assert!(text.contains("Canned rabbit finding"));
+    assert!(text.contains(r#""verdict": "unconfirmed""#));
+    assert!(text.contains(r#""coderabbit""#));
+
+    // A rate-limited/failed review is a notice, never a pipeline failure.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .env("RITUAL_CODERABBIT_CMD", &fake)
+        .env("FAKE_CODERABBIT_EXIT", "1")
+        .env("FAKE_AGENT_DELAY", "0")
+        .env(
+            "FAKE_AGENT_FINDINGS",
+            ".ritual/findings/20260711T230001Z-dual-review.json",
+        )
+        .args(["run", "dual-review"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("coderabbit skipped"));
+}
+
+#[test]
 fn sandbox_wrapper_wraps_the_detached_agent() {
     let tmp = setup_project();
     let wrapper = format!("{}/tests/fake_wrapper.sh", env!("CARGO_MANIFEST_DIR"));

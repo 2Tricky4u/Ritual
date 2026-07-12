@@ -211,6 +211,26 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
         }
     }
 
+    // -- coderabbit third reviewer -------------------------------------------------
+    if cfg.coderabbit_enabled {
+        out.push(if crate::coderabbit::available(cfg) {
+            check(
+                "coderabbit",
+                CheckStatus::Pass,
+                "third reviewer runs before dual-review (3/hour on free tier)",
+            )
+        } else {
+            check(
+                "coderabbit",
+                CheckStatus::Warn,
+                format!(
+                    "`{}` not runnable — install + `coderabbit auth login` (see the guide)",
+                    cfg.coderabbit_cmd.join(" ")
+                ),
+            )
+        });
+    }
+
     // -- secrets gate -------------------------------------------------------------
     out.push(if !cfg.secrets_enabled {
         check("secrets", CheckStatus::Skipped, "disabled in [secrets]")
