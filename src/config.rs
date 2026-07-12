@@ -238,6 +238,20 @@ mod tests {
         let cfg = Config::load(tmp.path(), None, false).unwrap();
         assert_eq!(cfg.theme_name, "eldritch");
         assert_eq!(cfg.claude_cmd, vec!["claude"]);
+        assert!(!cfg.consensus_enabled, "consensus ships dark");
+    }
+
+    #[test]
+    fn consensus_table_parses() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".ritual")).unwrap();
+        std::fs::write(
+            tmp.path().join(".ritual/config.toml"),
+            "[consensus]\nenabled = true\n",
+        )
+        .unwrap();
+        let cfg = Config::load(tmp.path(), None, false).unwrap();
+        assert!(cfg.consensus_enabled);
     }
 
     #[test]

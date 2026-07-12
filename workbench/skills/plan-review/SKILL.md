@@ -27,6 +27,7 @@ You are running a bounded adversarial review of an implementation plan, using Op
    - **Revised plan** — the updated plan with accepted findings incorporated.
    - **Accepted findings** — each finding and what changed because of it.
    - **Unresolved disagreements** — for each: Codex's position and yours, 1–2 sentences each, no verdict. The user decides. A `critical`-severity finding may never be dropped silently — it either changes the plan or appears here.
+   - *Optional escalation:* if a critical/major disagreement remains AND the `mcp__pal__consensus` tool is available in this session, you may run /consensus on that ONE item and append its verdict paragraph under the disagreement — clearly labeled as a third-model opinion. Never escalate more than one item per review; without the tool, skip silently.
 
 ## Guardrails
 
