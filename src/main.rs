@@ -130,6 +130,13 @@ fn main() -> Result<()> {
         }) => {
             run_cmd::run_doc_chat(&cfg, &dirs, &message.join(" "), plan, section, force)?;
         }
+        Some(Command::Clean { keep, dry_run }) => {
+            let report = ritual::clean::clean(&dirs, keep, dry_run)?;
+            output::render_clean(&cfg, &report);
+            if !report.failures.is_empty() {
+                std::process::exit(1);
+            }
+        }
         Some(Command::InternalSpawn { run_id }) => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
