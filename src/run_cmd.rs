@@ -105,9 +105,7 @@ fn run_spec_stage(
     anyhow::ensure!(status.success(), "editor exited with {status}");
 
     let content = std::fs::read_to_string(&spec).unwrap_or_default();
-    let meaningful = content
-        .lines()
-        .any(|l| !l.trim().is_empty() && !l.trim_start().starts_with(['#', '<']));
+    let meaningful = crate::spec::has_meaningful_content(&content);
     let new_status = if meaningful {
         StageStatus::Done
     } else {
@@ -321,6 +319,97 @@ fn run_headless(
             println!("  take over interactively: claude --resume {sid}");
         }
         anyhow::bail!("stage '{}' failed", stage.label());
+    }
+    Ok(())
+}
+
+/// `ritual chat <message>` — one spec/plan chat edit, headless. Mirrors
+/// `run_headless` but builds via `stages::doc_chat_command`, writes no
+/// findings, and finalizes the stage by whether the document actually changed.
+pub fn run_doc_chat(
+    cfg: &Config,
+    dirs: &RitualDirs,
+    message: &str,
+    plan: bool,
+    section: Option<String>,
+    force: bool,
+) -> Result<()> {
+    anyhow::ensure!(dirs.exists(), "no .ritual/ here — run `ritual init` first");
+    anyhow::ensure!(!message.trim().is_empty(), "usage: ritual chat <message>");
+
+    if let Some((spent, budget)) = budget_exceeded(cfg, dirs)
+        && !force
+    {
+        anyhow::bail!(
+            "daily budget reached: ${spent:.2} of ${budget:.2} spent today — rerun with --force to override"
+        );
+    }
+
+    let branch = state::current_branch(&dirs.work_root).unwrap_or_else(|| "detached".to_string());
+    let slug = state::branch_slug(&branch);
+    let mut st = State::load(dirs)?;
+    st.feature_for_branch_mut(&branch);
+    let title = st
+        .features
+        .get(&slug)
+        .map(|f| f.title.clone())
+        .unwrap_or_default();
+
+    let (kind, stage_id, doc_path) = if plan {
+        (stages::DocKind::Plan, StageId::Plan, dirs.plan_file(&slug))
+    } else {
+        (stages::DocKind::Spec, StageId::Spec, dirs.spec_file(&slug))
+    };
+    let scope = match section {
+        Some(name) => stages::Scope::Section(name),
+        None => stages::Scope::Whole,
+    };
+    std::fs::create_dir_all(dirs.feature_dir(&slug))?;
+    let doc_before = std::fs::read_to_string(&doc_path).unwrap_or_default();
+
+    let cmd = stages::doc_chat_command(cfg, &doc_path, kind, &scope, message, "");
+    let stage_label = format!("{}-chat", kind.label());
+    let req = RunRequest {
+        agent: cmd.agent,
+        argv: cmd.argv,
+        env: cmd.env,
+        stage: stage_label.clone(),
+        feature: title,
+        branch: branch.clone(),
+        redact: cfg.redaction,
+        repro: None, // chat edits are frequent + small — skip provenance probes
+        cwd: dirs.work_root.clone(),
+    };
+    let run_id = runner::new_run_id(&stage_label);
+    runner::spawn_detached(dirs, &req, &run_id)?;
+    println!("chat {run_id} started (detached — survives this terminal)");
+
+    let rt = tokio::runtime::Runtime::new()?;
+    let outcome = rt.block_on(async {
+        let (tx, mut rx) = mpsc::channel(256);
+        let dirs2 = dirs.clone();
+        let rid = run_id.clone();
+        let handle =
+            tokio::spawn(async move { runner::tail_run(&dirs2, req.agent, &rid, tx).await });
+        while let Some(ev) = rx.recv().await {
+            crate::output::render_event(cfg, &ev);
+        }
+        handle.await?
+    })?;
+
+    if !outcome.meta.ok {
+        anyhow::bail!("chat edit failed — see the stream above");
+    }
+
+    // Done iff the document actually changed to something meaningful; never
+    // downgrade a stage that was already further along.
+    let content = std::fs::read_to_string(&doc_path).unwrap_or_default();
+    if content != doc_before && crate::spec::has_meaningful_content(&content) {
+        set_stage(&mut st, &branch, stage_id, StageStatus::Done, Some(run_id));
+        st.save(dirs)?;
+        println!("{} updated ({})", kind.label(), doc_path.display());
+    } else {
+        println!("no change to {} ({})", kind.label(), doc_path.display());
     }
     Ok(())
 }

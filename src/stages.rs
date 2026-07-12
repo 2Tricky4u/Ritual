@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::Result;
 
 use crate::config::Config;
@@ -27,6 +29,94 @@ const PLAN_REVIEW_TOOLS: &str =
     "Read Glob Grep Edit Write Bash(git *) mcp__codex__codex mcp__codex__codex-reply";
 const DUAL_REVIEW_TOOLS: &str =
     "Task Read Glob Grep Edit Write Bash mcp__codex__codex mcp__codex__codex-reply";
+/// The doc-chat agent only reads and edits the one document it's given.
+const DOC_CHAT_TOOLS: &str = "Read Edit Write";
+
+/// Which ritual document a chat edit targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocKind {
+    Spec,
+    Plan,
+}
+
+impl DocKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            DocKind::Spec => "spec",
+            DocKind::Plan => "plan",
+        }
+    }
+}
+
+/// How much of a document a chat edit may touch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Scope {
+    Whole,
+    /// A single `##` section, identified by its heading text.
+    Section(String),
+}
+
+/// Build the headless command for ONE spec/plan chat message. `doc_path` must
+/// be absolute (headless runs execute in `work_root`, but the document lives
+/// under `project_root/.ritual`). `context` is a short "recent conversation"
+/// block (may be empty). Everything — path, scope, message — rides in the
+/// single `-p` prompt, because `--allowedTools` grants no Bash to read env.
+pub fn doc_chat_command(
+    cfg: &Config,
+    doc_path: &Path,
+    kind: DocKind,
+    scope: &Scope,
+    message: &str,
+    context: &str,
+) -> StageCommand {
+    let scope_line = match scope {
+        Scope::Whole => "SCOPE: whole".to_string(),
+        Scope::Section(name) => format!("SCOPE: section \"{name}\""),
+    };
+    let ctx_block = if context.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\n\nRECENT CONVERSATION (context only — do NOT re-apply):\n{context}")
+    };
+    let prompt = format!(
+        "/spec Apply one scoped change to this ritual document.\n\n\
+         DOC_FILE: {}\n\
+         DOC_KIND: {}\n\
+         {scope_line}\n\n\
+         REQUEST:\n{message}{ctx_block}",
+        doc_path.display(),
+        kind.label(),
+    );
+    let mut cmd = StageCommand {
+        mode: Mode::Headless,
+        agent: AgentKind::Claude,
+        argv: [
+            cfg.claude_cmd.clone(),
+            vec![
+                "-p".into(),
+                prompt,
+                "--output-format".into(),
+                "stream-json".into(),
+                "--verbose".into(),
+                "--permission-mode".into(),
+                "acceptEdits".into(),
+                "--allowedTools".into(),
+                DOC_CHAT_TOOLS.into(),
+                "--max-budget-usd".into(),
+                cfg.budget_doc_chat_usd.to_string(),
+            ],
+        ]
+        .concat(),
+        env: vec![],
+        needs_codex: false,
+    };
+    // Per-document model routing ([models] spec / plan).
+    if let Some(model) = cfg.models.get(kind.label()) {
+        cmd.argv.push("--model".into());
+        cmd.argv.push(model.clone());
+    }
+    cmd
+}
 
 /// Build the exact command for a stage. `arg` is the optional user argument
 /// (plan path for plan-review, base ref for dual-review).
@@ -212,6 +302,56 @@ mod tests {
         assert!(cmd.argv.contains(&"/dual-review main".to_string()));
         let cmd = build(StageId::DualReview, &cfg, &dirs, "s", Some("develop")).unwrap();
         assert!(cmd.argv.contains(&"/dual-review develop".to_string()));
+    }
+
+    #[test]
+    fn doc_chat_command_shape() {
+        let (_tmp, mut cfg, dirs) = setup();
+        let path = dirs.spec_file("feat-x");
+        let cmd = doc_chat_command(
+            &cfg,
+            &path,
+            DocKind::Spec,
+            &Scope::Section("Behavior (the contract — WHAT, not HOW)".into()),
+            "add a retry invariant",
+            "you: earlier thing\nassistant: did it",
+        );
+        assert_eq!(cmd.mode, Mode::Headless);
+        assert!(!cmd.needs_codex);
+        assert!(
+            cmd.env.is_empty(),
+            "doc-chat writes no findings, sets no env"
+        );
+        let prompt = cmd
+            .argv
+            .iter()
+            .find(|a| a.starts_with("/spec"))
+            .expect("has a /spec prompt");
+        assert!(prompt.contains("DOC_FILE:"));
+        assert!(prompt.contains(&path.display().to_string()));
+        assert!(prompt.contains("DOC_KIND: spec"));
+        assert!(prompt.contains(r#"SCOPE: section "Behavior"#));
+        assert!(prompt.contains("add a retry invariant"));
+        assert!(prompt.contains("RECENT CONVERSATION"));
+        assert!(cmd.argv.contains(&"stream-json".to_string()));
+        assert!(cmd.argv.contains(&DOC_CHAT_TOOLS.to_string()));
+
+        // Whole scope + empty context omit the section/context lines; model
+        // routing appends --model.
+        cfg.models.insert("plan".into(), "opus".into());
+        let cmd = doc_chat_command(
+            &cfg,
+            &path,
+            DocKind::Plan,
+            &Scope::Whole,
+            "tighten step 2",
+            "",
+        );
+        let prompt = cmd.argv.iter().find(|a| a.starts_with("/spec")).unwrap();
+        assert!(prompt.contains("SCOPE: whole"));
+        assert!(!prompt.contains("RECENT CONVERSATION"));
+        assert!(prompt.contains("DOC_KIND: plan"));
+        assert!(cmd.argv.windows(2).any(|w| w == ["--model", "opus"]));
     }
 
     #[test]

@@ -19,6 +19,8 @@ pub struct FileConfig {
     pub codex_cmd: Option<String>,
     pub budget_plan_review_usd: Option<f64>,
     pub budget_dual_review_usd: Option<f64>,
+    /// Per-message ceiling for a spec/plan chat edit (one small Edit each).
+    pub budget_doc_chat_usd: Option<f64>,
     /// `[keys]` table: action name -> chord ("check-full = \"F\"").
     pub keys: Option<HashMap<String, String>>,
     /// Redact secrets from archives/streams/reports (default true).
@@ -52,6 +54,7 @@ pub struct Config {
     pub codex_cmd: Vec<String>,
     pub budget_plan_review_usd: f64,
     pub budget_dual_review_usd: f64,
+    pub budget_doc_chat_usd: f64,
     pub keymap: Keymap,
     pub redaction: bool,
     pub budget_daily_usd: Option<f64>,
@@ -73,6 +76,7 @@ impl Default for Config {
             codex_cmd: vec!["codex".into()],
             budget_plan_review_usd: 5.0,
             budget_dual_review_usd: 10.0,
+            budget_doc_chat_usd: 0.50,
             keymap: Keymap::default(),
             redaction: true,
             budget_daily_usd: None,
@@ -136,6 +140,9 @@ impl Config {
             }
             if let Some(b) = fc.budget_dual_review_usd {
                 cfg.budget_dual_review_usd = b;
+            }
+            if let Some(b) = fc.budget_doc_chat_usd {
+                cfg.budget_doc_chat_usd = b;
             }
             if let Some(keys) = fc.keys {
                 key_overrides.extend(keys); // later layers win per-action

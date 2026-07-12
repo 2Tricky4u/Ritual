@@ -101,6 +101,20 @@ pub enum Command {
         #[arg(long)]
         out: Option<std::path::PathBuf>,
     },
+    /// Chat one message to Claude to author/edit this feature's spec (or plan)
+    Chat {
+        /// The instruction, e.g. `ritual chat "tighten the goal to one sentence"`
+        message: Vec<String>,
+        /// Edit plan.md instead of spec.md
+        #[arg(long)]
+        plan: bool,
+        /// Confine the edit to one `##` section (by its heading text)
+        #[arg(long)]
+        section: Option<String>,
+        /// Override the daily budget ceiling for this run
+        #[arg(long)]
+        force: bool,
+    },
     /// Internal: detached run executor (do not invoke by hand)
     #[command(name = "_spawn", hide = true)]
     InternalSpawn { run_id: String },

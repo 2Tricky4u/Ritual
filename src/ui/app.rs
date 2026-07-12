@@ -810,10 +810,7 @@ impl App {
             StageId::Spec => {
                 let content =
                     std::fs::read_to_string(self.dirs.spec_file(&self.slug)).unwrap_or_default();
-                let meaningful = content
-                    .lines()
-                    .any(|l| !l.trim().is_empty() && !l.trim_start().starts_with(['#', '<']));
-                if meaningful {
+                if crate::spec::has_meaningful_content(&content) {
                     StageStatus::Done
                 } else {
                     StageStatus::Pending
