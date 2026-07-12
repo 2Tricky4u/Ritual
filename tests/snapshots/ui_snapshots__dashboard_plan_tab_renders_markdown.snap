@@ -2,7 +2,7 @@
 source: tests/ui_snapshots.rs
 expression: render(&app)
 ---
-"                            │   live    findings    history   plan                      "
+"                            │   live    findings    history   plan   guide              "
 "  PIPELINE ──────────────── │─────────────────────────────────────────────────────────────"
 "  ○ spec                    │ 󰲡 The Plan                                                  "
 "  ○ plan                    │                                                             "

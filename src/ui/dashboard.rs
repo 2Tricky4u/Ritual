@@ -407,6 +407,7 @@ fn draw_main(f: &mut Frame, app: &App, area: Rect) {
         Tab::Findings => draw_findings(f, app, content),
         Tab::History => draw_history(f, app, content),
         Tab::Plan => draw_plan(f, app, content),
+        Tab::Guide => draw_guide(f, app, content),
     }
 }
 
@@ -431,7 +432,7 @@ fn draw_greeter(f: &mut Frame, t: &Theme, area: Rect) {
 
     // Super-concise feature map: fixed-width rows so the centered block
     // keeps a clean label column.
-    let guide: [(&str, &str); 8] = [
+    let guide: [(&str, &str); 9] = [
         ("pipeline", "spec → plan → review → tests → impl → dual"),
         ("runs", "daemons: quit freely, reattach · a takeover"),
         ("findings", "Q → nvim quickfix · o open · e $EDITOR"),
@@ -440,6 +441,7 @@ fn draw_greeter(f: &mut Frame, t: &Theme, area: Rect) {
         ("ci", "--ci → JUnit · --json + exit codes"),
         ("parallel", "new --worktree · [ ] switch features"),
         ("more", "report · bench · export · offline · cmds"),
+        ("guide", "5 — the detailed guide & tips, in-app"),
     ];
     let label_w = guide
         .iter()
@@ -788,7 +790,6 @@ fn draw_history(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_plan(f: &mut Frame, app: &App, area: Rect) {
-    let t = &app.cfg.theme;
     let plan = std::fs::read_to_string(app.dirs.plan_file(&app.slug)).ok();
     let spec = std::fs::read_to_string(app.dirs.spec_file(&app.slug)).ok();
     let text = match (plan, spec) {
@@ -796,12 +797,22 @@ fn draw_plan(f: &mut Frame, app: &App, area: Rect) {
         (None, Some(s)) => format!("*(no plan yet — spec below)*\n\n{s}"),
         (None, None) => "no spec or plan yet — press enter on the spec stage".into(),
     };
+    draw_markdown_scrolled(f, &app.cfg.theme, area, &text, app.plan_scroll);
+}
 
-    // Real markdown rendering (pulldown-cmark), themed; j/k scrolls.
-    let lines = crate::ui::markdown::render(&text, t, area.width);
+/// In-app manual: detailed guide + tips, embedded at compile time.
+fn draw_guide(f: &mut Frame, app: &App, area: Rect) {
+    let text = include_str!("../../docs/guide.md");
+    draw_markdown_scrolled(f, &app.cfg.theme, area, text, app.guide_scroll);
+}
+
+/// Themed markdown (pulldown-cmark) with j/k scrolling and a top-right
+/// position hint — shared by the plan and guide tabs.
+fn draw_markdown_scrolled(f: &mut Frame, t: &Theme, area: Rect, text: &str, scroll: usize) {
+    let lines = crate::ui::markdown::render(text, t, area.width);
     let total = lines.len();
     let max_scroll = total.saturating_sub(area.height as usize);
-    let offset = app.plan_scroll.min(max_scroll);
+    let offset = scroll.min(max_scroll);
     let visible: Vec<Line> = lines
         .into_iter()
         .skip(offset)
@@ -967,7 +978,7 @@ fn draw_help(f: &mut Frame, t: &Theme) {
             &[
                 ("j/k", "move"),
                 ("[ ]", "cycle features"),
-                ("tab 1-4", "panes"),
+                ("tab 1-5", "panes"),
                 ("g/G", "top / follow"),
             ],
         ),

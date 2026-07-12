@@ -2,12 +2,12 @@
 source: tests/ui_snapshots.rs
 expression: render(&app)
 ---
-"                      ╭ keys ──────────────────────────────────────╮                      "
+"                      ╭ keys ──────────────────────────────────────╮   guide              "
 "  PIPELINE ───────────│                                            │──────────────────────"
 "  ○ spec              │ navigate                                   │                      "
 "  ○ plan              │   j/k  move                                │                      "
 "  ○ plan-review       │   [ ]  cycle features                      │                      "
-"  ○ tests-red         │   tab 1-4  panes                           │▄▄                    "
+"  ○ tests-red         │   tab 1-5  panes                           │▄▄                    "
 "  ○ implement         │   g/G  top / follow                        │  v e r i f y         "
 "  ○ dual-review       │                                            │                      "
 "                      │ run                                        │sts → impl → dual     "
@@ -18,9 +18,9 @@ expression: render(&app)
 "   nvim —             │                                            │xit codes             "
 "   check ?            │ tools                                      │ch features           "
 "                      │   :  command palette                       │ offline · cmds       "
-"   detached           │   o  open in running nvim                  │                      "
-"                      │   Q  findings → nvim quickfix              │?  keys    q  quit    "
-"                      │   e  open in $EDITOR                       │                      "
+"   detached           │   o  open in running nvim                  │tips, in-app          "
+"                      │   Q  findings → nvim quickfix              │                      "
+"                      │   e  open in $EDITOR                       │?  keys    q  quit    "
 "                      │   r  refresh                               │                      "
 "                      │                                            │                      "
 " RITUAL   detached ╰────────────────────────────────────────────╯                      "

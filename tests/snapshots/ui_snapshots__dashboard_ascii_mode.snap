@@ -2,7 +2,7 @@
 source: tests/ui_snapshots.rs
 expression: render(&app)
 ---
-"                            │ [live]  findings    history    plan                         "
+"                            │ [live]  findings    history    plan    guide                "
 " # PIPELINE ─────────────── │─────────────────────────────────────────────────────────────"
 "  ( ) spec                  │                                                             "
 "  ( ) plan                  │                                                             "
@@ -18,9 +18,9 @@ expression: render(&app)
 "  nv nvim —                 │          ci  --ci → JUnit · --json + exit codes             "
 "  chk check ?               │    parallel  new --worktree · [ ] switch features           "
 "                            │        more  report · bench · export · offline · cmds       "
-"  br: detached              │                                                             "
-"                            │     enter  run stage    :  palette    ?  keys    q  quit    "
+"  br: detached              │       guide  5 — the detailed guide & tips, in-app          "
 "                            │                                                             "
+"                            │     enter  run stage    :  palette    ?  keys    q  quit    "
 "                            │                                                             "
 "                            │                                                             "
 " RITUAL  br: detached  detached                                                           "
