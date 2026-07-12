@@ -236,6 +236,52 @@ fn mutants_turns_survivors_into_findings() {
 }
 
 #[test]
+fn sandbox_wrapper_wraps_the_detached_agent() {
+    let tmp = setup_project();
+    let wrapper = format!("{}/tests/fake_wrapper.sh", env!("CARGO_MANIFEST_DIR"));
+    let log = tmp.path().join("wrapper.log");
+    std::fs::write(
+        tmp.path().join(".ritual/config.toml"),
+        format!("[sandbox]\nenabled = true\nwrapper = \"{wrapper}\"\n"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(tmp.path().join(".ritual/features/main")).unwrap();
+    std::fs::write(tmp.path().join(".ritual/features/main/plan.md"), "# plan").unwrap();
+
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .env("FAKE_AGENT_DELAY", "0")
+        .env("FAKE_WRAPPER_LOG", &log)
+        .env(
+            "FAKE_AGENT_FINDINGS",
+            ".ritual/findings/20260711T220000Z-plan-review.json",
+        )
+        .args(["run", "plan-review"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("plan-review ok"));
+
+    // The daemon spawned wrapper -> agent, and the run still completed.
+    let logged = std::fs::read_to_string(&log).expect("wrapper ran");
+    assert!(logged.contains("wrapped:"));
+    assert!(logged.contains("fake_agent.sh"));
+    // The meta records the EFFECTIVE argv (wrapper included) for repro.
+    let meta = std::fs::read_dir(tmp.path().join(".ritual/runs"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_string_lossy().ends_with(".meta.json"))
+        .expect("meta written");
+    let text = std::fs::read_to_string(meta.path()).unwrap();
+    assert!(
+        text.contains("fake_wrapper.sh"),
+        "wrapper not in meta argv: {text}"
+    );
+}
+
+#[test]
 fn secrets_gate_blocks_until_dismissed() {
     let tmp = setup_project();
     let fake = format!("{}/tests/fake_gitleaks.sh", env!("CARGO_MANIFEST_DIR"));

@@ -1,0 +1,24 @@
+{
+  "$comment": "Example settings for Anthropic's sandbox-runtime (srt) wrapping ritual's headless agent runs. Install: npm i -g @anthropic-ai/sandbox-runtime; Arch deps: pacman -S bubblewrap socat ripgrep. Point [sandbox] wrapper at it: wrapper = \"srt --settings /home/you/.config/ritual/srt-settings.json --\" (check `srt --help` for whether your version wants `--` before the command). Tune allowWrite to YOUR project layout; /var/tmp/ritual-target is this repo's cargo target dir.",
+  "network": {
+    "allowedDomains": [
+      "api.anthropic.com",
+      "statsig.anthropic.com",
+      "*.sentry.io",
+      "auth.openai.com",
+      "api.openai.com",
+      "chatgpt.com",
+      "*.chatgpt.com",
+      "github.com",
+      "*.githubusercontent.com",
+      "crates.io",
+      "static.crates.io",
+      "index.crates.io"
+    ]
+  },
+  "filesystem": {
+    "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg"],
+    "allowWrite": [".", "/tmp", "/var/tmp/ritual-target"],
+    "denyWrite": [".env", ".ritual/runs", ".ritual/config.toml"]
+  }
+}

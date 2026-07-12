@@ -53,6 +53,18 @@ pub struct FileConfig {
     pub mutants: Option<MutantsFileConfig>,
     /// `[secrets]` table: the gitleaks gate over changed files.
     pub secrets: Option<SecretsFileConfig>,
+    /// `[sandbox]` table: wrap headless agent runs in an external sandbox.
+    pub sandbox: Option<SandboxFileConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxFileConfig {
+    /// Wrap headless runs (default false).
+    pub enabled: Option<bool>,
+    /// Wrapper argv prefix, e.g. "srt --settings /path/srt-settings.json".
+    /// See docs/srt-settings.example.json + the guide for the srt recipe.
+    pub wrapper: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -112,6 +124,8 @@ pub struct Config {
     pub mutants_enabled: bool,
     pub secrets_enabled: bool,
     pub gitleaks_cmd: Vec<String>,
+    pub sandbox_enabled: bool,
+    pub sandbox_wrapper: Vec<String>,
 }
 
 impl Default for Config {
@@ -142,6 +156,8 @@ impl Default for Config {
             mutants_enabled: false,
             secrets_enabled: true,
             gitleaks_cmd: vec!["gitleaks".into()],
+            sandbox_enabled: false,
+            sandbox_wrapper: Vec::new(),
         }
     }
 }
@@ -262,6 +278,14 @@ impl Config {
                 }
                 if let Some(c) = s.gitleaks_cmd {
                     cfg.gitleaks_cmd = split_cmd(&c)?;
+                }
+            }
+            if let Some(s) = fc.sandbox {
+                if let Some(e) = s.enabled {
+                    cfg.sandbox_enabled = e;
+                }
+                if let Some(w) = s.wrapper {
+                    cfg.sandbox_wrapper = split_cmd(&w)?;
                 }
             }
         }

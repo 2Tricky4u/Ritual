@@ -50,6 +50,17 @@ fn doc_chat_tools(doc_path: &Path) -> String {
     format!("Read,Edit(/{p}),Write(/{p})")
 }
 
+/// Sandbox argv prefix for a run: only headless runs are wrapped (interactive
+/// stages own the user's terminal — bubblewrap-style isolation would break
+/// them), and only when `[sandbox]` is enabled with a wrapper configured.
+pub fn wrapper_argv(cfg: &Config, mode: Mode) -> Vec<String> {
+    if cfg.sandbox_enabled && mode == Mode::Headless {
+        cfg.sandbox_wrapper.clone()
+    } else {
+        Vec::new()
+    }
+}
+
 /// The project constitution rides along once it has real content (bullets,
 /// not the scaffold's comments). Re-injected into every review stage so a
 /// standing constraint can never silently fall out of context.
@@ -537,6 +548,29 @@ mod tests {
         }
         let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None).unwrap();
         assert!(!has_env(&cmd));
+    }
+
+    #[test]
+    fn sandbox_wrapper_wraps_headless_only_when_enabled() {
+        let (_tmp, mut cfg, _dirs) = setup();
+        assert!(
+            wrapper_argv(&cfg, Mode::Headless).is_empty(),
+            "off by default"
+        );
+
+        cfg.sandbox_enabled = true;
+        cfg.sandbox_wrapper = vec!["srt".into(), "--settings".into(), "/s.json".into()];
+        assert_eq!(
+            wrapper_argv(&cfg, Mode::Headless),
+            vec!["srt", "--settings", "/s.json"]
+        );
+        // Interactive stages own the terminal — never wrapped.
+        assert!(wrapper_argv(&cfg, Mode::Interactive).is_empty());
+        assert!(wrapper_argv(&cfg, Mode::Local).is_empty());
+
+        // Enabled but no wrapper -> nothing prepended (doctor flags this).
+        cfg.sandbox_wrapper.clear();
+        assert!(wrapper_argv(&cfg, Mode::Headless).is_empty());
     }
 
     #[test]

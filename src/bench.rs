@@ -69,6 +69,7 @@ pub fn bench(
             redact: cfg.redaction,
             repro: None, // benched runs skip provenance probes for speed
             cwd: dirs.work_root.clone(),
+            wrapper: stages::wrapper_argv(cfg, cmd.mode),
         };
         let run_id = runner::new_run_id(&format!("bench{i}-{}", stage.label()));
         runner::spawn_detached(dirs, &req, &run_id)?;
