@@ -50,6 +50,15 @@ fn doc_chat_tools(doc_path: &Path) -> String {
     format!("Read,Edit(/{p}),Write(/{p})")
 }
 
+/// The project constitution rides along once it has real content (bullets,
+/// not the scaffold's comments). Re-injected into every review stage so a
+/// standing constraint can never silently fall out of context.
+pub fn meaningful_invariants(dirs: &RitualDirs) -> Option<std::path::PathBuf> {
+    let path = dirs.invariants_file();
+    let text = std::fs::read_to_string(&path).ok()?;
+    crate::spec::has_meaningful_content(&text).then_some(path)
+}
+
 /// Which ritual document a chat edit targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocKind {
@@ -80,6 +89,7 @@ pub enum Scope {
 /// a missing plan can be DRAFTED from the spec. `context` is a short "recent
 /// conversation" block (may be empty). Everything — paths, scope, message —
 /// rides in the single `-p` prompt, because the agent has no Bash to read env.
+#[allow(clippy::too_many_arguments)] // every arg is one prompt line; a params struct would just rename them
 pub fn doc_chat_command(
     cfg: &Config,
     doc_path: &Path,
@@ -88,6 +98,7 @@ pub fn doc_chat_command(
     message: &str,
     context: &str,
     spec_path: Option<&Path>,
+    invariants: Option<&Path>,
 ) -> StageCommand {
     let scope_line = match scope {
         Scope::Whole => "SCOPE: whole".to_string(),
@@ -95,6 +106,13 @@ pub fn doc_chat_command(
     };
     let spec_line = match spec_path {
         Some(p) => format!("SPEC_FILE: {}\n", p.display()),
+        None => String::new(),
+    };
+    let inv_line = match invariants {
+        Some(p) => format!(
+            "INVARIANTS_FILE: {} (non-negotiable constraints — never write content that contradicts them)\n",
+            p.display()
+        ),
         None => String::new(),
     };
     let ctx_block = if context.trim().is_empty() {
@@ -106,7 +124,7 @@ pub fn doc_chat_command(
         "/spec Apply one scoped change to this ritual document.\n\n\
          DOC_FILE: {}\n\
          DOC_KIND: {}\n\
-         {spec_line}{scope_line}\n\n\
+         {spec_line}{inv_line}{scope_line}\n\n\
          REQUEST:\n{message}{ctx_block}",
         doc_path.display(),
         kind.label(),
@@ -287,6 +305,14 @@ pub fn build(
         cmd.argv.push("--fallback-model".into());
         cmd.argv.push(fb.clone());
     }
+    // Both review stages enforce the constitution (skills fall back to the
+    // well-known path for interactive stages like tests-red).
+    if matches!(stage, StageId::PlanReview | StageId::DualReview)
+        && let Some(p) = meaningful_invariants(dirs)
+    {
+        cmd.env
+            .push(("RITUAL_INVARIANTS_FILE".into(), p.display().to_string()));
+    }
     Ok(cmd)
 }
 
@@ -384,6 +410,7 @@ mod tests {
             "msg",
             "",
             None,
+            None,
         );
         assert!(cmd.argv.contains(&"--fallback-model".to_string()));
     }
@@ -408,6 +435,7 @@ mod tests {
             &Scope::Section("Behavior (the contract — WHAT, not HOW)".into()),
             "add a retry invariant",
             "you: earlier thing\nassistant: did it",
+            None,
             None,
         );
         assert_eq!(cmd.mode, Mode::Headless);
@@ -459,6 +487,7 @@ mod tests {
             "tighten step 2",
             "",
             Some(&spec),
+            None,
         );
         let prompt = cmd.argv.iter().find(|a| a.starts_with("/spec")).unwrap();
         assert!(prompt.contains("SCOPE: whole"));
@@ -476,5 +505,55 @@ mod tests {
             assert_eq!(cmd.mode, Mode::Interactive);
             assert!(!cmd.argv.contains(&"stream-json".to_string()));
         }
+    }
+
+    #[test]
+    fn invariants_env_reaches_review_stages_only_when_meaningful() {
+        let (_tmp, cfg, dirs) = setup();
+        std::fs::create_dir_all(dirs.feature_dir("s")).unwrap();
+        std::fs::write(dirs.plan_file("s"), "# plan").unwrap();
+        let has_env =
+            |cmd: &StageCommand| cmd.env.iter().any(|(k, _)| k == "RITUAL_INVARIANTS_FILE");
+
+        // Absent file -> no env.
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None).unwrap();
+        assert!(!has_env(&cmd));
+
+        // Scaffold template (headings + comments only) -> still no env.
+        std::fs::write(dirs.invariants_file(), crate::scaffold::INVARIANTS_TEMPLATE).unwrap();
+        let cmd = build(StageId::DualReview, &cfg, &dirs, "s", None).unwrap();
+        assert!(!has_env(&cmd));
+
+        // Real bullets -> both review stages carry it; interactive ones don't.
+        std::fs::write(dirs.invariants_file(), "# Invariants\n- no panics\n").unwrap();
+        for stage in [StageId::PlanReview, StageId::DualReview] {
+            let cmd = build(stage, &cfg, &dirs, "s", None).unwrap();
+            assert!(
+                cmd.env
+                    .iter()
+                    .any(|(k, v)| k == "RITUAL_INVARIANTS_FILE" && v.ends_with("invariants.md")),
+                "{stage:?} must carry the constitution"
+            );
+        }
+        let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None).unwrap();
+        assert!(!has_env(&cmd));
+    }
+
+    #[test]
+    fn doc_chat_prompt_carries_invariants_when_present() {
+        let (_tmp, cfg, dirs) = setup();
+        let inv = dirs.invariants_file();
+        let cmd = doc_chat_command(
+            &cfg,
+            &dirs.spec_file("s"),
+            DocKind::Spec,
+            &Scope::Whole,
+            "m",
+            "",
+            None,
+            Some(&inv),
+        );
+        let prompt = cmd.argv.iter().find(|a| a.starts_with("/spec")).unwrap();
+        assert!(prompt.contains(&format!("INVARIANTS_FILE: {}", inv.display())));
     }
 }

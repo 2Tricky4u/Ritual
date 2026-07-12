@@ -27,6 +27,10 @@ Two reviewers from different vendors have decorrelated blind spots. The independ
 
 6. **Report** a table: finding | source (both / claude / codex) | verdict (confirmed / unconfirmed / refuted) | action taken. If both reviewers found nothing, say so in one line.
 
+## Invariants (ritual)
+
+If `${RITUAL_INVARIANTS_FILE:-.ritual/invariants.md}` exists and contains bullets, Read it before reviewing. Every bullet is a non-negotiable acceptance criterion: any diff hunk that violates one becomes a finding of severity major or higher, citing the bullet. Never weaken or reinterpret an invariant to let a review pass.
+
 ## Guardrails
 
 - If the `codex` tool fails with an auth error, tell the user to run `! codex login`; offer the single-model review rather than silently degrading.

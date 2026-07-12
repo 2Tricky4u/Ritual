@@ -10,7 +10,7 @@ Tests-first is the single biggest quality lever in agentic coding, and tests des
 
 ## Procedure
 
-1. **Extract the behavioral contract.** From the approved plan/spec, write the contract: inputs, outputs, invariants, edge cases, failure modes. This is WHAT, never HOW — do not include your intended implementation approach.
+1. **Extract the behavioral contract.** From the approved plan/spec, write the contract: inputs, outputs, invariants, edge cases, failure modes. This is WHAT, never HOW — do not include your intended implementation approach. If `${RITUAL_INVARIANTS_FILE:-.ritual/invariants.md}` exists and has bullets, fold in every invariant the change touches — each must yield at least one test.
 
 2. **Codex designs the test list.** Call the `codex` MCP tool with ONLY the behavioral contract (not your implementation plan — the test designer must not inherit your bias):
 

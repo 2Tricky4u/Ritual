@@ -10,6 +10,7 @@ const CHECK_PYTHON: &str = include_str!("../templates/check-python.sh");
 const CHECK_NODE: &str = include_str!("../templates/check-node.sh");
 const CHECK_MIXED: &str = include_str!("../templates/check-mixed.sh");
 pub const SPEC_TEMPLATE: &str = include_str!("../templates/spec-template.md");
+pub const INVARIANTS_TEMPLATE: &str = include_str!("../templates/invariants-template.md");
 const CLAUDE_SNIPPET: &str = include_str!("../templates/claude-snippet.md");
 
 const GITIGNORE_ENTRIES: &[&str] = &[
@@ -97,6 +98,14 @@ pub fn init(project_root: &Path, force: bool) -> Result<InitReport> {
     if !dirs.state_file().exists() {
         crate::state::State::default().save(&dirs)?;
         report.actions.push("created .ritual/state.json".into());
+    }
+
+    // invariants.md: only create, never touch — it's the user's constitution.
+    if !dirs.invariants_file().exists() {
+        std::fs::write(dirs.invariants_file(), INVARIANTS_TEMPLATE)?;
+        report
+            .actions
+            .push("created .ritual/invariants.md (project constitution)".into());
     }
 
     // check.sh
@@ -194,6 +203,7 @@ mod tests {
         let r1 = init(t.path(), false).unwrap();
         assert!(t.path().join(".ritual/findings").is_dir());
         assert!(t.path().join(".ritual/state.json").exists());
+        assert!(t.path().join(".ritual/invariants.md").exists());
         assert!(t.path().join("check.sh").exists());
         let mode = std::fs::metadata(t.path().join("check.sh"))
             .unwrap()
@@ -206,7 +216,13 @@ mod tests {
 
         // Second run: nothing rewritten, check.sh preserved without --force.
         std::fs::write(t.path().join("check.sh"), "#custom").unwrap();
+        std::fs::write(t.path().join(".ritual/invariants.md"), "- mine\n").unwrap();
         let r2 = init(t.path(), false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(t.path().join(".ritual/invariants.md")).unwrap(),
+            "- mine\n",
+            "the constitution is never overwritten"
+        );
         assert_eq!(
             std::fs::read_to_string(t.path().join("check.sh")).unwrap(),
             "#custom"

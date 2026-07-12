@@ -1047,6 +1047,7 @@ impl App {
         let spec_path = (target.doc == stages::DocKind::Plan
             && self.dirs.spec_file(&self.slug).exists())
         .then(|| self.dirs.spec_file(&self.slug));
+        let invariants = stages::meaningful_invariants(&self.dirs);
         let cmd = stages::doc_chat_command(
             &self.cfg,
             &doc_path,
@@ -1055,6 +1056,7 @@ impl App {
             &message,
             &context,
             spec_path.as_deref(),
+            invariants.as_deref(),
         );
         self.doc_before = std::fs::read_to_string(&doc_path).unwrap_or_default();
         // Persist the pre-edit snapshot: the Ctrl+Z undo source (survives

@@ -29,6 +29,10 @@ You are running a bounded adversarial review of an implementation plan, using Op
    - **Unresolved disagreements** — for each: Codex's position and yours, 1–2 sentences each, no verdict. The user decides. A `critical`-severity finding may never be dropped silently — it either changes the plan or appears here.
    - *Optional escalation:* if a critical/major disagreement remains AND the `mcp__pal__consensus` tool is available in this session, you may run /consensus on that ONE item and append its verdict paragraph under the disagreement — clearly labeled as a third-model opinion. Never escalate more than one item per review; without the tool, skip silently.
 
+## Invariants (ritual)
+
+If `${RITUAL_INVARIANTS_FILE:-.ritual/invariants.md}` exists and contains bullets, Read it before reviewing. Every bullet is a non-negotiable acceptance criterion: any plan step that violates one becomes a finding of severity major or higher, citing the bullet. Never weaken or reinterpret an invariant to let a plan pass.
+
 ## Guardrails
 
 - Never auto-accept a finding that expands scope beyond the user's request — list it under unresolved disagreements instead.
