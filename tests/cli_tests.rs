@@ -1396,6 +1396,197 @@ fn export_to_file_writes_spans() {
 }
 
 #[test]
+fn bench_golden_scores_recall_and_cost_per_hit() {
+    let tmp = setup_project();
+    std::fs::create_dir_all(tmp.path().join(".ritual/features/main")).unwrap();
+    std::fs::write(tmp.path().join(".ritual/features/main/plan.md"), "# plan").unwrap();
+    // The fake agent's canned finding title, as the golden expectation.
+    std::fs::write(tmp.path().join("golden.json"), r#"["Canned test finding"]"#).unwrap();
+
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .env("FAKE_AGENT_DELAY", "0")
+        .env(
+            "FAKE_AGENT_FINDINGS",
+            ".ritual/findings/20260711T010000Z-plan-review.json",
+        )
+        .args([
+            "bench",
+            "plan-review",
+            "--runs",
+            "1",
+            "--golden",
+            "golden.json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("golden recall 100%"))
+        .stdout(predicate::str::contains("cost per golden hit: $"));
+}
+
+#[test]
+fn export_audit_trail_chains_verifiably_from_the_cli() {
+    let tmp = setup_project();
+    let runs = tmp.path().join(".ritual/runs");
+    std::fs::create_dir_all(&runs).unwrap();
+    // Zero runs: sane no-op.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["export", "--audit-trail"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("0 audit record(s)"));
+
+    for i in 1..=3 {
+        std::fs::write(
+            runs.join(format!("20260711T00000{i}Z-r.meta.json")),
+            format!(
+                r#"{{"run_id":"r{i}","stage":"plan-review","agent":"claude","ok":true,
+                    "started_at":"2026-07-11T00:00:0{i}Z"}}"#
+            ),
+        )
+        .unwrap();
+    }
+    let out = Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["export", "--audit-trail"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("3 audit record(s)"))
+        .get_output()
+        .stdout
+        .clone();
+    // Independently re-verify the JCS/SHA-256 chain over the emitted lines.
+    let lines: Vec<&str> = std::str::from_utf8(&out)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    assert_eq!(lines.len(), 3);
+    for (i, line) in lines.iter().enumerate() {
+        let rec: serde_json::Value = serde_json::from_str(line).unwrap();
+        if i == 0 {
+            assert!(rec["prev_hash"].is_null());
+        } else {
+            let expect = ritual::provenance::sha256_hex(lines[i - 1].as_bytes());
+            assert_eq!(rec["prev_hash"].as_str().unwrap(), expect, "link {i}");
+        }
+        assert_eq!(rec["trust_level"], "L2");
+    }
+}
+
+#[test]
+fn pr_comment_inline_posts_anchored_review_comments() {
+    let tmp = setup_project();
+    let fake_gh = format!("{}/tests/fake_gh.sh", env!("CARGO_MANIFEST_DIR"));
+    std::fs::create_dir_all(tmp.path().join(".ritual/findings")).unwrap();
+    std::fs::write(
+        tmp.path()
+            .join(".ritual/findings/20260712T000000Z-dual-review.json"),
+        r#"{"stage":"dual-review","branch":"main","findings":[
+            {"title":"anchored bug","severity":"major","verdict":"confirmed",
+             "file":"src/a.rs","line":42,"scenario":"s","snippet":"let x = y;",
+             "sources":["claude","codex"],"action":"pending"},
+            {"title":"no location","severity":"minor","verdict":"confirmed"}]}"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_GH_CMD", &fake_gh)
+        .env("FAKE_GH_LOG_DIR", tmp.path())
+        .args(["pr-comment", "7", "--inline"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("inline: 1 posted, 0 failed"));
+
+    let args = std::fs::read_to_string(tmp.path().join("gh-args.log")).unwrap();
+    assert!(args.contains("pulls/7/comments"), "{args}");
+    assert!(args.contains("path=src/a.rs"));
+    assert!(args.contains("line=42"));
+    assert!(args.contains("commit_id=abc123def456"));
+    // The snippet rides in the comment body as fenced evidence.
+    assert!(args.contains("let x = y;"));
+}
+
+#[test]
+fn mutants_exit_code_arms_from_the_cli() {
+    let tmp = setup_project();
+    let fake = format!("{}/tests/fake_mutants.sh", env!("CARGO_MANIFEST_DIR"));
+    std::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(tmp.path())
+        .status()
+        .unwrap();
+    std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "init",
+        ])
+        .current_dir(tmp.path())
+        .status()
+        .unwrap();
+    std::fs::write(
+        tmp.path().join("Cargo.toml"),
+        "[package]\nname=\"x\"\nversion=\"0.9.0\"\n",
+    )
+    .unwrap();
+
+    // Exit 3 (timeouts occurred) still parses outcomes and reports.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_MUTANTS_CMD", &fake)
+        .env("FAKE_MUTANTS_EXIT", "3")
+        .arg("mutants")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 caught, 1 missed"));
+
+    // Exit 1 = the tool rejected its arguments: a clean, actionable error.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_MUTANTS_CMD", &fake)
+        .env("FAKE_MUTANTS_EXIT", "1")
+        .arg("mutants")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("rejected its arguments"));
+}
+
+#[test]
+fn lessons_writes_the_file_when_not_streaming() {
+    let tmp = setup_project();
+    std::fs::create_dir_all(tmp.path().join(".ritual/findings")).unwrap();
+    std::fs::write(
+        tmp.path()
+            .join(".ritual/findings/20260710T000000Z-dual-review.json"),
+        r#"{"stage":"dual-review","findings":[{"title":"n","action":"dismissed"}]}"#,
+    )
+    .unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("lessons")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("lessons →"));
+    assert!(tmp.path().join(".ritual/lessons.md").exists());
+}
+
+#[test]
 fn bench_runs_headless_stage_and_prints_scorecard() {
     let tmp = setup_project();
     std::fs::create_dir_all(tmp.path().join(".ritual/features/main")).unwrap();
