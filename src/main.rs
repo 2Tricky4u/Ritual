@@ -156,6 +156,9 @@ fn main() -> Result<()> {
         }) => {
             run_cmd::run_doc_chat(&cfg, &dirs, &message.join(" "), plan, section, force)?;
         }
+        Some(Command::PrComment { pr, inline }) => {
+            ritual::pr_comment::pr_comment(&cfg, &dirs, pr, inline)?;
+        }
         Some(Command::Doctor { deep }) => {
             let results = ritual::doctor::run(&cfg, &dirs, deep);
             output::render_doctor(&cfg, &results);

@@ -136,6 +136,14 @@ pub enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Post the latest dual-review findings to a GitHub PR (via gh)
+    PrComment {
+        /// PR number (defaults to the PR for the current branch)
+        pr: Option<u32>,
+        /// Also attempt per-finding inline review comments (best-effort)
+        #[arg(long)]
+        inline: bool,
+    },
     /// Chat one message to Claude to author/edit this feature's spec (or plan)
     Chat {
         /// The instruction, e.g. `ritual chat "tighten the goal to one sentence"`
