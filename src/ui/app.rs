@@ -417,6 +417,13 @@ impl App {
     }
 
     fn on_input(&mut self, ev: Event, tx: &mpsc::Sender<AppMsg>) {
+        // Bracketed paste: route the whole blob into the active text surface
+        // so a multi-line paste inserts literal newlines instead of arriving
+        // as Enter presses that would submit the chat message mid-paste.
+        if let Event::Paste(text) = ev {
+            self.on_paste(&text);
+            return;
+        }
         let Event::Key(key) = ev else { return };
         if key.kind != KeyEventKind::Press {
             return;
@@ -990,6 +997,23 @@ impl App {
                 chat.cursor += 1;
             }
             _ => {}
+        }
+    }
+
+    /// A bracketed-paste blob lands in whichever text surface is focused:
+    /// the chat input (newlines kept literal — no mid-paste submit) or the
+    /// palette filter (flattened to one line — a filter is single-line). Any
+    /// other context ignores it.
+    fn on_paste(&mut self, text: &str) {
+        if let Some(chat) = self.chat.as_mut() {
+            for c in text.chars() {
+                chat.input.insert(chat.cursor, c);
+                chat.cursor += 1;
+            }
+            chat.scroll = 0;
+        } else if let Some(p) = self.palette.as_mut() {
+            p.input.extend(text.chars().filter(|c| !c.is_control()));
+            p.selected = 0;
         }
     }
 
@@ -2633,6 +2657,44 @@ mod tests {
             app.chat.as_ref().unwrap().input.iter().collect::<String>(),
             "caf"
         );
+    }
+
+    #[test]
+    fn pasted_multiline_text_never_submits_mid_paste() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.open_chat(&tx);
+        app.on_input(Event::Paste("line one\nline two\nline three".into()), &tx);
+        let chat = app.chat.as_ref().unwrap();
+        // The whole blob is one input value with literal newlines...
+        assert_eq!(
+            chat.input.iter().collect::<String>(),
+            "line one\nline two\nline three"
+        );
+        // ...and nothing was submitted or queued.
+        assert!(!chat.in_flight);
+        assert!(chat.pending.is_empty());
+        assert_eq!(
+            chat.cursor,
+            "line one\nline two\nline three".chars().count()
+        );
+
+        // A paste at a mid-string caret splices in place.
+        {
+            let chat = app.chat.as_mut().unwrap();
+            chat.input = "ab".chars().collect();
+            chat.cursor = 1;
+        }
+        app.on_input(Event::Paste("XY".into()), &tx);
+        assert_eq!(
+            app.chat.as_ref().unwrap().input.iter().collect::<String>(),
+            "aXYb"
+        );
+
+        // Paste into the palette flattens to a single line (a filter).
+        app.chat = None;
+        app.palette = Some(PaletteState::default());
+        app.on_input(Event::Paste("run\tplan\nreview".into()), &tx);
+        assert_eq!(app.palette.as_ref().unwrap().input, "runplanreview");
     }
 
     #[test]
