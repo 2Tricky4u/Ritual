@@ -125,6 +125,68 @@ mod tests {
     }
 
     #[test]
+    fn google_and_slack_keys_are_redacted() {
+        let google = format!("cfg AIza{}", "Ab1-".repeat(8) + "Ab1");
+        assert!(one(&google).contains("[REDACTED:google]"), "{google}");
+        assert!(one("hook xoxb-123456789012-secretpart").contains("[REDACTED:slack]"));
+        assert!(one("token xoxp-1-abcdefghijkl").contains("[REDACTED:slack]"));
+    }
+
+    #[test]
+    fn pem_state_machine_edges() {
+        // BEGIN without END: everything after is swallowed until an END.
+        let mut r = Redactor::new(true);
+        assert_eq!(r.line("-----BEGIN RSA PRIVATE KEY-----"), "[REDACTED:pem]");
+        assert_eq!(r.line("AAAAB3NzaC1yc2E"), "[REDACTED:pem]");
+        assert_eq!(r.line("an innocent-looking line"), "[REDACTED:pem]");
+        assert_eq!(r.line("-----END RSA PRIVATE KEY-----"), "[REDACTED:pem]");
+        assert_eq!(r.line("back to normal"), "back to normal");
+
+        // Single-line (JSON-escaped) PEM must NOT arm the state machine.
+        let mut r = Redactor::new(true);
+        assert_eq!(
+            r.line("-----BEGIN PRIVATE KEY-----MIIEv-----END PRIVATE KEY-----"),
+            "[REDACTED:pem]"
+        );
+        assert_eq!(r.line("next line untouched"), "next line untouched");
+
+        // Certificates are not secrets — BEGIN without PRIVATE KEY passes.
+        assert_eq!(
+            one("-----BEGIN CERTIFICATE-----"),
+            "-----BEGIN CERTIFICATE-----"
+        );
+    }
+
+    #[test]
+    fn entropy_boundary_and_hexish_allowlist() {
+        // Exactly 40 mixed-class chars trips the candidate; 39 does not.
+        let t40 = "Zq7".repeat(13) + "Z";
+        assert_eq!(t40.len(), 40);
+        assert!(one(&format!("x {t40} y")).contains("[REDACTED:entropy]"));
+        let t39 = &t40[..39];
+        assert!(!one(&format!("x {t39} y")).contains("REDACTED"));
+
+        // Hexish-with-dashes (uuid-ish, 40+ chars) stays: allowlisted.
+        let dashed = "deadbeef-deadbeef-deadbeef-deadbeef-dead1";
+        assert_eq!(one(dashed), dashed);
+        // A 64-char sha256 stays.
+        let sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        assert_eq!(one(sha), sha);
+    }
+
+    #[test]
+    fn text_processes_whole_documents_with_state() {
+        let mut r = Redactor::new(true);
+        let out = r.text(
+            "line one\n-----BEGIN PRIVATE KEY-----\nMIIEkey\n-----END PRIVATE KEY-----\nline five",
+        );
+        assert_eq!(
+            out,
+            "line one\n[REDACTED:pem]\n[REDACTED:pem]\n[REDACTED:pem]\nline five"
+        );
+    }
+
+    #[test]
     fn vendor_keys_are_redacted() {
         assert_eq!(one("key=AKIAIOSFODNN7EXAMPLE"), "key=[REDACTED:aws]");
         assert!(one("ghp_abcdefghijklmnopqrstuvwxyz0123456789").contains("[REDACTED:github]"));

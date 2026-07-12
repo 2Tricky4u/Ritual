@@ -153,6 +153,73 @@ mod tests {
     }
 
     #[test]
+    fn failure_arms_and_item_matrix() {
+        // turn.failed summarizes the error object; error takes the message.
+        let evs =
+            parse_line(r#"{"type":"turn.failed","error":{"message":"boom","kind":"sandbox"}}"#);
+        assert!(matches!(
+            &evs[0],
+            AgentEvent::Completed { ok: false, result_text: Some(t), .. } if t.contains("boom")
+        ));
+        let evs = parse_line(r#"{"type":"error","message":"rate limited"}"#);
+        assert!(matches!(
+            &evs[0],
+            AgentEvent::Completed { ok: false, result_text: Some(t), .. } if t == "rate limited"
+        ));
+
+        // item.started / item.updated are swallowed (no duplicate lines).
+        assert!(
+            parse_line(
+                r#"{"type":"item.started","item":{"item_type":"agent_message","text":"x"}}"#
+            )
+            .is_empty()
+        );
+        assert!(
+            parse_line(
+                r#"{"type":"item.updated","item":{"item_type":"agent_message","text":"x"}}"#
+            )
+            .is_empty()
+        );
+
+        // item.completed WITHOUT an item -> Raw, not a panic.
+        assert!(matches!(
+            parse_line(r#"{"type":"item.completed"}"#).as_slice(),
+            [AgentEvent::Raw { .. }]
+        ));
+
+        // reasoning -> Thinking; file_change / mcp_tool_call -> ToolUse.
+        let evs = parse_line(
+            r#"{"type":"item.completed","item":{"item_type":"reasoning","text":"hmm"}}"#,
+        );
+        assert!(matches!(&evs[0], AgentEvent::Thinking { text } if text == "hmm"));
+        let evs = parse_line(
+            r#"{"type":"item.completed","item":{"item_type":"file_change","changes":[{"path":"a.rs"}]}}"#,
+        );
+        assert!(
+            matches!(&evs[0], AgentEvent::ToolUse { name, summary } if name == "file_change" && summary.contains("a.rs"))
+        );
+        let evs = parse_line(
+            r#"{"type":"item.completed","item":{"item_type":"mcp_tool_call","tool":"codex","arguments":{"q":1}}}"#,
+        );
+        assert!(matches!(&evs[0], AgentEvent::ToolUse { name, .. } if name == "codex"));
+        // ...and the tool-name fallback when `tool` is absent.
+        let evs = parse_line(r#"{"type":"item.completed","item":{"item_type":"mcp_tool_call"}}"#);
+        assert!(matches!(&evs[0], AgentEvent::ToolUse { name, .. } if name == "mcp"));
+
+        // `type` is accepted where `item_type` is missing (schema drift).
+        let evs = parse_line(
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"via type"}}"#,
+        );
+        assert!(matches!(&evs[0], AgentEvent::Text { text } if text == "via type"));
+
+        // Unknown item types degrade to Raw.
+        assert!(matches!(
+            parse_line(r#"{"type":"item.completed","item":{"item_type":"hologram"}}"#).as_slice(),
+            [AgentEvent::Raw { .. }]
+        ));
+    }
+
+    #[test]
     fn unknown_becomes_raw_or_text() {
         assert!(matches!(
             parse_line(r#"{"type":"totally.new"}"#).as_slice(),

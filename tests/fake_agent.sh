@@ -5,10 +5,13 @@
 #   RITUAL_CLAUDE_CMD="tests/fake_agent.sh" ritual run plan-review ...
 #
 # Env:
-#   FAKE_AGENT_FIXTURE  fixture to replay (default: claude_toolrich.jsonl)
-#   FAKE_AGENT_DELAY    seconds between lines (default: 0.05)
-#   FAKE_AGENT_EXIT     exit code (default: 0)
-#   FAKE_AGENT_FINDINGS if set, write a canned findings file there before exiting
+#   FAKE_AGENT_FIXTURE    fixture to replay (default: claude_toolrich.jsonl)
+#   FAKE_AGENT_DELAY      seconds between lines (default: 0.05)
+#   FAKE_AGENT_EXIT       exit code (default: 0)
+#   FAKE_AGENT_FINDINGS   if set, write a canned findings file there before exiting
+#   FAKE_AGENT_SESSION_ID if set, prepend a system/init line carrying this id
+#   FAKE_AGENT_TRUNCATE   if set, stop after the first 2 fixture lines (no
+#                         result event — an interrupted stream)
 set -u
 # `<fake> login status` = the codex auth preflight: always "logged in".
 if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then
@@ -34,9 +37,19 @@ dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fixture="${FAKE_AGENT_FIXTURE:-$dir/fixtures/claude_toolrich.jsonl}"
 delay="${FAKE_AGENT_DELAY:-0.05}"
 
+if [ -n "${FAKE_AGENT_SESSION_ID:-}" ]; then
+  printf '{"type":"system","subtype":"init","session_id":"%s","model":"fake-model"}\n' \
+    "$FAKE_AGENT_SESSION_ID"
+fi
+
+n=0
 while IFS= read -r line; do
   printf '%s\n' "$line"
   sleep "$delay"
+  n=$((n + 1))
+  if [ -n "${FAKE_AGENT_TRUNCATE:-}" ] && [ "$n" -ge 2 ]; then
+    exit "${FAKE_AGENT_EXIT:-0}"   # died mid-stream: no result event
+  fi
 done < "$fixture"
 
 # Simulate the /spec skill editing a document in place (appends a marker line).

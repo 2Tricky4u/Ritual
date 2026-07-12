@@ -579,4 +579,219 @@ mod tests {
         assert!(outcome.meta.ok);
         assert_eq!(outcome.meta.stage, "slow");
     }
+
+    /// A JSON line written in two chunks (daemon mid-write when the tailer
+    /// polls) must be reassembled, never parsed as two garbage halves.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tail_reassembles_lines_split_across_writes() {
+        use std::io::Write as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        std::fs::create_dir_all(dirs.runs_dir()).unwrap();
+        let run_id = "20260712T000004Z-split";
+        let runs = dirs.runs_dir();
+
+        std::fs::write(
+            runs.join(format!("{run_id}.status")),
+            format!(
+                r#"{{"pid":{},"stage":"split","branch":"main"}}"#,
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        let full = r#"{"type":"result","is_error":false,"result":"split ok"}"#;
+        let (head, tail) = full.split_at(24);
+        std::fs::write(runs.join(format!("{run_id}.jsonl")), head).unwrap();
+
+        let runs2 = runs.clone();
+        let rid = run_id.to_string();
+        let tail = tail.to_string();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(runs2.join(format!("{rid}.jsonl")))
+                .unwrap();
+            writeln!(f, "{tail}").unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            let meta = crate::history::RunMeta {
+                run_id: rid.clone(),
+                ok: true,
+                ..Default::default()
+            };
+            std::fs::write(
+                runs2.join(format!("{rid}.meta.json")),
+                serde_json::to_string(&meta).unwrap(),
+            )
+            .unwrap();
+            let _ = std::fs::remove_file(runs2.join(format!("{rid}.status")));
+        });
+
+        let (tx, mut rx) = mpsc::channel(64);
+        let collect = tokio::spawn(async move {
+            let mut evs = Vec::new();
+            while let Some(e) = rx.recv().await {
+                evs.push(e);
+            }
+            evs
+        });
+        tail_run(&dirs, AgentKind::Claude, run_id, tx)
+            .await
+            .unwrap();
+        let events = collect.await.unwrap();
+
+        let completed: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::Completed { .. }))
+            .collect();
+        assert_eq!(completed.len(), 1, "one reassembled result: {events:?}");
+        assert!(matches!(
+            completed[0],
+            AgentEvent::Completed { ok: true, result_text: Some(t), .. } if t == "split ok"
+        ));
+        assert!(
+            !events.iter().any(|e| matches!(e, AgentEvent::Text { .. })),
+            "no half-line ever surfaced as garbage text: {events:?}"
+        );
+    }
+
+    #[test]
+    fn live_runs_filters_dead_pids_and_garbage_sidecars() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        std::fs::create_dir_all(dirs.runs_dir()).unwrap();
+        let runs = dirs.runs_dir();
+        let alive = std::process::id();
+        std::fs::write(
+            runs.join("20260712T000001Z-a.status"),
+            format!(r#"{{"pid":{alive},"stage":"plan-review","branch":"main"}}"#),
+        )
+        .unwrap();
+        // 999999999 exceeds every default pid_max — guaranteed dead.
+        std::fs::write(
+            runs.join("20260712T000002Z-b.status"),
+            r#"{"pid":999999999,"stage":"dual-review","branch":"main"}"#,
+        )
+        .unwrap();
+        std::fs::write(runs.join("20260712T000003Z-c.status"), "not json").unwrap();
+        std::fs::write(runs.join("20260712T000004Z-d.jsonl"), "{}").unwrap();
+
+        let live = live_runs(&dirs);
+        assert_eq!(live.len(), 1, "{live:?}");
+        assert_eq!(live[0].0, "20260712T000001Z-a");
+    }
+
+    #[test]
+    fn run_state_judges_from_sidecars() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        std::fs::create_dir_all(dirs.runs_dir()).unwrap();
+        let runs = dirs.runs_dir();
+
+        // Nothing on disk -> Vanished.
+        assert!(matches!(run_state(&dirs, "ghost"), RunState::Vanished));
+
+        // Live status + alive pid -> Running.
+        std::fs::write(
+            runs.join("r1.status"),
+            format!(
+                r#"{{"pid":{},"stage":"s","branch":"b"}}"#,
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        assert!(matches!(run_state(&dirs, "r1"), RunState::Running(_)));
+
+        // Status with a dead pid -> Vanished.
+        std::fs::write(
+            runs.join("r2.status"),
+            r#"{"pid":999999999,"stage":"s","branch":"b"}"#,
+        )
+        .unwrap();
+        assert!(matches!(run_state(&dirs, "r2"), RunState::Vanished));
+
+        // A meta wins over everything (finished even if a status lingers).
+        std::fs::write(runs.join("r1.meta.json"), r#"{"run_id":"r1","ok":true}"#).unwrap();
+        assert!(matches!(run_state(&dirs, "r1"), RunState::Finished(m) if m.ok));
+    }
+
+    #[test]
+    fn kill_run_terminates_the_group_and_ignores_dead_runs() {
+        use std::os::unix::process::CommandExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        std::fs::create_dir_all(dirs.runs_dir()).unwrap();
+
+        // The child gets its OWN process group (kill_run signals -pid; the
+        // daemon is a setsid leader in production — never our test group).
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        std::fs::write(
+            dirs.runs_dir().join("r-live.status"),
+            format!(
+                r#"{{"pid":{},"stage":"plan-review","branch":"main"}}"#,
+                child.id()
+            ),
+        )
+        .unwrap();
+
+        assert!(kill_run(&dirs, "r-live"), "live run must be signalable");
+        let status = child.wait().unwrap();
+        assert!(!status.success(), "SIGTERM, not a clean exit");
+
+        // Now the pid is reaped: the run reads as Vanished, kill is a no-op.
+        assert!(!kill_run(&dirs, "r-live"));
+        assert!(!kill_run(&dirs, "never-existed"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_run_rejects_empty_argv_and_records_effective_argv() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        let base = RunRequest {
+            agent: AgentKind::Claude,
+            argv: vec![],
+            env: vec![],
+            stage: "dual-review".into(),
+            feature: "F".into(),
+            branch: "main".into(),
+            redact: false,
+            repro: None,
+            cwd: tmp.path().to_path_buf(),
+            wrapper: vec![],
+        };
+
+        let (tx, mut rx) = mpsc::channel(16);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let err = execute_run(&dirs, base.clone(), "r-empty", tx)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("empty argv"), "{err:#}");
+        drain.await.unwrap();
+
+        // A wrapped run spawns wrapper-first and records the EFFECTIVE argv.
+        let req = RunRequest {
+            argv: vec![
+                "sh".into(),
+                "-c".into(),
+                r#"echo '{"type":"result","is_error":false,"result":"wrapped","duration_ms":5}'"#
+                    .into(),
+            ],
+            wrapper: vec!["env".into()],
+            ..base
+        };
+        let (tx, mut rx) = mpsc::channel(64);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let outcome = execute_run(&dirs, req, "r-wrapped", tx).await.unwrap();
+        drain.await.unwrap();
+        assert!(outcome.meta.ok);
+        assert_eq!(
+            outcome.meta.argv[0], "env",
+            "wrapper leads the recorded argv"
+        );
+        assert_eq!(outcome.meta.argv[1], "sh");
+    }
 }

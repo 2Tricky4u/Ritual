@@ -261,4 +261,81 @@ mod tests {
         assert!(parse_line("").is_empty());
         assert!(parse_line("   ").is_empty());
     }
+
+    #[test]
+    fn failure_fixture_covers_every_error_arm() {
+        let events = fixture("claude_failure.jsonl");
+
+        // init carries the MCP server list, statuses included.
+        assert!(events.iter().any(|e| matches!(
+            e,
+            AgentEvent::SessionStart { mcp_servers, .. }
+                if mcp_servers.contains(&("codex".into(), "connected".into()))
+                    && mcp_servers.contains(&("pal".into(), "failed".into()))
+        )));
+        // A failing tool_result keeps its error flag and content.
+        assert!(events.iter().any(|e| matches!(
+            e,
+            AgentEvent::ToolResult { is_error: true, summary } if summary.contains("exit 101")
+        )));
+        // A rejected rate limit parses fully; one with no info yields Nones.
+        assert!(events.iter().any(|e| matches!(
+            e,
+            AgentEvent::RateLimit(i)
+                if i.status.as_deref() == Some("rejected")
+                    && i.kind.as_deref() == Some("five_hour")
+                    && i.resets_at == Some(1760000000)
+        )));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            AgentEvent::RateLimit(i)
+                if i.status.is_none() && i.kind.is_none() && i.resets_at.is_none()
+        )));
+        // Non-init system, assistant without /message/content, and a
+        // plain-string user message all degrade to Raw — never a panic.
+        assert!(
+            events
+                .iter()
+                .filter(|e| matches!(e, AgentEvent::Raw { .. }))
+                .count()
+                >= 3
+        );
+        // The failed result: ok=false, text kept, denials kept, no usage.
+        let (ok, text, denials, usage) = events
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::Completed {
+                    ok,
+                    result_text,
+                    permission_denials,
+                    usage,
+                    ..
+                } => Some((
+                    *ok,
+                    result_text.clone(),
+                    permission_denials.len(),
+                    usage.clone(),
+                )),
+                _ => None,
+            })
+            .expect("result event");
+        assert!(!ok);
+        assert!(text.unwrap().contains("budget exceeded"));
+        assert_eq!(denials, 1);
+        assert!(usage.is_none(), "failure result carried no usage block");
+    }
+
+    #[test]
+    fn empty_session_id_yields_none_and_huge_lines_survive() {
+        let evs = parse_line(r#"{"type":"system","subtype":"init","session_id":"","model":"m"}"#);
+        assert!(session_id(&evs[0]).is_none());
+
+        // A pathologically long single line must parse, not truncate or die.
+        let big = "x".repeat(70_000);
+        let line = format!(
+            r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{big}"}}]}}}}"#
+        );
+        let evs = parse_line(&line);
+        assert!(matches!(&evs[0], AgentEvent::Text { text } if text.len() == 70_000));
+    }
 }
