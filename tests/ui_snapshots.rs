@@ -177,6 +177,27 @@ fn dashboard_running_with_budget() {
 }
 
 #[test]
+fn dashboard_statusline_spend_sparkline() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".ritual/runs")).unwrap();
+    // Several costed runs → the statusline sparkline draws their burn shape.
+    for (i, cost) in [0.10, 0.45, 0.22, 0.80, 0.33].iter().enumerate() {
+        std::fs::write(
+            tmp.path()
+                .join(format!(".ritual/runs/20260712T00000{i}Z-x.meta.json")),
+            format!(
+                r#"{{"run_id":"r{i}","stage":"plan-review","ok":true,"total_cost_usd":{cost},"started_at":"{}"}}"#,
+                chrono::Utc::now().to_rfc3339()
+            ),
+        )
+        .unwrap();
+    }
+    let mut app = setup_app(&tmp);
+    app.cfg.budget_daily_usd = Some(5.0);
+    insta::assert_snapshot!(render(&app));
+}
+
+#[test]
 fn dashboard_plan_tab_renders_markdown() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(tmp.path().join(".ritual/features/detached")).unwrap();

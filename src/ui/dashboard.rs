@@ -1180,6 +1180,20 @@ fn draw_markdown_scrolled(
 // powerline statusline
 // ---------------------------------------------------------------------------
 
+/// Spend sparkline over the most recent cost-bearing runs, oldest → newest.
+fn cost_sparkline(app: &App) -> Option<String> {
+    const WINDOW: usize = 12;
+    // metas are newest-first; take the window, then flip to chronological.
+    let mut costs: Vec<f64> = app
+        .metas
+        .iter()
+        .filter_map(|m| m.total_cost_usd)
+        .take(WINDOW)
+        .collect();
+    costs.reverse();
+    crate::output::sparkline(&costs)
+}
+
 fn draw_statusline(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.cfg.theme;
     let base = t.bg_statusline();
@@ -1213,6 +1227,17 @@ fn draw_statusline(f: &mut Frame, app: &App, area: Rect) {
     left.push(middle);
 
     let mut right: Vec<Span> = Vec::new();
+    // A compact spend sparkline over recent runs (older → newer) — the shape
+    // of the burn at a glance. Suppressed on narrow bars where it'd crowd out
+    // the budget/run segments.
+    if area.width >= 80
+        && let Some(spark) = cost_sparkline(app)
+    {
+        right.push(Span::styled(
+            format!("{spark} "),
+            Style::default().fg(t.info()).bg(base),
+        ));
+    }
     if let Some(budget) = app.cfg.budget_daily_usd {
         let spent = app.today_spend();
         let color = if spent >= budget {
