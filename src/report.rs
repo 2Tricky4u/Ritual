@@ -158,11 +158,16 @@ pub fn generate(
     })
 }
 
-/// Best-effort pandoc conversion; tries typst engine first (no LaTeX needed).
+/// Best-effort pandoc conversion. Engine order favors Unicode-correct
+/// renderers first: typst (no LaTeX needed), then xelatex (handles the
+/// report's Nerd-Font/box-drawing glyphs, unlike pdflatex), then pandoc's
+/// default. Reports carry unicode, so a plain pdflatex-only box fails —
+/// falling through to markdown-only is the documented graceful degrade.
 fn convert_pdf(md: &std::path::Path) -> Result<Option<PathBuf>> {
     let out = md.with_extension("pdf");
     for args in [
         vec!["--pdf-engine=typst"],
+        vec!["--pdf-engine=xelatex"],
         vec![], // pandoc's default engine
     ] {
         let status = std::process::Command::new("pandoc")
