@@ -45,13 +45,48 @@ fn heading(line: &str) -> Option<(usize, String)> {
     Some((level, title.to_string()))
 }
 
-/// True once the document has real prose — any line that is non-empty and not
-/// a markdown heading (`#`) or an HTML/template comment (`<`). This is the
-/// contract for "the spec stage is done": the template's headings and
-/// `<!-- ... -->` prompts alone do not count.
+/// True once the document has real prose — any visible line that is non-empty
+/// and not a markdown heading (`#`) or an HTML/template tag (`<`). This is
+/// the contract for "the spec stage is done": the template's headings and
+/// `<!-- ... -->` prompts alone do not count. Comment state is tracked ACROSS
+/// lines, so the inner lines of a multi-line `<!-- ... -->` block never count
+/// as content (they used to — a false positive that marked untouched specs
+/// done and injected empty invariants).
 pub fn has_meaningful_content(text: &str) -> bool {
-    text.lines()
-        .any(|l| !l.trim().is_empty() && !l.trim_start().starts_with(['#', '<']))
+    let mut in_comment = false;
+    for line in text.lines() {
+        // Strip every comment span from the line, keeping cross-line state.
+        let mut visible = String::new();
+        let mut rest = line;
+        loop {
+            if in_comment {
+                match rest.find("-->") {
+                    Some(i) => {
+                        in_comment = false;
+                        rest = &rest[i + 3..];
+                    }
+                    None => break, // whole remainder is inside the comment
+                }
+            } else {
+                match rest.find("<!--") {
+                    Some(i) => {
+                        visible.push_str(&rest[..i]);
+                        in_comment = true;
+                        rest = &rest[i + 4..];
+                    }
+                    None => {
+                        visible.push_str(rest);
+                        break;
+                    }
+                }
+            }
+        }
+        let t = visible.trim();
+        if !t.is_empty() && !t.starts_with(['#', '<']) {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -123,6 +158,29 @@ mod tests {
     #[test]
     fn meaningful_content_ignores_headings_and_comments() {
         assert!(!has_meaningful_content(SPEC_TEMPLATE)); // template = headings + comments only
+    }
+
+    #[test]
+    fn multiline_comments_are_never_meaningful() {
+        // The regression: inner comment lines used to count as prose,
+        // marking untouched specs done and injecting empty invariants.
+        assert!(!has_meaningful_content("<!--\nfill this in\nplease\n-->\n"));
+        assert!(!has_meaningful_content(
+            "# H\n<!-- examples:\n- looks like a real bullet\n-->\n"
+        ));
+        // Real prose outside the block still counts.
+        assert!(has_meaningful_content("<!--\nhint\n-->\nreal prose\n"));
+        // Content after the closer on the same line counts.
+        assert!(has_meaningful_content("<!-- hint\n--> tail matters\n"));
+        // An unclosed comment swallows the rest of the document.
+        assert!(!has_meaningful_content(
+            "<!--\nreal-looking\nnever closed\n"
+        ));
+        // Inline comments are stripped; surrounding prose survives.
+        assert!(has_meaningful_content("before <!-- x --> after\n"));
+        assert!(!has_meaningful_content("<!-- one-liner -->\n"));
+        // Two comment spans on one line, nothing between them.
+        assert!(!has_meaningful_content("<!-- a --><!-- b -->\n"));
         assert!(!has_meaningful_content(
             "# Feature: x\n\n## Goal\n<!-- prompt -->\n"
         ));

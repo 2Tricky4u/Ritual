@@ -103,7 +103,7 @@ pub fn diff(claude_home: &Path) -> Vec<(&'static str, SkillDiff)> {
                 Err(_) => SkillDiff::Missing,
                 Ok(installed) if installed == *repo => SkillDiff::Identical,
                 Ok(installed) => {
-                    let (mut line, mut a, mut b) = (1, String::new(), String::new());
+                    let mut first: Option<(usize, String, String)> = None;
                     for (i, pair) in repo
                         .lines()
                         .map(Some)
@@ -114,18 +114,27 @@ pub fn diff(claude_home: &Path) -> Vec<(&'static str, SkillDiff)> {
                         match pair {
                             (None, None) => break,
                             (ra, ia) if ra != ia => {
-                                line = i + 1;
-                                a = ra.unwrap_or("<end of file>").to_string();
-                                b = ia.unwrap_or("<end of file>").to_string();
+                                first = Some((
+                                    i + 1,
+                                    ra.unwrap_or("<end of file>").to_string(),
+                                    ia.unwrap_or("<end of file>").to_string(),
+                                ));
                                 break;
                             }
                             _ => {}
                         }
                     }
+                    // Bytes differ but no LINE differs: the divergence is in
+                    // line endings or a trailing newline — say so instead of
+                    // reporting an empty "line 1" diff.
+                    let first = first.unwrap_or_else(|| {
+                        let marker = "<line endings / trailing newline differ>".to_string();
+                        (repo.lines().count().max(1), marker.clone(), marker)
+                    });
                     SkillDiff::Differs {
                         repo_lines: repo.lines().count(),
                         installed_lines: installed.lines().count(),
-                        first: (line, a, b),
+                        first,
                     }
                 }
             };
@@ -242,6 +251,49 @@ mod tests {
                 body.contains(&format!("name: {name}")),
                 "workbench/skills/{name}/SKILL.md frontmatter name mismatch"
             );
+        }
+    }
+
+    #[test]
+    fn diff_reports_eol_only_and_eof_divergence() {
+        let home = tempfile::tempdir().unwrap();
+        install(home.path(), false).unwrap();
+        let tdd = home.path().join("skills/tdd/SKILL.md");
+        let original = std::fs::read_to_string(&tdd).unwrap();
+
+        // Trailing-newline-only divergence (final \n stripped — the one case
+        // where bytes differ but no LINE does): named, not an empty "line 1".
+        std::fs::write(&tdd, original.trim_end_matches('\n')).unwrap();
+        let d = diff(home.path());
+        let (_, status) = d.iter().find(|(n, _)| *n == "tdd").unwrap();
+        match status {
+            SkillDiff::Differs {
+                first: (line, a, b),
+                ..
+            } => {
+                assert!(a.contains("trailing newline"), "{a}");
+                assert_eq!(a, b);
+                assert!(*line >= 1);
+            }
+            other => panic!("expected Differs, got {other:?}"),
+        }
+
+        // Extra installed line -> the repo side hits <end of file>.
+        std::fs::write(&tdd, format!("{original}EXTRA\n")).unwrap();
+        let d = diff(home.path());
+        let (_, status) = d.iter().find(|(n, _)| *n == "tdd").unwrap();
+        match status {
+            SkillDiff::Differs {
+                repo_lines,
+                installed_lines,
+                first: (line, a, b),
+            } => {
+                assert_eq!(*installed_lines, *repo_lines + 1);
+                assert_eq!(*line, *repo_lines + 1);
+                assert_eq!(a, "<end of file>");
+                assert_eq!(b, "EXTRA");
+            }
+            other => panic!("expected Differs, got {other:?}"),
         }
     }
 }
