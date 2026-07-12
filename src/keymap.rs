@@ -35,6 +35,7 @@ pub enum Action {
     Takeover,
     NvimOpen,
     NvimQuickfix,
+    SpecChat,
     RunStage(StageId),
     /// User-defined [commands] entry by index (palette-only).
     Custom(usize),
@@ -74,6 +75,7 @@ pub const ACTIONS: &[(&str, Action, &str)] = &[
         Action::NvimQuickfix,
         "send findings to nvim quickfix",
     ),
+    ("spec-chat", Action::SpecChat, "chat: edit spec/plan"),
 ];
 
 pub fn action_by_name(name: &str) -> Option<Action> {
@@ -179,6 +181,7 @@ impl Default for Keymap {
             ("a", "takeover"),
             ("o", "nvim-open"),
             ("Q", "nvim-quickfix"),
+            ("s", "spec-chat"),
         ];
         let map = defaults
             .iter()

@@ -23,6 +23,8 @@ A fast, eldritch-themed TUI that drives a **multi-LLM coding workflow**: Claude 
 
 **The pipeline** — per-branch stages `spec → plan → plan-review → tests-red → implement → dual-review`; one-key launch; headless stages stream live; interactive stages hand you a real attached `claude` session and resume the TUI on exit.
 
+**Chat to author the spec/plan** (`s`) — a split view with the live document on the left and a conversation on the right: type an instruction and Claude edits `spec.md` (or `plan.md`) in place while you watch, scopable to the whole doc or one `##` section (`Tab` to switch). Each message acts on the current file — the document is the memory. Also headless: `ritual chat "<msg>" [--plan] [--section …]`. Powered by the tailored `/spec` skill.
+
 **Runs are daemons** — every headless run detaches (`setsid`) and survives the TUI, the terminal, and reboots of your session. The raw event stream is archived to `.ritual/runs/*.jsonl` *before* parsing; the TUI is just a tailer. Restart `ritual` and it reattaches to live runs and reconciles anything that finished while you were away. Cancel kills the whole process group.
 
 **Parallel features in git worktrees** — `ritual new "Title" --worktree feat/x` creates a worktree sharing ONE `.ritual/` state in the main repo. The sidebar lists all features with a needs-you queue (`!` badge, attention-first ordering); `[` `]` cycle features; runs execute in the right checkout automatically.
@@ -108,7 +110,7 @@ blame = "git log --oneline -3 -- {{finding.file}}"
 
 ## Keys (defaults — all rebindable)
 
-`enter` run/open · `:` palette · `j/k` move · `tab` `1-5` panes (`5` = in-app guide & tips) · `[` `]` features · `a` takeover · `o` open in nvim · `Q` findings → quickfix · `c/C` check fast/full · `x` cancel · `e` editor · `r` refresh · `g/G` scroll/follow · `?` help · `q` quit
+`enter` run/open · `s` chat: edit spec/plan · `:` palette · `j/k` move · `tab` `1-5` panes (`5` = in-app guide & tips) · `[` `]` features · `a` takeover · `o` open in nvim · `Q` findings → quickfix · `c/C` check fast/full · `x` cancel · `e` editor · `r` refresh · `g/G` scroll/follow · `?` help · `q` quit
 
 ## Design notes
 

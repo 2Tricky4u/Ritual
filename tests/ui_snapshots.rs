@@ -17,10 +17,73 @@ fn setup_app(tmp: &tempfile::TempDir) -> App {
 }
 
 fn render(app: &App) -> String {
-    let backend = TestBackend::new(90, 22);
+    render_at(app, 90, 22)
+}
+
+fn render_at(app: &App, w: u16, h: u16) -> String {
+    let backend = TestBackend::new(w, h);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| dashboard::draw(f, app)).unwrap();
     terminal.backend().to_string()
+}
+
+/// An app in spec-chat mode: a seeded spec, a couple of transcript turns, a
+/// section target, and a caret sitting mid-input.
+fn setup_chat_app(tmp: &tempfile::TempDir) -> App {
+    use ritual::runner::events::AgentEvent;
+    use ritual::stages::DocKind;
+    use ritual::ui::app::{ChatState, ChatTarget, ChatTurn};
+
+    ritual::scaffold::init(tmp.path(), false).unwrap();
+    // No git in the tempdir → slug "detached".
+    std::fs::create_dir_all(tmp.path().join(".ritual/features/detached")).unwrap();
+    std::fs::write(
+        tmp.path().join(".ritual/features/detached/spec.md"),
+        "# Feature: Audio\n\n## Goal\nlow-latency playback\n\n\
+         ## Behavior (the contract — WHAT, not HOW)\nmust retry on drop\n\n\
+         ## Edge cases & failure modes\n\n## Out of scope\n",
+    )
+    .unwrap();
+    let dirs = RitualDirs::new(tmp.path());
+    let mut app = App::new(Config::default(), dirs).unwrap();
+    app.chat = Some(ChatState {
+        transcript: vec![
+            ChatTurn::User("make behavior stricter: retry 3x".into()),
+            ChatTurn::Assistant(vec![
+                AgentEvent::Text {
+                    text: "Tightening the retry rule.".into(),
+                },
+                AgentEvent::Completed {
+                    ok: true,
+                    result_text: None,
+                    total_cost_usd: Some(0.03),
+                    usage: None,
+                    num_turns: Some(2),
+                    duration_ms: Some(4200),
+                    permission_denials: vec![],
+                },
+            ]),
+            ChatTurn::System("✓ spec updated · $0.030".into()),
+        ],
+        input: "and cap it at 3 attempts".chars().collect(),
+        cursor: 4, // caret mid-string
+        targets: vec![
+            ChatTarget {
+                doc: DocKind::Spec,
+                section: None,
+                range: 0..9,
+            },
+            ChatTarget {
+                doc: DocKind::Spec,
+                section: Some("Behavior (the contract — WHAT, not HOW)".into()),
+                range: 5..7,
+            },
+        ],
+        target_idx: 1, // focused on the Behavior section
+        scroll: 0,
+        in_flight: false,
+    });
+    app
 }
 
 #[test]
@@ -97,6 +160,30 @@ fn dashboard_plan_tab_renders_markdown() {
     let mut app = setup_app(&tmp);
     app.tab = Tab::Plan;
     insta::assert_snapshot!(render(&app));
+}
+
+#[test]
+fn dashboard_spec_chat_wide() {
+    // 120 cols: sidebar + spec preview | chat side by side.
+    let tmp = tempfile::tempdir().unwrap();
+    let app = setup_chat_app(&tmp);
+    insta::assert_snapshot!(render_at(&app, 120, 30));
+}
+
+#[test]
+fn dashboard_spec_chat_narrow() {
+    // 80 cols: sidebar dropped, preview | chat take the full width.
+    let tmp = tempfile::tempdir().unwrap();
+    let app = setup_chat_app(&tmp);
+    insta::assert_snapshot!(render_at(&app, 80, 24));
+}
+
+#[test]
+fn dashboard_spec_chat_ascii() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_chat_app(&tmp);
+    app.cfg.theme.icons = ritual::theme::IconSet::Ascii;
+    insta::assert_snapshot!(render_at(&app, 100, 26));
 }
 
 #[test]

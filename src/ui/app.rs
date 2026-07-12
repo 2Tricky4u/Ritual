@@ -2,7 +2,7 @@
 //! drawing lives in dashboard.rs; terminal transitions live in term.rs.
 
 use anyhow::{Context, Result};
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -46,7 +46,14 @@ pub enum AppMsg {
     Input(Event),
     Agent(Box<AgentEvent>),
     RunExited(Box<Result<RunOutcome>>),
-    CheckDone { ok: bool, tail: String },
+    /// A streamed event from a spec/plan chat edit (kept off the main stream).
+    ChatAgent(Box<AgentEvent>),
+    /// A chat edit finished.
+    ChatExited(Box<Result<RunOutcome>>),
+    CheckDone {
+        ok: bool,
+        tail: String,
+    },
     AgentsStatus(Box<crate::agents_status::AgentsStatus>),
     FileChanged,
     Tick,
@@ -84,11 +91,15 @@ pub struct App {
     pub palette: Option<PaletteState>,
     pub plan_scroll: usize,
     pub guide_scroll: usize,
+    pub chat: Option<ChatState>,
 
     findings_before: Vec<String>,
     run_task: Option<JoinHandle<()>>,
     current_run_id: Option<String>,
     pending_attached: Option<AttachedRequest>,
+    chat_task: Option<JoinHandle<()>>,
+    current_chat_run_id: Option<String>,
+    doc_before: String,
 }
 
 /// Command palette state: typed filter + selection over matching entries.
@@ -96,6 +107,69 @@ pub struct App {
 pub struct PaletteState {
     pub input: String,
     pub selected: usize,
+}
+
+/// One entry in the chat transcript.
+#[derive(Debug, Clone)]
+pub enum ChatTurn {
+    User(String),
+    Assistant(Vec<AgentEvent>),
+    System(String),
+}
+
+/// A place a chat edit can be aimed: a whole document or one of its sections.
+#[derive(Debug, Clone)]
+pub struct ChatTarget {
+    pub doc: stages::DocKind,
+    /// `None` = the whole document; `Some(heading)` = one `##` section.
+    pub section: Option<String>,
+    /// Line range in the source file that the preview focuses on.
+    pub range: std::ops::Range<usize>,
+}
+
+impl ChatTarget {
+    fn scope(&self) -> stages::Scope {
+        match &self.section {
+            Some(name) => stages::Scope::Section(name.clone()),
+            None => stages::Scope::Whole,
+        }
+    }
+    /// Short label for the chat header, e.g. `spec · § Behavior` / `plan · whole`.
+    pub fn label(&self) -> String {
+        match &self.section {
+            Some(name) => format!("{} · § {}", self.doc.label(), first_words(name, 20)),
+            None => format!("{} · whole", self.doc.label()),
+        }
+    }
+}
+
+/// Interactive spec/plan chat: a transcript, a cursored input line, and the
+/// set of documents/sections the edit can target. Mirrors `PaletteState` as
+/// the app's second modal text-entry surface.
+#[derive(Debug, Clone)]
+pub struct ChatState {
+    pub transcript: Vec<ChatTurn>,
+    pub input: Vec<char>, // Vec<char> (not String) so the caret can sit mid-string
+    pub cursor: usize,
+    pub targets: Vec<ChatTarget>,
+    pub target_idx: usize,
+    pub scroll: usize,
+    pub in_flight: bool,
+}
+
+impl ChatState {
+    pub fn target(&self) -> Option<&ChatTarget> {
+        self.targets.get(self.target_idx)
+    }
+}
+
+/// First `max` chars of a heading, ellipsized — keeps the chat header tidy.
+fn first_words(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", s.chars().take(max).collect::<String>())
+    }
 }
 
 impl App {
@@ -130,11 +204,20 @@ impl App {
             palette: None,
             plan_scroll: 0,
             guide_scroll: 0,
+            chat: None,
             findings_before: Vec::new(),
             run_task: None,
             current_run_id: None,
             pending_attached: None,
+            chat_task: None,
+            current_chat_run_id: None,
+            doc_before: String::new(),
         })
+    }
+
+    /// True while a spec/plan chat edit is running.
+    pub fn chat_running(&self) -> bool {
+        self.chat.as_ref().is_some_and(|c| c.in_flight)
     }
 
     /// Palette entries matching the current filter, in stable order.
@@ -254,6 +337,18 @@ impl App {
                 }
             }
             AppMsg::RunExited(outcome) => self.on_run_exited(*outcome),
+            AppMsg::ChatAgent(ev) => {
+                if let Some(chat) = self.chat.as_mut()
+                    && let Some(ChatTurn::Assistant(evs)) = chat.transcript.last_mut()
+                {
+                    evs.push(*ev);
+                    if evs.len() > 2000 {
+                        evs.drain(..500);
+                    }
+                    chat.scroll = 0; // follow the tail while streaming
+                }
+            }
+            AppMsg::ChatExited(outcome) => self.on_chat_exited(*outcome),
             AppMsg::CheckDone { ok, tail } => {
                 self.check = if ok {
                     CheckState::Green
@@ -265,8 +360,11 @@ impl App {
             AppMsg::FileChanged => {
                 // Auto-check only when idle: agent runs already get checked
                 // by the PostToolUse hook, and parallel checks fight over
-                // build locks.
-                if self.running.is_none() && self.check != CheckState::Running {
+                // build locks. A chat edit is also an agent run.
+                if self.running.is_none()
+                    && !self.chat_running()
+                    && self.check != CheckState::Running
+                {
                     self.run_check(tx, true);
                 }
             }
@@ -295,6 +393,10 @@ impl App {
         }
         if self.palette.is_some() {
             self.palette_input(key.code, tx);
+            return;
+        }
+        if self.chat.is_some() {
+            self.chat_input(key, tx);
             return;
         }
         // Ctrl-C always quits, even if rebound away.
@@ -377,6 +479,7 @@ impl App {
             Action::Takeover => self.takeover(),
             Action::NvimOpen => self.nvim_open(),
             Action::NvimQuickfix => self.nvim_quickfix(),
+            Action::SpecChat => self.open_chat(),
             Action::Custom(i) => self.run_custom(i, tx),
             Action::RunStage(id) => {
                 if let Some(idx) = PIPELINE.iter().position(|s| *s == id) {
@@ -437,7 +540,7 @@ impl App {
             self.open_editor();
             return;
         }
-        if self.running.is_some() {
+        if self.running.is_some() || self.chat_running() {
             self.status_msg = Some("a run is already active — x to cancel".into());
             return;
         }
@@ -601,6 +704,308 @@ impl App {
             let _ = forward.await;
             let _ = tx_done.send(AppMsg::RunExited(Box::new(outcome))).await;
         }));
+    }
+
+    // -- spec/plan chat -----------------------------------------------------
+
+    /// Open the interactive chat over this feature's spec (and plan, if it
+    /// exists). Ensures spec.md exists so there is always something to edit.
+    fn open_chat(&mut self) {
+        let spec = self.dirs.spec_file(&self.slug);
+        if !spec.exists() {
+            let _ = std::fs::create_dir_all(self.dirs.feature_dir(&self.slug));
+            let title = self
+                .state
+                .features
+                .get(&self.slug)
+                .map(|f| f.title.clone())
+                .unwrap_or_default();
+            let _ = std::fs::write(
+                &spec,
+                crate::scaffold::SPEC_TEMPLATE.replace("<title>", &title),
+            );
+        }
+        let targets = self.build_chat_targets();
+        self.chat = Some(ChatState {
+            transcript: Vec::new(),
+            input: Vec::new(),
+            cursor: 0,
+            targets,
+            target_idx: 0,
+            scroll: 0,
+            in_flight: false,
+        });
+    }
+
+    /// The editable targets: spec (whole + each `##` section), then plan the
+    /// same way if plan.md exists.
+    fn build_chat_targets(&self) -> Vec<ChatTarget> {
+        let mut targets = Vec::new();
+        for (doc, path) in [
+            (stages::DocKind::Spec, self.dirs.spec_file(&self.slug)),
+            (stages::DocKind::Plan, self.dirs.plan_file(&self.slug)),
+        ] {
+            if doc == stages::DocKind::Plan && !path.exists() {
+                continue; // only refine a plan that already exists
+            }
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let n = text.lines().count().max(1);
+            targets.push(ChatTarget {
+                doc,
+                section: None,
+                range: 0..n,
+            });
+            for (name, range) in crate::spec::sections(&text) {
+                targets.push(ChatTarget {
+                    doc,
+                    section: Some(name),
+                    range,
+                });
+            }
+        }
+        targets
+    }
+
+    /// Keys while the chat panel is open. Unlike the palette this maintains a
+    /// real cursor (mid-string insert/delete) over a `Vec<char>` input.
+    fn chat_input(&mut self, key: KeyEvent, tx: &mpsc::Sender<AppMsg>) {
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.quit = true;
+            return;
+        }
+        // Enter submits — handled first because it needs `&mut self` to spawn.
+        if key.code == KeyCode::Enter {
+            if let Some(msg) = self.chat_take_submit() {
+                self.spawn_doc_chat(msg, tx);
+            }
+            return;
+        }
+        let Some(chat) = self.chat.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => self.chat = None,
+            KeyCode::Backspace => {
+                if chat.cursor > 0 {
+                    chat.input.remove(chat.cursor - 1);
+                    chat.cursor -= 1;
+                }
+            }
+            KeyCode::Delete => {
+                if chat.cursor < chat.input.len() {
+                    chat.input.remove(chat.cursor);
+                }
+            }
+            KeyCode::Left => chat.cursor = chat.cursor.saturating_sub(1),
+            KeyCode::Right => chat.cursor = (chat.cursor + 1).min(chat.input.len()),
+            KeyCode::Home => chat.cursor = 0,
+            KeyCode::End => chat.cursor = chat.input.len(),
+            KeyCode::Tab => {
+                if !chat.targets.is_empty() {
+                    chat.target_idx = (chat.target_idx + 1) % chat.targets.len();
+                }
+            }
+            KeyCode::BackTab => {
+                if !chat.targets.is_empty() {
+                    chat.target_idx =
+                        (chat.target_idx + chat.targets.len() - 1) % chat.targets.len();
+                }
+            }
+            // scroll = lines up from the bottom (0 = follow tail).
+            KeyCode::Up => chat.scroll = chat.scroll.saturating_add(1),
+            KeyCode::Down => chat.scroll = chat.scroll.saturating_sub(1),
+            KeyCode::Char(c) => {
+                chat.input.insert(chat.cursor, c);
+                chat.cursor += 1;
+            }
+            _ => {}
+        }
+    }
+
+    /// Consume the input as a submitted message: records the user turn, clears
+    /// the input, and returns the text to send — or None if empty or a run is
+    /// already in flight. Split out from spawning so it is unit-testable.
+    fn chat_take_submit(&mut self) -> Option<String> {
+        let chat = self.chat.as_mut()?;
+        if chat.in_flight {
+            return None;
+        }
+        let msg: String = chat.input.iter().collect::<String>().trim().to_string();
+        if msg.is_empty() {
+            return None;
+        }
+        chat.input.clear();
+        chat.cursor = 0;
+        chat.transcript.push(ChatTurn::User(msg.clone()));
+        chat.scroll = 0;
+        Some(msg)
+    }
+
+    /// The last few turns before the current one, as plain context for the
+    /// prompt (so "make it 3 not 5" resolves against the prior exchange).
+    fn recent_context(&self) -> String {
+        let Some(chat) = self.chat.as_ref() else {
+            return String::new();
+        };
+        let mut lines = Vec::new();
+        for turn in chat.transcript.iter().rev().skip(1).take(6) {
+            match turn {
+                ChatTurn::User(t) => lines.push(format!("you: {t}")),
+                ChatTurn::Assistant(evs) => {
+                    let text: String = evs
+                        .iter()
+                        .filter_map(|e| match e {
+                            AgentEvent::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if !text.trim().is_empty() {
+                        lines.push(format!("assistant: {}", first_words(text.trim(), 200)));
+                    }
+                }
+                ChatTurn::System(_) => {}
+            }
+        }
+        lines.reverse();
+        lines.join("\n")
+    }
+
+    /// Spawn one chat edit: a detached `/spec` run whose events stream into the
+    /// transcript. Never touches `self.running`/`run_task` — the pipeline is
+    /// independent of the chat.
+    fn spawn_doc_chat(&mut self, message: String, tx: &mpsc::Sender<AppMsg>) {
+        if let Some((spent, budget)) = crate::run_cmd::budget_exceeded(&self.cfg, &self.dirs) {
+            if let Some(chat) = self.chat.as_mut() {
+                chat.transcript.push(ChatTurn::System(format!(
+                    "daily budget reached (${spent:.2}/${budget:.2}) — `ritual chat … --force` to override"
+                )));
+            }
+            return;
+        }
+        let Some(run_cwd) = self.run_cwd() else {
+            if let Some(chat) = self.chat.as_mut() {
+                chat.transcript.push(ChatTurn::System(format!(
+                    "branch '{}' has no checkout",
+                    self.branch
+                )));
+            }
+            return;
+        };
+        let Some(target) = self.chat.as_ref().and_then(|c| c.target()).cloned() else {
+            return;
+        };
+        let doc_path = match target.doc {
+            stages::DocKind::Spec => self.dirs.spec_file(&self.slug),
+            stages::DocKind::Plan => self.dirs.plan_file(&self.slug),
+        };
+        let context = self.recent_context();
+        let cmd = stages::doc_chat_command(
+            &self.cfg,
+            &doc_path,
+            target.doc,
+            &target.scope(),
+            &message,
+            &context,
+        );
+        self.doc_before = std::fs::read_to_string(&doc_path).unwrap_or_default();
+        if let Some(chat) = self.chat.as_mut() {
+            chat.transcript.push(ChatTurn::Assistant(Vec::new()));
+            chat.in_flight = true;
+            chat.scroll = 0;
+        }
+
+        let title = self
+            .state
+            .features
+            .get(&self.slug)
+            .map(|f| f.title.clone())
+            .unwrap_or_default();
+        let stage_label = format!("{}-chat", target.doc.label());
+        let req = RunRequest {
+            agent: cmd.agent,
+            argv: cmd.argv,
+            env: cmd.env,
+            stage: stage_label.clone(),
+            feature: title,
+            branch: self.branch.clone(),
+            redact: self.cfg.redaction,
+            repro: None, // chat edits are frequent + small — skip provenance
+            cwd: run_cwd,
+        };
+        let dirs = self.dirs.clone();
+        let run_id = runner::new_run_id(&stage_label);
+        self.current_chat_run_id = Some(run_id.clone());
+        let tx_events = tx.clone();
+        let tx_done = tx.clone();
+        self.chat_task = Some(tokio::spawn(async move {
+            let agent = req.agent;
+            if let Err(e) = runner::spawn_detached(&dirs, &req, &run_id) {
+                let _ = tx_done.send(AppMsg::ChatExited(Box::new(Err(e)))).await;
+                return;
+            }
+            let (etx, mut erx) = mpsc::channel::<AgentEvent>(256);
+            let forward = tokio::spawn(async move {
+                while let Some(ev) = erx.recv().await {
+                    if tx_events
+                        .send(AppMsg::ChatAgent(Box::new(ev)))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+            let outcome = runner::tail_run(&dirs, agent, &run_id, etx).await;
+            let _ = forward.await;
+            let _ = tx_done.send(AppMsg::ChatExited(Box::new(outcome))).await;
+        }));
+    }
+
+    /// A chat edit finished: mark the target stage done iff the document
+    /// meaningfully changed, refresh section targets, and note the cost.
+    fn on_chat_exited(&mut self, outcome: Result<RunOutcome>) {
+        self.chat_task = None;
+        let run_id = self.current_chat_run_id.take();
+        if let Some(chat) = self.chat.as_mut() {
+            chat.in_flight = false;
+        }
+        let outcome = match outcome {
+            Ok(o) => o,
+            Err(e) => {
+                if let Some(chat) = self.chat.as_mut() {
+                    chat.transcript
+                        .push(ChatTurn::System(format!("chat failed: {e:#}")));
+                }
+                return;
+            }
+        };
+        let target_doc = self.chat.as_ref().and_then(|c| c.target()).map(|t| t.doc);
+        let (doc_path, stage_id) = match target_doc {
+            Some(stages::DocKind::Plan) => (self.dirs.plan_file(&self.slug), StageId::Plan),
+            _ => (self.dirs.spec_file(&self.slug), StageId::Spec),
+        };
+        let content = std::fs::read_to_string(&doc_path).unwrap_or_default();
+        let changed = content != self.doc_before && crate::spec::has_meaningful_content(&content);
+        let cost = outcome.meta.total_cost_usd.unwrap_or(0.0);
+        let note = if outcome.meta.ok && changed {
+            self.set_stage(stage_id, StageStatus::Done, run_id);
+            format!("✓ {} updated · ${cost:.3}", stage_id.label())
+        } else if outcome.meta.ok {
+            format!("no change · ${cost:.3}")
+        } else {
+            "chat edit failed — see the transcript above".to_string()
+        };
+        // Refresh targets against the new content (a section may have appeared
+        // or vanished); clamp the selection.
+        let targets = self.build_chat_targets();
+        if let Some(chat) = self.chat.as_mut() {
+            chat.transcript.push(ChatTurn::System(note));
+            chat.target_idx = chat.target_idx.min(targets.len().saturating_sub(1));
+            chat.targets = targets;
+            chat.scroll = 0;
+        }
+        self.reload_artifacts();
     }
 
     /// Run a user-defined [commands] template ({{branch}}, {{run_id}},
@@ -1121,8 +1526,10 @@ pub async fn run(cfg: Config, dirs: RitualDirs) -> Result<()> {
 
         // The watcher stands down while any agent owns the project.
         if let Some(w) = &watcher {
-            w.paused
-                .store(app.running.is_some(), std::sync::atomic::Ordering::SeqCst);
+            w.paused.store(
+                app.running.is_some() || app.chat_running(),
+                std::sync::atomic::Ordering::SeqCst,
+            );
         }
 
         if let Some(req) = app.take_attached() {
@@ -1171,6 +1578,117 @@ mod tests {
         // still hold a valid channel.
         let (tx, rx) = mpsc::channel(64);
         (tmp, app, tx, rx)
+    }
+
+    fn send(app: &mut App, tx: &mpsc::Sender<AppMsg>, code: KeyCode) {
+        app.chat_input(KeyEvent::new(code, KeyModifiers::NONE), tx);
+    }
+
+    #[test]
+    fn chat_input_edits_with_a_real_cursor() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.open_chat();
+        for c in "helo".chars() {
+            send(&mut app, &tx, KeyCode::Char(c));
+        }
+        // Insert the missing 'l' mid-string: Left then type.
+        send(&mut app, &tx, KeyCode::Left);
+        send(&mut app, &tx, KeyCode::Char('l'));
+        assert_eq!(
+            app.chat.as_ref().unwrap().input.iter().collect::<String>(),
+            "hello"
+        );
+        assert_eq!(app.chat.as_ref().unwrap().cursor, 4);
+
+        send(&mut app, &tx, KeyCode::End);
+        send(&mut app, &tx, KeyCode::Backspace); // drop trailing 'o'
+        send(&mut app, &tx, KeyCode::Home);
+        send(&mut app, &tx, KeyCode::Delete); // drop leading 'h'
+        assert_eq!(
+            app.chat.as_ref().unwrap().input.iter().collect::<String>(),
+            "ell"
+        );
+
+        // Bounds never panic.
+        send(&mut app, &tx, KeyCode::Left); // already at 0
+        send(&mut app, &tx, KeyCode::Backspace); // cursor 0, no-op
+        assert_eq!(app.chat.as_ref().unwrap().cursor, 0);
+        assert_eq!(
+            app.chat.as_ref().unwrap().input.iter().collect::<String>(),
+            "ell"
+        );
+    }
+
+    #[test]
+    fn chat_input_is_utf8_safe() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.open_chat();
+        for c in "café".chars() {
+            send(&mut app, &tx, KeyCode::Char(c));
+        }
+        send(&mut app, &tx, KeyCode::Backspace); // removes 'é', not a byte
+        assert_eq!(
+            app.chat.as_ref().unwrap().input.iter().collect::<String>(),
+            "caf"
+        );
+    }
+
+    #[test]
+    fn chat_submit_records_clears_and_guards() {
+        let (_t, mut app, _tx, _rx) = test_app();
+        app.open_chat();
+        assert!(
+            app.chat_take_submit().is_none(),
+            "empty input submits nothing"
+        );
+
+        {
+            let chat = app.chat.as_mut().unwrap();
+            chat.input = "add retry".chars().collect();
+            chat.cursor = chat.input.len();
+        }
+        assert_eq!(app.chat_take_submit().as_deref(), Some("add retry"));
+        let chat = app.chat.as_ref().unwrap();
+        assert!(chat.input.is_empty() && chat.cursor == 0);
+        assert!(matches!(chat.transcript.last(), Some(ChatTurn::User(m)) if m == "add retry"));
+
+        // A run in flight blocks new submits.
+        app.chat.as_mut().unwrap().in_flight = true;
+        app.chat.as_mut().unwrap().input = "again".chars().collect();
+        assert!(app.chat_take_submit().is_none());
+    }
+
+    #[test]
+    fn chat_tab_cycles_targets_and_esc_closes() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.open_chat();
+        let n = app.chat.as_ref().unwrap().targets.len();
+        assert!(n >= 5, "spec whole + 4 sections expected, got {n}");
+        send(&mut app, &tx, KeyCode::Tab);
+        assert_eq!(app.chat.as_ref().unwrap().target_idx, 1);
+        send(&mut app, &tx, KeyCode::BackTab);
+        assert_eq!(app.chat.as_ref().unwrap().target_idx, 0);
+        send(&mut app, &tx, KeyCode::BackTab); // wraps to the last target
+        assert_eq!(app.chat.as_ref().unwrap().target_idx, n - 1);
+        send(&mut app, &tx, KeyCode::Esc);
+        assert!(app.chat.is_none(), "esc closes the chat");
+    }
+
+    #[test]
+    fn open_chat_seeds_spec_and_targets() {
+        let (_t, mut app, _tx, _rx) = test_app();
+        app.open_chat();
+        // spec.md was created from the template.
+        assert!(app.dirs.spec_file(&app.slug).exists());
+        let chat = app.chat.as_ref().unwrap();
+        // First target is the whole spec; a Behavior section target exists.
+        assert!(matches!(chat.targets[0].doc, stages::DocKind::Spec));
+        assert!(chat.targets[0].section.is_none());
+        assert!(
+            chat.targets
+                .iter()
+                .any(|t| t.section.as_deref() == Some("Behavior (the contract — WHAT, not HOW)"))
+        );
     }
 
     #[test]

@@ -12,7 +12,8 @@ test designer**, and **second reviewer**. That is the pipeline.
 
 ## The pipeline
 
-- **spec** — you write intent in `spec.md` (`e` edits in $EDITOR)
+- **spec** — you write intent in `spec.md` (`⟨enter⟩` opens it in
+  $EDITOR; or press `⟨s⟩` to **chat** it into shape — see below)
 - **plan** — Claude drafts `plan.md` from the spec
 - **plan-review** — Codex attacks the plan; bounded 2-round debate;
   plan revised in place
@@ -48,6 +49,27 @@ suggestions.
 
 `tab` cycles; `j/k` scroll or select; `g` top; `G` follow the tail.
 All keys are rebindable in `[keys]` (see config below).
+
+## Chat to author the spec (or plan)
+
+Press `⟨s⟩` (or `:` → *chat: edit spec/plan*) to open an interactive
+chat: the **live document is on the left, the conversation on the
+right**. Type an instruction (`⟨enter⟩` sends), and Claude edits the
+file in place — you watch it change on the left as it happens.
+
+- `⟨Tab⟩` cycles the **target**: the whole spec, one of its sections,
+  then the plan and its sections (once a plan exists). The header shows
+  the current target; the left pane focuses it.
+- Each message acts on the document as it stands now, with your last
+  few messages as context — so "make it 3 attempts, not 5" works. The
+  file is the memory; no session state to manage.
+- `⟨↑⟩`/`⟨↓⟩` scroll the transcript, `⟨esc⟩` closes (a running edit
+  finishes on its own — it's a daemon like any other run).
+- From a script: `ritual chat "tighten the goal to one sentence"`,
+  `--section "Behavior…"` to scope it, `--plan` to target the plan.
+
+The spec stage flips to **done** when the document gains real content.
+Runs cost `budget_doc_chat_usd` at most (default $0.50/message).
 
 ## Findings workflow
 
@@ -101,6 +123,7 @@ or pin one: `nvim_server = "/path/to/socket"` — or launch with
 - `ritual init` — scaffold .ritual/, check.sh, CLAUDE.md
 - `ritual status` — pipeline state (`--json`)
 - `ritual run <stage>` — headless stage (`--force`, `--ci`)
+- `ritual chat <msg>` — edit spec/plan (`--plan`, `--section`)
 - `ritual findings` / `history` — browse artifacts (`--json`)
 - `ritual report [--pdf]` — feature report from all artifacts
 - `ritual new [--worktree B]` — name/create a feature
@@ -119,6 +142,7 @@ theme = "eldritch"            # or "tokyonight"
 transparency = true           # terminal bg shows through
 redaction = true
 budget_daily_usd = 15.0
+budget_doc_chat_usd = 0.50    # per spec/plan chat message
 check_timeout_secs = 600
 offline = false               # block runs (metered/plane mode)
 nvim_server = ""              # empty = auto-discover
@@ -180,6 +204,9 @@ land on `spec` and press `⟨enter⟩`. ritual opens `spec.md` in your
 `$EDITOR` (the TUI hands over the terminal, then takes it back on
 exit). Write what you want built, `:wq`. The stage flips to **done**
 if you wrote real content, stays pending if you only left comments.
+*Prefer to talk it out?* Press `⟨s⟩` instead for the chat (see "Chat
+to author the spec" above) — describe the feature and Claude drafts
+the spec live, section by section.
 
 **3. Draft the plan.** Highlight `plan`, `⟨enter⟩` → an interactive
 Claude session opens (plan mode). When it saves `plan.md` and exits,

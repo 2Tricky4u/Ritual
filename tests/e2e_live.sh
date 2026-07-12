@@ -84,6 +84,16 @@ ok "spec via \$EDITOR"        0 "spec done" -- bash -c "cd '$PROJ' && EDITOR='$R
 ok "plan writes plan.md"      0 "-"         -- bash -c "cd '$PROJ' && RITUAL_CLAUDE_CMD='$ROOT/bin/fake-plan' '$RITUAL' run plan"
 exists "plan.md present"      "$PROJ/.ritual/features/main/plan.md"
 
+echo "── spec/plan chat (headless doc edit) ───────────────────────────────"
+ok "chat edits the spec"      0 "spec updated" -- bash -c "cd '$PROJ' && \
+  RITUAL_CLAUDE_CMD='$FAKE' RITUAL_CODEX_CMD='$FAKE' FAKE_AGENT_DELAY=0 \
+  FAKE_AGENT_SPEC_EDIT='.ritual/features/main/spec.md' \
+  '$RITUAL' chat 'add a low-latency requirement' --section Goal"
+ok "chat targets the plan"    0 "plan updated" -- bash -c "cd '$PROJ' && \
+  RITUAL_CLAUDE_CMD='$FAKE' RITUAL_CODEX_CMD='$FAKE' FAKE_AGENT_DELAY=0 \
+  FAKE_AGENT_SPEC_EDIT='.ritual/features/main/plan.md' \
+  '$RITUAL' chat 'add a rollback step' --plan"
+
 echo "── headless plan-review (daemonized) ────────────────────────────────"
 ok "plan-review ok"           0 "plan-review ok" -- bash -c "cd '$PROJ' && \
   RITUAL_CLAUDE_CMD='$FAKE' RITUAL_CODEX_CMD='$FAKE' FAKE_AGENT_DELAY=0 \
