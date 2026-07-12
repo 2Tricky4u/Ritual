@@ -14,7 +14,6 @@ use std::io::Stdout;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -29,7 +28,6 @@ fn restore_terminal_best_effort() {
         let _ = crossterm::execute!(
             std::io::stdout(),
             LeaveAlternateScreen,
-            DisableMouseCapture,
             crossterm::cursor::Show
         );
     }
@@ -57,8 +55,11 @@ impl Term {
         install_panic_hook();
         enable_raw_mode().context("enabling raw mode")?;
         let mut stdout = std::io::stdout();
-        crossterm::execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
-            .context("entering alternate screen")?;
+        // No mouse capture: ritual is keyboard-first and handles no mouse
+        // events, so capturing them would only rob the terminal of its native
+        // click-drag text selection (copy a finding's file:line, an error, a
+        // run id) while giving nothing back.
+        crossterm::execute!(stdout, EnterAlternateScreen).context("entering alternate screen")?;
         TERMINAL_ACTIVE.store(true, Ordering::SeqCst);
         let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
         Ok(Self { terminal })
@@ -72,7 +73,6 @@ impl Term {
         crossterm::execute!(
             self.terminal.backend_mut(),
             LeaveAlternateScreen,
-            DisableMouseCapture,
             crossterm::cursor::Show
         )?;
         self.terminal.show_cursor()?;
@@ -83,11 +83,7 @@ impl Term {
     /// redraw so a resize-while-suspended can't corrupt the buffer.
     pub fn resume(&mut self) -> Result<()> {
         enable_raw_mode()?;
-        crossterm::execute!(
-            self.terminal.backend_mut(),
-            EnterAlternateScreen,
-            EnableMouseCapture
-        )?;
+        crossterm::execute!(self.terminal.backend_mut(), EnterAlternateScreen)?;
         TERMINAL_ACTIVE.store(true, Ordering::SeqCst);
         self.terminal.hide_cursor()?;
         self.terminal.clear()?;

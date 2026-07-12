@@ -246,3 +246,108 @@ fn dashboard_palette_filters() {
     });
     insta::assert_snapshot!(render(&app));
 }
+
+/// Rendering must never panic — not on a 1×1 terminal, not on absurd aspect
+/// ratios, not in any tab or overlay. ratatui panics on out-of-bounds Rect
+/// math, so this is the guard against a resize crashing the whole TUI.
+#[test]
+fn rendering_survives_hostile_sizes_in_every_state() {
+    // A representative app for each distinct layout path.
+    type Make = Box<dyn Fn() -> (tempfile::TempDir, App)>;
+    let states: Vec<(&str, Make)> = vec![
+        (
+            "empty",
+            Box::new(|| {
+                let t = tempfile::tempdir().unwrap();
+                let a = setup_app(&t);
+                (t, a)
+            }),
+        ),
+        (
+            "findings",
+            Box::new(|| {
+                let t = tempfile::tempdir().unwrap();
+                std::fs::create_dir_all(t.path().join(".ritual/findings")).unwrap();
+                std::fs::write(
+                    t.path().join(".ritual/findings/20260712T000000Z-dual-review.json"),
+                    r#"{"stage":"dual-review","findings":[
+                        {"id":1,"severity":"critical","title":"a long finding title that will need clipping on narrow terminals","file":"src/state.rs","line":42,
+                         "snippet":"let st = load(&path)?;","scenario":"two writers race","sources":["claude","codex"],"verdict":"confirmed","action":"pending"}]}"#,
+                )
+                .unwrap();
+                let mut a = setup_app(&t); // App::new loads the findings dir
+                a.tab = Tab::Findings;
+                (t, a)
+            }),
+        ),
+        (
+            "help-overlay",
+            Box::new(|| {
+                let t = tempfile::tempdir().unwrap();
+                let mut a = setup_app(&t);
+                a.show_help = true;
+                (t, a)
+            }),
+        ),
+        (
+            "palette",
+            Box::new(|| {
+                let t = tempfile::tempdir().unwrap();
+                let mut a = setup_app(&t);
+                a.palette = Some(ritual::ui::app::PaletteState {
+                    input: "run".into(),
+                    selected: 3,
+                });
+                (t, a)
+            }),
+        ),
+        (
+            "chat",
+            Box::new(|| {
+                let t = tempfile::tempdir().unwrap();
+                let a = setup_chat_app(&t);
+                (t, a)
+            }),
+        ),
+        (
+            "guide",
+            Box::new(|| {
+                let t = tempfile::tempdir().unwrap();
+                let mut a = setup_app(&t);
+                a.tab = Tab::Guide;
+                (t, a)
+            }),
+        ),
+    ];
+
+    // From degenerate (1×1) through narrow/short/tall to the sidebar/chat
+    // breakpoints (28, 55, 70, 100) ±1 on each side.
+    let sizes: &[(u16, u16)] = &[
+        (1, 1),
+        (1, 40),
+        (40, 1),
+        (2, 2),
+        (10, 5),
+        (27, 20),
+        (28, 20),
+        (54, 20),
+        (55, 20),
+        (69, 24),
+        (70, 24),
+        (99, 30),
+        (100, 30),
+        (200, 3),
+        (200, 80),
+    ];
+
+    for (name, make) in &states {
+        let (_tmp, app) = make();
+        for &(w, h) in sizes {
+            // The bare fact that draw() returns is the assertion: a panic in
+            // any layout arithmetic would fail the test with the size + state.
+            let out =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| render_at(&app, w, h)));
+            assert!(out.is_ok(), "render panicked: state={name} size={w}x{h}");
+        }
+    }
+}
