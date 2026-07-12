@@ -29,5 +29,6 @@ pub mod state;
 pub mod term;
 pub mod theme;
 pub mod ui;
+pub mod undo;
 pub mod watcher;
 pub mod workbench;

@@ -240,11 +240,6 @@ impl RitualDirs {
     pub fn plan_file(&self, slug: &str) -> PathBuf {
         self.feature_dir(slug).join("plan.md")
     }
-    /// Pre-edit snapshot written before every chat edit ("spec" / "plan"):
-    /// the undo source for Ctrl+Z, persisted so it survives TUI restarts.
-    pub fn undo_file(&self, slug: &str, doc_label: &str) -> PathBuf {
-        self.feature_dir(slug).join(format!(".{doc_label}.md.undo"))
-    }
     pub fn exists(&self) -> bool {
         self.root().is_dir()
     }

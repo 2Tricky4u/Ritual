@@ -906,8 +906,12 @@ impl App {
             self.chat_cancel();
             return;
         }
+        if key.code == KeyCode::Char('z') && key.modifiers.contains(KeyModifiers::ALT) {
+            self.chat_undo_redo(false);
+            return;
+        }
         if key.code == KeyCode::Char('z') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.chat_undo();
+            self.chat_undo_redo(true);
             return;
         }
         // Alt+Enter inserts a newline; plain Enter submits (handled first
@@ -1025,7 +1029,9 @@ impl App {
     /// Ctrl+Z: swap the current target's document with its pre-edit snapshot
     /// (press again to redo). The snapshot file is written on every chat
     /// edit, so undo survives TUI restarts and covers CLI chats too.
-    fn chat_undo(&mut self) {
+    /// Ctrl+Z walks the snapshot stack back one edit; Alt+Z walks forward
+    /// again. Persisted stacks (cap 10) — they survive TUI restarts.
+    fn chat_undo_redo(&mut self, back: bool) {
         if self.chat.as_ref().is_some_and(|c| c.in_flight) {
             if let Some(chat) = self.chat.as_mut() {
                 chat.transcript.push(ChatTurn::System(
@@ -1041,18 +1047,21 @@ impl App {
             stages::DocKind::Spec => self.dirs.spec_file(&self.slug),
             stages::DocKind::Plan => self.dirs.plan_file(&self.slug),
         };
-        let undo = self.dirs.undo_file(&self.slug, target.doc.label());
-        let note = if !undo.exists() {
-            format!("nothing to undo for {}", target.doc.label())
+        let label = target.doc.label();
+        let result = if back {
+            crate::undo::undo(&self.dirs, &self.slug, label, &doc_path)
         } else {
-            let doc_now = std::fs::read_to_string(&doc_path).unwrap_or_default();
-            let snapshot = std::fs::read_to_string(&undo).unwrap_or_default();
-            let swap =
-                std::fs::write(&doc_path, &snapshot).and_then(|_| std::fs::write(&undo, &doc_now));
-            match swap {
-                Ok(()) => "undid last edit — Ctrl+Z again to redo".into(),
-                Err(e) => format!("undo failed: {e}"),
+            crate::undo::redo(&self.dirs, &self.slug, label, &doc_path)
+        };
+        let note = match (back, result) {
+            (true, Ok(true)) => {
+                let left = crate::undo::depth(&self.dirs, &self.slug, label);
+                format!("undid last edit ({left} more) — Alt+Z to redo")
             }
+            (false, Ok(true)) => "redid edit".to_string(),
+            (true, Ok(false)) => format!("nothing to undo for {label}"),
+            (false, Ok(false)) => format!("nothing to redo for {label}"),
+            (_, Err(e)) => format!("undo failed: {e:#}"),
         };
         // Refresh targets against the (possibly) restored content.
         let targets = self.build_chat_targets();
@@ -1158,13 +1167,10 @@ impl App {
             invariants.as_deref(),
         );
         self.doc_before = std::fs::read_to_string(&doc_path).unwrap_or_default();
-        // Persist the pre-edit snapshot: the Ctrl+Z undo source (survives
-        // restarts; single-level — each edit replaces it).
+        // Persist the pre-edit snapshot onto the undo stack (Ctrl+Z source,
+        // survives restarts; a new edit invalidates the redo branch).
         let _ = std::fs::create_dir_all(self.dirs.feature_dir(&self.slug));
-        let _ = std::fs::write(
-            self.dirs.undo_file(&self.slug, target.doc.label()),
-            &self.doc_before,
-        );
+        let _ = crate::undo::push(&self.dirs, &self.slug, target.doc.label(), &self.doc_before);
         if let Some(chat) = self.chat.as_mut() {
             chat.transcript.push(ChatTurn::Assistant(Vec::new()));
             chat.in_flight = true;
@@ -2112,26 +2118,33 @@ mod tests {
     }
 
     #[test]
-    fn chat_undo_swaps_doc_and_snapshot() {
+    fn chat_undo_walks_the_stack_and_alt_z_redoes() {
         let (_t, mut app, tx, _rx) = test_app();
         app.open_chat(&tx);
         let spec = app.dirs.spec_file(&app.slug);
-        // Simulate an edit cycle: snapshot the old content, then "Claude"
-        // writes new content (this is what spawn_doc_chat does pre-run).
-        std::fs::write(&spec, "OLD SPEC\n").unwrap();
-        std::fs::write(app.dirs.undo_file(&app.slug, "spec"), "OLD SPEC\n").unwrap();
-        std::fs::write(&spec, "NEW SPEC\n").unwrap();
+        // Two edit cycles: each pushes the pre-edit state (what spawn_doc_chat
+        // does), then "Claude" writes new content.
+        std::fs::write(&spec, "V0\n").unwrap();
+        crate::undo::push(&app.dirs, &app.slug, "spec", "V0\n").unwrap();
+        std::fs::write(&spec, "V1\n").unwrap();
+        crate::undo::push(&app.dirs, &app.slug, "spec", "V1\n").unwrap();
+        std::fs::write(&spec, "V2\n").unwrap();
 
         let ctrl_z = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL);
+        let alt_z = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::ALT);
         app.chat_input(ctrl_z, &tx);
-        assert_eq!(std::fs::read_to_string(&spec).unwrap(), "OLD SPEC\n");
-        // Swap = redo on second press.
+        assert_eq!(std::fs::read_to_string(&spec).unwrap(), "V1\n");
         app.chat_input(ctrl_z, &tx);
-        assert_eq!(std::fs::read_to_string(&spec).unwrap(), "NEW SPEC\n");
+        assert_eq!(std::fs::read_to_string(&spec).unwrap(), "V0\n");
+        // Alt+Z walks forward again.
+        app.chat_input(alt_z, &tx);
+        assert_eq!(std::fs::read_to_string(&spec).unwrap(), "V1\n");
+        app.chat_input(alt_z, &tx);
+        assert_eq!(std::fs::read_to_string(&spec).unwrap(), "V2\n");
         // Blocked while in flight.
         app.chat.as_mut().unwrap().in_flight = true;
         app.chat_input(ctrl_z, &tx);
-        assert_eq!(std::fs::read_to_string(&spec).unwrap(), "NEW SPEC\n");
+        assert_eq!(std::fs::read_to_string(&spec).unwrap(), "V2\n");
         assert!(matches!(
             app.chat.as_ref().unwrap().transcript.last(),
             Some(ChatTurn::System(n)) if n.contains("in flight")
