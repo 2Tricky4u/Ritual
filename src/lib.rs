@@ -24,6 +24,7 @@ pub mod run_cmd;
 pub mod runner;
 pub mod scaffold;
 pub mod secrets;
+pub mod settings;
 pub mod spec;
 pub mod stages;
 pub mod state;
