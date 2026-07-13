@@ -1,0 +1,25 @@
+# ritual model routing.
+#
+# Planning runs on Fable 5; Opus 4.8 is the overload guardrail on the headless
+# review stages. Stages not listed here inherit the Claude Code default model.
+#
+# NOTE (TOML ordering): top-level keys like `fallback_model` MUST appear before
+# the [models] table header, or TOML folds them into that table and ritual's
+# deny_unknown_fields rejects the file.
+
+# Overload guardrail: on a 529, headless Claude runs (plan-review, dual-review)
+# retry on this model instead of dying mid-review. Comma-separated list allowed.
+# Does NOT ride the interactive `plan` stage (ritual design: interactive
+# stages negotiate with you), and triggers on overload, not on entitlement.
+fallback_model = "claude-opus-4-8"
+
+[models]
+# Planning → Fable 5.
+plan        = "claude-fable-5"   # interactive plan mode
+plan-review = "claude-fable-5"   # headless critique of the plan (gets the Opus fallback above)
+
+[effort]
+# Deep planning: give the plan stage maximum reasoning effort.
+# Stage keys: spec, plan, plan-review, tests-red, implement, dual-review.
+# `spec` is local (no CLI) so an effort there is a no-op.
+plan = "xhigh"
