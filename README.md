@@ -224,6 +224,7 @@ base_ref = "main"
 budget_daily_usd = 5.0        # omit for no ceiling
 budget_plan_review_usd = 5.0  # per-run --max-budget-usd caps
 budget_dual_review_usd = 10.0
+budget_finding_fix_usd = 1.0  # per-fix cap (F: reads plan+spec, edits one section)
 redaction = true
 notifications = true
 check_timeout_secs = 600      # hung build / dead HIL board can't wedge the loop
@@ -232,10 +233,13 @@ fallback_model = ""           # overload fallback for headless claude runs
 # nvim_server = "/run/user/1000/nvim.12345.0"   # explicit socket (auto-discovered otherwise)
 
 [keys]                        # rebind any action
-check-full = "F"
+check-full = "W"
 
 [models]                      # per-stage model routing
 plan-review = "opus"
+
+[effort]                      # per-stage reasoning effort (plan-fix = the F fix runs)
+plan = "xhigh"
 
 [retry]                       # palette offers for failed stages
 models = ["claude-opus-4-8"]
@@ -282,7 +286,7 @@ blame = "git log --oneline -3 -- {{finding.file}}"
 
 All rebindable via `[keys]`:
 
-`enter` run/open · `s` chat: edit spec/plan · `:` palette · `j/k` move · `tab` `1-5` panes (`5` = in-app guide & tips) · `f/d/v` finding fix/dismiss/show-resolved · `/` filter list · `[` `]` features · `a` takeover · `o` open in nvim · `Q` findings → quickfix · `c/C` check fast/full · `x` cancel · `e` editor · `r` refresh · `g/G` scroll/follow · `?` help · `q` quit. In chat: `Ctrl+Z` undo · `Alt+Z` redo · `Ctrl+X` cancel · `Alt+Enter` newline
+`enter` run stage / finding details · `s` chat: edit spec/plan · `:` palette · `j/k` move · `tab` `1-5` panes (`5` = in-app guide & tips) · `f/d/v` finding fix/dismiss/show-resolved · `F` claude fix (plan findings; scoped + gated) · `u` revert last claude fix · `/` filter list · `[` `]` features · `a` takeover · `o` open in nvim · `Q` findings → quickfix · `c/C` check fast/full · `x` cancel · `e` editor · `r` refresh · `g/G` scroll/follow · `?` help · `q` quit. In chat: `Ctrl+Z` undo · `Alt+Z` redo · `Ctrl+X` cancel · `Alt+Enter` newline
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
