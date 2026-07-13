@@ -46,6 +46,45 @@ fn fill_row<'a>(mut spans: Vec<Span<'a>>, width: u16, bg: ratatui::style::Color)
     Line::from(spans)
 }
 
+/// `fill_row` with a right-aligned chip. The chip WINS over the row tail:
+/// when both don't fit, the row content is truncated char-safe with an
+/// ellipsis so the triage state stays visible. Only degenerate widths
+/// (nothing left for content) fall back to a plain fill.
+fn fill_row_chip<'a>(
+    spans: Vec<Span<'a>>,
+    chip: Vec<Span<'a>>,
+    width: u16,
+    bg: ratatui::style::Color,
+) -> Line<'a> {
+    let chip_w = visible_width(&chip);
+    let width = width as usize;
+    if chip_w == 0 || width < chip_w + 4 {
+        return fill_row(spans, width as u16, bg);
+    }
+    let budget = width - chip_w - 1; // row content + at least one gap space
+    let mut out: Vec<Span> = Vec::new();
+    let mut used = 0usize;
+    for s in spans {
+        let w = s.content.chars().count();
+        if used + w <= budget {
+            used += w;
+            out.push(s);
+        } else {
+            let take = budget - used - 1;
+            let clipped: String = s.content.chars().take(take).collect();
+            out.push(Span::styled(format!("{clipped}…"), s.style));
+            used += take + 1;
+            break;
+        }
+    }
+    out.push(Span::styled(
+        " ".repeat(width - chip_w - used),
+        Style::default().bg(bg),
+    ));
+    out.extend(chip);
+    Line::from(out)
+}
+
 /// A powerline segment:  cap, colored body, slanted  tail (user's NvChad
 /// "default" style). `base` is the bar background the caps blend into.
 fn pl_segment<'a>(
@@ -987,32 +1026,22 @@ fn draw_findings(f: &mut Frame, app: &App, area: Rect) {
         let mut spans: Vec<Span> = vec![Span::styled(" ", Style::default().bg(row_bg))];
         spans.extend(severity_pill(t, finding.severity));
         spans.push(Span::styled(" ", Style::default().bg(row_bg)));
-        if resolved {
-            let (mark, color) = if finding.action == "fixed" {
-                ("✓fixed ", t.ok())
+        if finding.cross_confirmed() {
+            if resolved {
+                spans.push(Span::styled(
+                    "◆both ",
+                    Style::default().fg(t.comment()).bg(row_bg),
+                ));
             } else {
-                ("∅dismissed", t.comment())
-            };
-            spans.push(Span::styled(mark, Style::default().fg(color).bg(row_bg)));
-        } else if finding.cross_confirmed() {
-            spans.extend(pill(t, " ◆both ".into(), t.ok()));
+                spans.extend(pill(t, " ◆both ".into(), t.ok()));
+            }
         } else {
             spans.push(Span::styled(
                 "◇single",
-                Style::default().fg(t.warn()).bg(row_bg),
+                Style::default()
+                    .fg(if resolved { t.comment() } else { t.warn() })
+                    .bg(row_bg),
             ));
-        }
-        // Triage answer marker: queued for the claude batch / yours to fix.
-        match finding.answer.as_deref() {
-            Some("auto") if !resolved => spans.push(Span::styled(
-                " ⚑A",
-                Style::default().fg(t.accent()).bg(row_bg),
-            )),
-            Some("manual") if !resolved => spans.push(Span::styled(
-                " ⚑M",
-                Style::default().fg(t.info()).bg(row_bg),
-            )),
-            _ => {}
         }
         // The plan step no longer locates: don't pretend the link holds.
         if app.is_anchor_lost(af) {
@@ -1036,7 +1065,57 @@ fn draw_findings(f: &mut Frame, app: &App, area: Rect) {
                     Modifier::empty()
                 }),
         ));
-        lines.push(fill_row(spans, area.width, row_bg));
+        // Right-aligned triage chip: current state, else a dim ghost of what
+        // `t` (one-touch triage) would do with this finding.
+        let chip: Vec<Span> = if resolved {
+            if finding.action == "fixed" {
+                vec![Span::styled(
+                    "✓ fixed ",
+                    Style::default().fg(t.ok()).bg(row_bg),
+                )]
+            } else {
+                vec![Span::styled(
+                    "∅ dismissed ",
+                    Style::default().fg(t.comment()).bg(row_bg),
+                )]
+            }
+        } else {
+            match finding.answer.as_deref() {
+                Some("auto") => vec![Span::styled(
+                    "⚑A queued ",
+                    Style::default().fg(t.accent()).bg(row_bg),
+                )],
+                Some("manual") => vec![Span::styled(
+                    "⚑M manual ",
+                    Style::default().fg(t.info()).bg(row_bg),
+                )],
+                _ if finding.reason.is_some() => vec![Span::styled(
+                    "✗ declined ",
+                    Style::default().fg(t.warn()).bg(row_bg),
+                )],
+                _ => match crate::findings::recommend(finding) {
+                    Some(rec) => {
+                        use crate::findings::Recommendation as R;
+                        let label = match rec {
+                            R::QueueAuto => "→⚑A",
+                            R::QueueManual => "→⚑M",
+                            R::Archive => "→✓",
+                            R::Dismiss(_) => "→∅",
+                            R::NeedsYou => "→you",
+                        };
+                        vec![Span::styled(
+                            format!("{label} "),
+                            Style::default()
+                                .fg(t.comment())
+                                .bg(row_bg)
+                                .add_modifier(Modifier::DIM),
+                        )]
+                    }
+                    None => vec![],
+                },
+            }
+        };
+        lines.push(fill_row_chip(spans, chip, area.width, row_bg));
 
         let stage = &app.findings[*src].file.stage;
         lines.push(Line::from(vec![
@@ -1430,6 +1509,23 @@ fn draw_finding_detail(f: &mut Frame, app: &App) {
             Style::default().fg(t.warn()),
         )));
     }
+    if finding.answer.is_none()
+        && !finding.resolved()
+        && let Some(rec) = crate::findings::recommend(finding)
+    {
+        use crate::findings::Recommendation as R;
+        let text = match rec {
+            R::QueueAuto => "recommended: queue for claude — confirmed plan finding",
+            R::QueueManual => "recommended: fix manually — confirmed code finding",
+            R::Archive => "recommended: archive — resolution already recorded in action",
+            R::Dismiss(_) => "recommended: dismiss — withdrawn/refuted by review",
+            R::NeedsYou => "recommended: your judgment — no safe default",
+        };
+        lines.push(Line::from(Span::styled(
+            text,
+            Style::default().fg(t.comment()),
+        )));
+    }
     lines.push(Line::default());
     if !finding.scenario.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -1710,4 +1806,43 @@ fn draw_confirm_quit(f: &mut Frame, t: &Theme) {
         .alignment(Alignment::Center),
         inner,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::Color;
+
+    #[test]
+    fn fill_row_chip_pads_truncates_and_degrades() {
+        let spans = vec![Span::raw("abcde")]; // 5 wide
+        let chip = vec![Span::raw("XY")]; // 2 wide
+
+        // Fits: middle padded so the chip ends at `width`.
+        let line = fill_row_chip(spans.clone(), chip.clone(), 10, Color::Reset);
+        assert_eq!(visible_width(&line.spans), 10);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "abcde   XY");
+
+        // Minimum one-space gap still fits untruncated.
+        let line = fill_row_chip(spans.clone(), chip.clone(), 8, Color::Reset);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "abcde XY");
+
+        // Tight: the CHIP wins — content truncates with an ellipsis.
+        let line = fill_row_chip(spans.clone(), chip.clone(), 7, Color::Reset);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "abc… XY");
+        assert_eq!(visible_width(&line.spans), 7);
+
+        // Degenerate width: nothing left for content -> plain fill.
+        let line = fill_row_chip(spans.clone(), chip, 5, Color::Reset);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "abcde");
+
+        // Empty chip degrades to plain fill.
+        let line = fill_row_chip(spans, vec![], 9, Color::Reset);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "abcde    ");
+    }
 }

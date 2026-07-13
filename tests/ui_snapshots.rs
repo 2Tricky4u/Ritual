@@ -167,7 +167,16 @@ fn dashboard_findings_tab_triage_states() {
                "verdict":"confirmed","action":"pending","answer":"manual"},
               {"id":3,"severity":"minor","title":"declined by the last batch",
                "plan_step":"Step 4","scenario":"s3","sources":["claude"],
-               "verdict":"confirmed","action":"pending","reason":"needs a spec change"}
+               "verdict":"confirmed","action":"pending","reason":"needs a spec change"},
+              {"id":4,"severity":"major","title":"resolution recorded by the review",
+               "plan_step":"Step 5","scenario":"s4","sources":["claude","codex"],
+               "verdict":"accepted","action":"Resolved by reordering the dump before the snapshot."},
+              {"id":5,"severity":"minor","title":"retracted in round 2",
+               "plan_step":"Step 6","scenario":"s5","sources":["codex"],
+               "verdict":"refuted","action":"pending"},
+              {"id":6,"severity":"critical","title":"untriaged confirmed plan gap",
+               "plan_step":"Step 2","scenario":"s6","sources":["claude","codex"],
+               "verdict":"confirmed","action":"pending"}
             ]}"#,
     )
     .unwrap();

@@ -1,16 +1,15 @@
 ---
 source: tests/ui_snapshots.rs
-assertion_line: 117
 expression: render(&app)
 ---
 "                            │   live   findings   history    plan    guide              "
 "  PIPELINE ──────────────── │─────────────────────────────────────────────────────────────"
 "  ○ spec                    │                                                             "
-"  ○ plan                    │   CRIT   ◆both  src/state.rs:42 Race in state save      "
+"  ○ plan                    │   CRIT   ◆both  src/state.rs:42 Race in state save →⚑M  "
 "  ○ plan-review             │    two writers [dual-review:confirmed]                      "
 "  ○ tests-red               │    ▏ let st = load(&path)?; // no lock …                    "
 "  ○ implement               │                                                             "
-"  ○ dual-review             │   minr  ◇single src/x.rs:7 Long line                      "
+"  ○ dual-review             │   minr  ◇single src/x.rs:7 Long line                →you  "
 "                            │    style-ish [dual-review:unconfirmed]                      "
 " 󰚩 AGENTS ───────────────── │                                                             "
 "  󰚩 claude …                │                                                             "

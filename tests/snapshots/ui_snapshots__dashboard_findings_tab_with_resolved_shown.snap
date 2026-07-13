@@ -1,18 +1,17 @@
 ---
 source: tests/ui_snapshots.rs
-assertion_line: 141
 expression: render(&app)
 ---
 "                            │   live   findings   history    plan    guide              "
 "  PIPELINE ──────────────── │─────────────────────────────────────────────────────────────"
 "  ○ spec                    │                                                             "
-"  ○ plan                    │   CRIT   ◆both  src/a.rs:3 Open bug                     "
+"  ○ plan                    │   CRIT   ◆both  src/a.rs:3 Open bug                →⚑M  "
 "  ○ plan-review             │    boom [dual-review:confirmed]                             "
 "  ○ tests-red               │                                                             "
-"  ○ implement               │   MAJR  ✓fixed  src/b.rs:9 Was fixed                      "
+"  ○ implement               │   MAJR  ◇single src/b.rs:9 Was fixed             ✓ fixed  "
 "  ○ dual-review             │    [dual-review:confirmed]                                  "
 "                            │                                                             "
-" 󰚩 AGENTS ───────────────── │   minr  ∅dismissed  Noise                                 "
+" 󰚩 AGENTS ───────────────── │   minr  ◇single  Noise                       ∅ dismissed  "
 "  󰚩 claude …                │    [dual-review:unconfirmed]                                "
 "  󰚩 codex …                 │                                                             "
 "  󱘖 bridge …                │                                                             "
