@@ -1731,7 +1731,7 @@ impl App {
     /// entirely become needs-attention.
     pub fn reconcile_stale_runs(&mut self) {
         let mut fixes: Vec<(String, StageId, StageStatus)> = Vec::new();
-        for (_, feature) in self.state.features.iter() {
+        for feature in self.state.features.values() {
             for (stage_id, sstate) in feature.stages.iter() {
                 if sstate.status != StageStatus::Running {
                     continue;
