@@ -1,0 +1,26 @@
+---
+source: tests/ui_snapshots.rs
+expression: render(&app)
+---
+"                            │   live   findings   history    plan    guide              "
+"  PIPELINE ──────────────── │─────────────────────────────────────────────────────────────"
+"  ○╭ finding ─────────────────────────────────────────────────────────────────────────╮   "
+"  ○│Deletion paths built from untrusted run ids can escape the runs dir               │ta "
+"  ○│ MAJR  ◇single  claude  confirmed [plan-review]                                 │e  "
+"  ○│plan step: Step 2 (delete via history::load_all metas)                            │   "
+"  ○│                                                                                  │   "
+"  ○│A malicious or corrupt meta file carrying a run_id like ../../src lets the cleanup│   "
+"   │step build a deletion path outside .ritual/runs, deleting arbitrary project files │   "
+" 󰚩 │when clean executes with --keep 0 on a poisoned workspace.                        │   "
+"  󰚩│                                                                                  │   "
+"  󰚩│                                                                                  │   "
+"  󱘖│                                                                                  │   "
+"   │                                                                                  │   "
+"   │                                                                                  │   "
+"   │                                                                                  │   "
+"   │                                                                                  │   "
+"   │                                                                                  │   "
+"   │ f  fix   d  dismiss   o  nvim   e  editor   j/k  next   esc  close               │   "
+"   ╰──────────────────────────────────────────────────────────────────────────────────╯   "
+"                            │                                                             "
+" RITUAL   detached  detached                                                          "

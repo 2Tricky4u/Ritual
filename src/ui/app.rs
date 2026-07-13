@@ -79,6 +79,9 @@ pub struct App {
     pub stream_scroll: Option<usize>, // None = follow tail
     pub findings: Vec<LoadedFindings>,
     pub selected_finding: usize,
+    /// Detail overlay over the selected finding (Enter on the findings tab).
+    /// Stateless: it renders whatever the cursor points at.
+    pub finding_detail: bool,
     /// Show findings already marked fixed/dismissed (toggled with `v`).
     pub show_resolved: bool,
     /// `/` filter over the findings/history lists (empty = inactive).
@@ -209,6 +212,7 @@ impl App {
             stream_scroll: None,
             findings,
             selected_finding: 0,
+            finding_detail: false,
             show_resolved: false,
             filter: String::new(),
             filter_editing: false,
@@ -447,6 +451,10 @@ impl App {
         }
         if self.palette.is_some() {
             self.palette_input(key.code, tx);
+            return;
+        }
+        if self.finding_detail {
+            self.detail_input(key, tx);
             return;
         }
         if self.chat.is_some() {
@@ -711,7 +719,12 @@ impl App {
 
     fn on_enter(&mut self, tx: &mpsc::Sender<AppMsg>) {
         if self.tab == Tab::Findings {
-            self.open_editor();
+            // Enter opens the detail overlay ($EDITOR stays on `e`).
+            if self.selected_finding_af().is_some() {
+                self.finding_detail = true;
+            } else {
+                self.status_msg = Some("no finding selected".into());
+            }
             return;
         }
         if self.running.is_some() || self.chat_running() {
@@ -1747,10 +1760,42 @@ impl App {
     }
 
     /// The aggregated finding under the cursor, if any.
-    fn selected_finding_af(&self) -> Option<crate::findings::AggregatedFinding> {
+    pub fn selected_finding_af(&self) -> Option<crate::findings::AggregatedFinding> {
         self.visible_findings()
             .into_iter()
             .nth(self.selected_finding)
+    }
+
+    /// Keys while the finding detail overlay is open: a whitelist of the
+    /// findings-tab actions, resolved through the keymap so rebinds hold.
+    /// The overlay is stateless (renders the cursor's finding), so j/k just
+    /// move the cursor underneath it.
+    fn detail_input(&mut self, key: KeyEvent, tx: &mpsc::Sender<AppMsg>) {
+        let _ = tx; // parity with the other modal handlers; no spawns yet (P4 adds F)
+        if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
+            self.finding_detail = false;
+            return;
+        }
+        match self.cfg.keymap.resolve(key.code, key.modifiers) {
+            Some(Action::Down) => self.nav(1),
+            Some(Action::Up) => self.nav(-1),
+            Some(Action::FindingFix) => {
+                self.finding_set_action("fixed");
+                self.finding_detail = false;
+            }
+            Some(Action::FindingDismiss) => {
+                self.finding_set_action("dismissed");
+                self.finding_detail = false;
+            }
+            Some(Action::NvimOpen) => self.nvim_open(), // stays open (remote jump)
+            Some(Action::OpenEditor) => {
+                self.finding_detail = false;
+                self.open_editor(); // suspends the TUI into $EDITOR
+            }
+            Some(Action::Help) => self.show_help = true, // paints on top
+            Some(Action::Quit) => self.finding_detail = false, // q closes a modal
+            _ => {}
+        }
     }
 
     /// The plan document a plan-review finding (from findings-file `file_idx`)
@@ -2222,6 +2267,84 @@ mod tests {
         assert_eq!(locate_plan_step(plan, "Risks section / Step 3"), Some(6));
         // A step number with no matching list item -> None (open at the top).
         assert_eq!(locate_plan_step(plan, "Step 9"), None);
+    }
+
+    /// Seed one on-disk findings file and land on the findings tab.
+    fn seed_findings(app: &mut App, json: &str) {
+        std::fs::create_dir_all(app.dirs.findings_dir()).unwrap();
+        std::fs::write(
+            app.dirs
+                .findings_dir()
+                .join("20260713T000000Z-plan-review.json"),
+            json,
+        )
+        .unwrap();
+        app.reload_artifacts();
+        app.tab = Tab::Findings;
+    }
+
+    #[test]
+    fn enter_opens_detail_and_esc_closes() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_findings(
+            &mut app,
+            r#"{"stage":"plan-review","findings":[
+                {"id":1,"title":"boom","plan_step":"Step 2","severity":"major","verdict":"confirmed"}]}"#,
+        );
+        app.dispatch(Action::Confirm, &tx);
+        assert!(app.finding_detail, "enter opens the overlay");
+        app.on_input(
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            &tx,
+        );
+        assert!(!app.finding_detail, "esc closes it");
+        // q also closes the modal instead of quitting.
+        app.finding_detail = true;
+        app.on_input(
+            Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert!(!app.finding_detail);
+        assert!(!app.quit);
+    }
+
+    #[test]
+    fn detail_f_marks_fixed_and_closes() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_findings(
+            &mut app,
+            r#"{"stage":"plan-review","findings":[
+                {"id":1,"title":"boom","plan_step":"Step 2","severity":"major","verdict":"confirmed"}]}"#,
+        );
+        app.dispatch(Action::Confirm, &tx);
+        assert!(app.finding_detail);
+        app.on_input(
+            Event::Key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert!(
+            !app.finding_detail,
+            "acting on the finding closes the overlay"
+        );
+        let json = std::fs::read_to_string(
+            app.dirs
+                .findings_dir()
+                .join("20260713T000000Z-plan-review.json"),
+        )
+        .unwrap();
+        assert!(
+            json.contains(r#""action": "fixed""#),
+            "write-through: {json}"
+        );
+    }
+
+    #[test]
+    fn enter_with_no_findings_shows_status_not_overlay() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.tab = Tab::Findings;
+        app.dispatch(Action::Confirm, &tx);
+        assert!(!app.finding_detail);
+        assert_eq!(app.status_msg.as_deref(), Some("no finding selected"));
     }
 
     #[test]

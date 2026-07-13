@@ -189,6 +189,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     draw_statusline(f, app, rows[1]);
 
+    if app.finding_detail {
+        draw_finding_detail(f, app);
+    }
     if app.show_help {
         draw_help(f, t);
     }
@@ -1288,6 +1291,113 @@ fn draw_statusline(f: &mut Frame, app: &App, area: Rect) {
 // ---------------------------------------------------------------------------
 // overlays
 // ---------------------------------------------------------------------------
+
+/// The finding detail overlay (Enter on the findings tab): everything the
+/// findings JSON records about the cursor's finding, wrapped to the panel.
+fn draw_finding_detail(f: &mut Frame, app: &App) {
+    let t = &app.cfg.theme;
+    let Some(af) = app.selected_finding_af() else {
+        return; // the list emptied under the overlay; nothing to show
+    };
+    let finding = &af.finding;
+    let area = centered_rect(
+        f.area(),
+        84.min(f.area().width.saturating_sub(2)).max(1),
+        18.min(f.area().height.saturating_sub(2)).max(1),
+    );
+    let inner = float_panel(f, t, area, "finding");
+    if inner.height < 2 {
+        return;
+    }
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    let stage = app
+        .findings
+        .get(af.file_idx)
+        .map(|lf| lf.file.stage.as_str())
+        .unwrap_or_default();
+    let mut lines: Vec<Line> = vec![Line::from(Span::styled(
+        finding.title.clone(),
+        Style::default().fg(t.fg()).add_modifier(Modifier::BOLD),
+    ))];
+    let mut pills: Vec<Span> = Vec::new();
+    pills.extend(severity_pill(t, finding.severity));
+    pills.push(Span::raw(" "));
+    if finding.cross_confirmed() {
+        pills.extend(pill(t, " ◆both ".into(), t.ok()));
+    } else {
+        pills.push(Span::styled("◇single", Style::default().fg(t.warn())));
+    }
+    pills.push(Span::styled(
+        format!("  {}", finding.sources.join("+")),
+        Style::default().fg(t.comment()),
+    ));
+    pills.push(Span::styled(
+        format!("  {} ", finding.verdict),
+        Style::default().fg(t.info()),
+    ));
+    pills.push(Span::styled(
+        format!("[{stage}]"),
+        Style::default().fg(t.comment()),
+    ));
+    if finding.resolved() {
+        let (mark, color) = if finding.action == "fixed" {
+            (" ✓fixed", t.ok())
+        } else {
+            (" ∅dismissed", t.comment())
+        };
+        pills.push(Span::styled(mark, Style::default().fg(color)));
+    }
+    lines.push(Line::from(pills));
+    let location = match (&finding.file, &finding.plan_step) {
+        (Some(_), _) => finding.location(),
+        (None, Some(step)) => format!("plan step: {step}"),
+        _ => String::new(),
+    };
+    if !location.is_empty() {
+        lines.push(Line::from(Span::styled(
+            location,
+            Style::default().fg(t.info()),
+        )));
+    }
+    lines.push(Line::default());
+    if !finding.scenario.is_empty() {
+        lines.push(Line::from(Span::styled(
+            finding.scenario.clone(),
+            Style::default().fg(t.fg()),
+        )));
+    }
+    if let Some(snippet) = &finding.snippet {
+        lines.push(Line::default());
+        for l in snippet.lines() {
+            lines.push(Line::from(Span::styled(
+                format!("▏ {l}"),
+                Style::default().fg(t.comment()).add_modifier(Modifier::DIM),
+            )));
+        }
+    }
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), rows[0]);
+
+    let mut footer: Vec<Span> = Vec::new();
+    for (key, label) in [
+        ("f", "fix"),
+        ("d", "dismiss"),
+        ("o", "nvim"),
+        ("e", "editor"),
+        ("j/k", "next"),
+        ("esc", "close"),
+    ] {
+        footer.push(keycap(t, key));
+        footer.push(Span::styled(
+            format!(" {label}  "),
+            Style::default().fg(t.comment()),
+        ));
+    }
+    f.render_widget(Paragraph::new(Line::from(footer)), rows[1]);
+}
 
 fn draw_palette(f: &mut Frame, app: &App) {
     let t = &app.cfg.theme;

@@ -150,6 +150,50 @@ fn dashboard_help_overlay() {
 }
 
 #[test]
+fn dashboard_finding_detail_code_finding() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".ritual/findings")).unwrap();
+    std::fs::write(
+        tmp.path()
+            .join(".ritual/findings/20260711T000000Z-dual-review.json"),
+        r#"{"ritual_findings":1,"stage":"dual-review","branch":"main",
+            "findings":[
+              {"id":1,"severity":"critical","title":"Race in state save","file":"src/state.rs","line":42,
+               "snippet":"let st = load(&path)?; // no lock\nsave(&path, &st)?;",
+               "scenario":"two writers clobber each other","sources":["claude","codex"],
+               "verdict":"confirmed","action":"pending"}
+            ]}"#,
+    )
+    .unwrap();
+    let mut app = setup_app(&tmp);
+    app.tab = Tab::Findings;
+    app.finding_detail = true;
+    insta::assert_snapshot!(render(&app));
+}
+
+#[test]
+fn dashboard_finding_detail_plan_finding_wraps() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".ritual/findings")).unwrap();
+    std::fs::write(
+        tmp.path()
+            .join(".ritual/findings/20260711T000000Z-plan-review.json"),
+        r#"{"ritual_findings":1,"stage":"plan-review","branch":"main",
+            "findings":[
+              {"id":1,"severity":"major","title":"Deletion paths built from untrusted run ids can escape the runs dir",
+               "plan_step":"Step 2 (delete via history::load_all metas)",
+               "scenario":"A malicious or corrupt meta file carrying a run_id like ../../src lets the cleanup step build a deletion path outside .ritual/runs, deleting arbitrary project files when clean executes with --keep 0 on a poisoned workspace.",
+               "sources":["claude"],"verdict":"confirmed","action":"pending"}
+            ]}"#,
+    )
+    .unwrap();
+    let mut app = setup_app(&tmp);
+    app.tab = Tab::Findings;
+    app.finding_detail = true;
+    insta::assert_snapshot!(render(&app));
+}
+
+#[test]
 fn dashboard_ascii_mode() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = setup_app(&tmp);
@@ -307,6 +351,25 @@ fn rendering_survives_hostile_sizes_in_every_state() {
                 let t = tempfile::tempdir().unwrap();
                 let mut a = setup_app(&t);
                 a.show_help = true;
+                (t, a)
+            }),
+        ),
+        (
+            "finding-detail",
+            Box::new(|| {
+                let t = tempfile::tempdir().unwrap();
+                std::fs::create_dir_all(t.path().join(".ritual/findings")).unwrap();
+                std::fs::write(
+                    t.path().join(".ritual/findings/20260712T000000Z-plan-review.json"),
+                    r#"{"stage":"plan-review","findings":[
+                        {"id":1,"severity":"major","title":"plan finding with a long scenario for wrap math",
+                         "plan_step":"Step 2 (deletion)","snippet":"2. Enumerate by FILENAME",
+                         "scenario":"a scenario long enough to wrap across the detail panel on every hostile width we throw at it","sources":["claude"],"verdict":"confirmed","action":"pending"}]}"#,
+                )
+                .unwrap();
+                let mut a = setup_app(&t);
+                a.tab = Tab::Findings;
+                a.finding_detail = true;
                 (t, a)
             }),
         ),
