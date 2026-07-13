@@ -1746,11 +1746,52 @@ impl App {
         self.status_msg = Some("refreshed".into());
     }
 
-    /// The finding under the cursor, if any (Findings tab or last selection).
-    fn selected_finding_ref(&self) -> Option<crate::findings::Finding> {
+    /// The aggregated finding under the cursor, if any.
+    fn selected_finding_af(&self) -> Option<crate::findings::AggregatedFinding> {
         self.visible_findings()
-            .get(self.selected_finding)
-            .map(|af| af.finding.clone())
+            .into_iter()
+            .nth(self.selected_finding)
+    }
+
+    /// The plan document a plan-review finding (from findings-file `file_idx`)
+    /// refers to: resolved from that file's branch, falling back to the feature
+    /// currently in view.
+    fn plan_path_for(&self, file_idx: usize) -> std::path::PathBuf {
+        let slug = self
+            .findings
+            .get(file_idx)
+            .map(|lf| lf.file.branch.as_str())
+            .filter(|b| !b.is_empty())
+            .map(state::branch_slug)
+            .unwrap_or_else(|| self.slug.clone());
+        self.dirs.plan_file(&slug)
+    }
+
+    /// What "open" should target for a finding. Code findings use their own
+    /// `file:line`; plan-review findings have no file but a `plan_step`, so they
+    /// target the feature's plan document at that step's line (best-effort).
+    /// Returns (absolute path, line, short label) or a status message to show.
+    fn finding_open_target(
+        &self,
+        af: &crate::findings::AggregatedFinding,
+    ) -> Result<(std::path::PathBuf, Option<u32>, String), &'static str> {
+        let f = &af.finding;
+        if let Some(file) = &f.file {
+            let cwd = self
+                .run_cwd()
+                .unwrap_or_else(|| self.dirs.work_root.clone());
+            return Ok((cwd.join(file), f.line, file.clone()));
+        }
+        if let Some(step) = &f.plan_step {
+            let plan = self.plan_path_for(af.file_idx);
+            let Ok(text) = std::fs::read_to_string(&plan) else {
+                return Err(
+                    "plan-review finding, but no plan.md on disk; run the plan stage first",
+                );
+            };
+            return Ok((plan, locate_plan_step(&text, step), "plan.md".into()));
+        }
+        Err("finding has no file location")
     }
 
     /// `f`/`d` on the findings tab: mark the selected finding fixed/dismissed
@@ -1785,13 +1826,16 @@ impl App {
     /// `o`: open the selected finding in a RUNNING nvim (no TUI suspend).
     /// Falls back to the attached $EDITOR flow when no server is found.
     fn nvim_open(&mut self) {
-        let Some(finding) = self.selected_finding_ref() else {
+        let Some(af) = self.selected_finding_af() else {
             self.status_msg = Some("no finding selected".into());
             return;
         };
-        let Some(file) = finding.file.clone() else {
-            self.status_msg = Some("finding has no file location".into());
-            return;
+        let (path, line, label) = match self.finding_open_target(&af) {
+            Ok(t) => t,
+            Err(msg) => {
+                self.status_msg = Some(msg.into());
+                return;
+            }
         };
         let server = self
             .agents
@@ -1803,23 +1847,21 @@ impl App {
             self.open_editor();
             return;
         };
-        let cwd = self
-            .run_cwd()
-            .unwrap_or_else(|| self.dirs.work_root.clone());
-        let path = cwd.join(&file);
-        match crate::nvim::open_at(&server, &path, finding.line) {
+        match crate::nvim::open_at(&server, &path, line) {
             Ok(()) => {
                 self.status_msg = Some(format!(
                     " nvim: {}{}",
-                    file,
-                    finding.line.map(|l| format!(":{l}")).unwrap_or_default()
+                    label,
+                    line.map(|l| format!(":{l}")).unwrap_or_default()
                 ));
             }
             Err(e) => self.status_msg = Some(format!("nvim: {e:#}")),
         }
     }
 
-    /// `Q`: push every located finding into the remote nvim quickfix list.
+    /// `Q`: push every locatable finding into the remote nvim quickfix list.
+    /// Code findings anchor at their file:line; plan-review findings anchor in
+    /// the plan document at the referenced step.
     fn nvim_quickfix(&mut self) {
         let server = self
             .agents
@@ -1836,12 +1878,23 @@ impl App {
         let entries: Vec<crate::nvim::QfEntry> =
             crate::findings::aggregate(&self.findings, self.show_resolved)
                 .into_iter()
-                .map(|af| af.finding)
-                .filter_map(|f| {
-                    let file = f.file.as_ref()?;
+                .filter_map(|af| {
+                    let f = &af.finding;
+                    let (file, line) = if let Some(rel) = &f.file {
+                        (cwd.join(rel).display().to_string(), f.line.unwrap_or(1))
+                    } else if let Some(step) = &f.plan_step {
+                        let plan = self.plan_path_for(af.file_idx);
+                        let line = std::fs::read_to_string(&plan)
+                            .ok()
+                            .and_then(|t| locate_plan_step(&t, step))
+                            .unwrap_or(1);
+                        (plan.display().to_string(), line)
+                    } else {
+                        return None;
+                    };
                     Some(crate::nvim::QfEntry {
-                        file: cwd.join(file).display().to_string(),
-                        line: f.line.unwrap_or(1),
+                        file,
+                        line,
                         text: format!(
                             "{}{}: {} [{}]",
                             f.severity.label(),
@@ -1859,21 +1912,23 @@ impl App {
     }
 
     fn open_editor(&mut self) {
-        let agg = self.visible_findings();
-        let Some(finding) = agg.get(self.selected_finding).map(|af| &af.finding) else {
+        let Some(af) = self.selected_finding_af() else {
             self.status_msg = Some("no finding selected".into());
             return;
         };
-        let Some(file) = &finding.file else {
-            self.status_msg = Some("finding has no file location".into());
-            return;
+        let (path, line, _label) = match self.finding_open_target(&af) {
+            Ok(t) => t,
+            Err(msg) => {
+                self.status_msg = Some(msg.into());
+                return;
+            }
         };
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".into());
         let mut argv = vec![editor];
-        if let Some(line) = finding.line {
+        if let Some(line) = line {
             argv.push(format!("+{line}"));
         }
-        argv.push(file.clone());
+        argv.push(path.display().to_string());
         let cwd = self
             .run_cwd()
             .unwrap_or_else(|| self.dirs.work_root.clone());
@@ -1883,6 +1938,64 @@ impl App {
             cwd,
         });
     }
+}
+
+/// Best-effort 1-based line in `plan` for a plan-review finding's free-text
+/// `step`. Tries, in order: the whole step text, a leading headline like
+/// "Step 2", and the ordered-list item ("2." / "2)") that plans number their
+/// steps with. None when nothing matches — the caller opens the plan at the top.
+fn locate_plan_step(plan: &str, step: &str) -> Option<u32> {
+    let needle = step.trim().to_lowercase();
+    if needle.is_empty() {
+        return None;
+    }
+    // 1) Whole step text appears verbatim on a line.
+    if let Some(n) = line_where(plan, |l| l.contains(&needle)) {
+        return Some(n);
+    }
+    // 2) The step's headline: the text before the first '(' or '/'.
+    let headline = needle.split(['(', '/']).next().unwrap_or("").trim();
+    if headline.len() >= 3
+        && headline != needle
+        && let Some(n) = line_where(plan, |l| l.contains(headline))
+    {
+        return Some(n);
+    }
+    // 3) "Step 2" / "Steps 2-4" -> the "2." or "2)" ordered-list item that
+    //    plan-mode plans number their steps with.
+    if let Some(num) = step_number(&needle) {
+        let dot = format!("{num}.");
+        let paren = format!("{num})");
+        if let Some(n) = line_where(plan, |l| {
+            let t = l.trim_start();
+            t.starts_with(&dot) || t.starts_with(&paren)
+        }) {
+            return Some(n);
+        }
+    }
+    None
+}
+
+/// First 1-based line whose lowercased text satisfies `pred`.
+fn line_where<F: Fn(&str) -> bool>(plan: &str, pred: F) -> Option<u32> {
+    plan.lines()
+        .position(|l| pred(&l.to_lowercase()))
+        .map(|i| i as u32 + 1)
+}
+
+/// The step number in a plan_step: digits right after "step", else the first
+/// digit run anywhere ("Step 2 (x)" -> 2, "Steps 2-4" -> 2).
+fn step_number(needle: &str) -> Option<u32> {
+    let tail = needle
+        .find("step")
+        .map(|i| &needle[i + 4..])
+        .unwrap_or(needle);
+    tail.trim_start_matches(|c: char| !c.is_ascii_digit())
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .ok()
 }
 
 /// The newest live run the TUI can resume. Chat runs ("spec-chat" etc.) have
@@ -2084,6 +2197,77 @@ mod tests {
         // Only chat runs live -> nothing to resume (they stay daemon-only).
         std::fs::remove_file(runs.join("20260712T000001Z-1-1-plan-review.status")).unwrap();
         assert!(newest_resumable_run(&dirs).is_none());
+    }
+
+    #[test]
+    fn locate_plan_step_prefers_whole_then_headline_then_none() {
+        let plan = "# Plan\n\n### Step 1 — scaffold\ndo thing\n\n### Step 2 — delete\nmore\n";
+        // Whole-text substring match.
+        assert_eq!(locate_plan_step(plan, "do thing"), Some(4));
+        // Headline fallback: "Step 2" extracted from "Step 2 (delete via x)".
+        assert_eq!(locate_plan_step(plan, "Step 2 (delete via x)"), Some(6));
+        // Nothing matches, empty/whitespace.
+        assert_eq!(locate_plan_step(plan, "nonexistent"), None);
+        assert_eq!(locate_plan_step(plan, "   "), None);
+    }
+
+    #[test]
+    fn locate_plan_step_maps_numbered_list_steps() {
+        // The real plan-mode convention: a "## Steps" ordered list, not "Step N".
+        let plan =
+            "# Plan\n\n## Steps\n1. first thing\n2. enumerate by filename\n3. classify groups\n";
+        // lines: 4 = "1. first", 5 = "2. enumerate", 6 = "3. classify".
+        assert_eq!(locate_plan_step(plan, "Step 2 (enumerate)"), Some(5));
+        assert_eq!(locate_plan_step(plan, "Steps 2-4 (range)"), Some(5));
+        assert_eq!(locate_plan_step(plan, "Risks section / Step 3"), Some(6));
+        // A step number with no matching list item -> None (open at the top).
+        assert_eq!(locate_plan_step(plan, "Step 9"), None);
+    }
+
+    #[test]
+    fn finding_open_target_routes_plan_findings_to_the_plan_doc() {
+        let (_tmp, mut app, _tx, _rx) = test_app();
+        // A plan.md for the in-view feature, with the step on line 5.
+        let plan = app.dirs.plan_file(&app.slug);
+        std::fs::create_dir_all(plan.parent().unwrap()).unwrap();
+        std::fs::write(
+            &plan,
+            "# Plan\n\n## Phases\n\n### Step 2 — delete via load_all\nbody\n",
+        )
+        .unwrap();
+
+        // Branch left empty -> plan_path_for falls back to the in-view slug.
+        let file: crate::findings::FindingsFile = serde_json::from_str(
+            r#"{"stage":"plan-review","branch":"",
+                "findings":[
+                  {"title":"boom","plan_step":"Step 2 (delete via load_all)","verdict":"confirmed"},
+                  {"title":"bug","file":"src/a.rs","line":7,"verdict":"confirmed"},
+                  {"title":"no loc","verdict":"confirmed"}
+                ]}"#,
+        )
+        .unwrap();
+        app.findings = vec![crate::findings::LoadedFindings {
+            path: app.dirs.findings_dir().join("x-plan-review.json"),
+            file,
+        }];
+
+        let ags = app.visible_findings();
+        let by = |t: &str| ags.iter().find(|a| a.finding.title == t).unwrap().clone();
+
+        // Plan-review finding -> the plan doc, at the located step line.
+        let (p, line, label) = app.finding_open_target(&by("boom")).unwrap();
+        assert_eq!(p, plan);
+        assert_eq!(label, "plan.md");
+        assert_eq!(line, Some(5));
+
+        // Code finding -> its own file:line, unchanged.
+        let (p, line, label) = app.finding_open_target(&by("bug")).unwrap();
+        assert!(p.ends_with("src/a.rs"));
+        assert_eq!(line, Some(7));
+        assert_eq!(label, "src/a.rs");
+
+        // Neither file nor plan_step -> still an error (the old message).
+        assert!(app.finding_open_target(&by("no loc")).is_err());
     }
 
     #[tokio::test(flavor = "multi_thread")]
