@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Guide & feature reference
+    url: https://github.com/2Tricky4u/Ritual/blob/main/docs/guide.md
+    about: How each feature works — check here before filing.
+  - name: Roadmap & non-goals
+    url: https://github.com/2Tricky4u/Ritual/blob/main/ROADMAP.md
+    about: What's planned, what's built, and what's deliberately out of scope.
+  - name: Security report (private)
+    url: https://github.com/2Tricky4u/Ritual/security/advisories/new
+    about: Report vulnerabilities privately — never in a public issue.
