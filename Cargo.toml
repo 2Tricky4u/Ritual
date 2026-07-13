@@ -1,6 +1,6 @@
 [package]
 name = "ritual"
-version = "0.9.1"
+version = "0.9.2"
 edition = "2024"
 description = "A fast, eldritch-themed TUI that drives a multi-LLM coding workflow: Claude Code implements, OpenAI Codex adversarially reviews plans, designs tests, and second-reviews diffs — every loop grounded in your project's ./check.sh."
 authors = ["Xavier Ogay"]

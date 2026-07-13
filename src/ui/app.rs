@@ -5720,9 +5720,9 @@ mod tests {
         let (_t, mut app, tx, _rx) = test_app();
         app.dispatch(Action::RunStage(StageId::Implement), &tx);
         let req = app.pending_attached.take().expect("implement queued");
-        // Picker form: claude --resume <prompt>, no id, never --continue.
-        assert_eq!(req.argv[1], "--resume");
-        assert_eq!(req.argv.len(), 3);
+        // Picker form: bare `claude --resume` (no positional — it would be
+        // consumed as the picker's search term), never --continue.
+        assert_eq!(req.argv, vec!["claude", "--resume"]);
         assert!(!req.argv.iter().any(|a| a == "--continue"));
         assert!(app.status_msg.as_deref().unwrap().contains("pick it"));
     }

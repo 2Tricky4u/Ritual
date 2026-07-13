@@ -404,13 +404,17 @@ pub fn build(
             }
         }
         StageId::Implement => {
-            // Resume the exact tests-red session when known; otherwise open the
-            // picker (never `--continue`). Either way, auto-send the kickoff.
+            // `--resume [value]` takes an OPTIONAL value that is either a
+            // session id OR a picker search term. So the kickoff prompt can
+            // only ride as the trailing positional when a real session id
+            // precedes it; with no id, a bare `--resume` opens the picker —
+            // appending the prompt there would make it the picker's SEARCH
+            // TERM, not a message. Never `--continue`.
             let mut tail: Vec<String> = vec!["--resume".into()];
             if let Some(sid) = session {
                 tail.push(sid.to_string());
+                tail.push(IMPLEMENT_PROMPT.into());
             }
-            tail.push(IMPLEMENT_PROMPT.into());
             StageCommand {
                 mode: Mode::Interactive,
                 agent: AgentKind::Claude,
@@ -860,9 +864,10 @@ mod tests {
         assert!(prompt.contains("spec.md"), "{prompt}");
         assert!(prompt.contains("plan.md"), "{prompt}");
 
-        // No pinned session → resume picker (never --continue) + kickoff.
+        // No pinned session → BARE resume picker: appending the prompt would
+        // make it the picker's search term, not a message.
         let cmd = build(StageId::Implement, &cfg, &dirs, "s", None, None, None).unwrap();
-        assert_eq!(cmd.argv, vec!["claude", "--resume", IMPLEMENT_PROMPT]);
+        assert_eq!(cmd.argv, vec!["claude", "--resume"]);
         assert!(!cmd.argv.iter().any(|a| a == "--continue"));
     }
 
