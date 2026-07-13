@@ -16,6 +16,8 @@ Tests-first is the single biggest quality lever in agentic coding, and tests des
 
    > Design a test list for this specification. Cover: happy paths, boundary/edge cases, failure modes and error handling, concurrency/ordering issues if applicable, and candidates for property-based tests. For each test: a name, given/when/then in one line each, and what real bug it could catch. Flag anything in the spec that is untestable as written.
 
+   If the `codex` tool fails because the MODEL is unavailable (model-not-found / unsupported model — NOT an auth error), retry the same call ONCE with `model: "gpt-5.5"` (verified fallback) and note the downgrade when reporting the merged list. Codex's default is deliberately unpinned so it tracks the newest model (gpt-5.6 today); this keeps the cross-model gate alive when that default isn't available on the account.
+
 3. **Merge and harden.** Combine Codex's list with your own additions. Discard tautological tests (tests that restate the implementation) and tests of framework behavior. If Codex flagged untestable spec points, surface them to the user before proceeding.
 
 4. **Write the tests — red first.** Implement the merged list in the project's test framework. Run them: **every new test must fail** before implementation exists. A new test that already passes is not testing the new behavior — rewrite or delete it. For invariant-style behaviors, also emit property tests alongside the example tests (`proptest!` in Rust) — example and property tests catch different bug classes. Commit the failing tests if in a git repo.

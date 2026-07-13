@@ -37,6 +37,7 @@ If `${RITUAL_INVARIANTS_FILE:-.ritual/invariants.md}` exists and contains bullet
 
 - Never auto-accept a finding that expands scope beyond the user's request — list it under unresolved disagreements instead.
 - If the `codex` tool fails with an auth error, tell the user to run `! codex login` and stop.
+- If the `codex` tool fails because the MODEL is unavailable (model-not-found / unsupported model — NOT an auth error), retry the same call ONCE with `model: "gpt-5.5"` (verified fallback) and note the downgrade in your report. Codex's default is deliberately unpinned so it tracks the newest model (gpt-5.6 today); this keeps the cross-model gate alive when that default isn't available on the account.
 - If Codex returns zero findings, say so plainly — do not fabricate rigor.
 
 ## Machine-readable findings (ritual)

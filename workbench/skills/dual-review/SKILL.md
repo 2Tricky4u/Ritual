@@ -42,6 +42,7 @@ If a fresh `*-coderabbit.json` file exists in `${RITUAL_FINDINGS_DIR:-.ritual/fi
 ## Guardrails
 
 - If the `codex` tool fails with an auth error, tell the user to run `! codex login`; offer the single-model review rather than silently degrading.
+- If the `codex` tool fails because the MODEL is unavailable (model-not-found / unsupported model — NOT an auth error), retry the same call ONCE with `model: "gpt-5.5"` (verified fallback) and note the downgrade in your report. Codex's default is deliberately unpinned so it tracks the newest model (gpt-5.6 today); this keeps the cross-model gate alive when that default isn't available on the account.
 - Severity comes from the failure scenario, not from reviewer confidence.
 
 ## Machine-readable findings (ritual)
