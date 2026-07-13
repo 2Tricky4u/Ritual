@@ -50,8 +50,9 @@ pub enum AppMsg {
     ChatAgent(Box<AgentEvent>),
     /// A chat edit finished.
     ChatExited(Box<Result<RunOutcome>>),
-    /// A claude plan fix (`F` on a finding) finished.
-    FixExited(Box<Result<RunOutcome>>),
+    /// A claude plan fix finished; the second field is the run's final
+    /// assistant text (the ANSWERS block source), captured off the tail.
+    FixExited(Box<Result<RunOutcome>>, Option<String>),
     CheckDone {
         ok: bool,
         tail: String,
@@ -459,7 +460,9 @@ impl App {
                 }
             }
             AppMsg::ChatExited(outcome) => self.on_chat_exited(*outcome, tx),
-            AppMsg::FixExited(outcome) => self.on_fix_exited(*outcome, tx),
+            AppMsg::FixExited(outcome, result_text) => {
+                self.on_fix_exited(*outcome, result_text, tx)
+            }
             AppMsg::CheckDone { ok, tail } => {
                 self.check = if ok {
                     CheckState::Green
@@ -2218,8 +2221,11 @@ impl App {
         self.attach_fix_tail(run_id, req.agent, tx);
     }
 
-    /// Follow a plan-fix run to completion. Events are drained and dropped
-    /// (no stream in v1); the statusline spinner + fix_label show liveness.
+    /// Follow a plan-fix run to completion. Events are not streamed to the
+    /// UI, but the tail watches for the final `Completed` event and carries
+    /// its result text home — that is where the ANSWERS block lives. The
+    /// sender drops when tail_run returns, ending the watcher loop; the
+    /// archive (incl. the result line) is fully flushed before that.
     fn attach_fix_tail(
         &mut self,
         run_id: String,
@@ -2231,15 +2237,30 @@ impl App {
         let tx_done = tx.clone();
         self.fix_task = Some(tokio::spawn(async move {
             let (etx, mut erx) = mpsc::channel::<AgentEvent>(256);
-            let drain = tokio::spawn(async move { while erx.recv().await.is_some() {} });
+            let watch = tokio::spawn(async move {
+                let mut last: Option<String> = None;
+                while let Some(ev) = erx.recv().await {
+                    if let AgentEvent::Completed { result_text, .. } = ev {
+                        last = result_text; // last Completed wins
+                    }
+                }
+                last
+            });
             let outcome = runner::tail_run(&dirs, agent, &run_id, etx).await;
-            let _ = drain.await;
-            let _ = tx_done.send(AppMsg::FixExited(Box::new(outcome))).await;
+            let result_text = watch.await.unwrap_or(None);
+            let _ = tx_done
+                .send(AppMsg::FixExited(Box::new(outcome), result_text))
+                .await;
         }));
     }
 
     /// A plan fix finished: enforce the scope gate, auto-mark or revert.
-    fn on_fix_exited(&mut self, outcome: Result<RunOutcome>, tx: &mpsc::Sender<AppMsg>) {
+    fn on_fix_exited(
+        &mut self,
+        outcome: Result<RunOutcome>,
+        _result_text: Option<String>,
+        tx: &mpsc::Sender<AppMsg>,
+    ) {
         self.fix_task = None;
         self.current_fix_run_id = None;
         let Some(ctx) = self.fix_ctx.take() else {
@@ -2866,7 +2887,7 @@ mod tests {
             FIX_PLAN.replace("2. second", "2. second, fixed"),
         )
         .unwrap();
-        app.on_fix_exited(fix_outcome(true, 0.05), &tx);
+        app.on_fix_exited(fix_outcome(true, 0.05), None, &tx);
         let msg = app.status_msg.clone().unwrap_or_default();
         assert!(msg.contains("✓ §Steps rewritten (+1/−1)"), "{msg}");
         assert!(msg.contains("u reverts"), "{msg}");
@@ -2892,7 +2913,7 @@ mod tests {
         app.fix_ctx = Some(ctx);
         // The "agent" edits OUTSIDE the section (Risks body).
         std::fs::write(&plan_path, FIX_PLAN.replace("r1", "r1 sneaky")).unwrap();
-        app.on_fix_exited(fix_outcome(true, 0.05), &tx);
+        app.on_fix_exited(fix_outcome(true, 0.05), None, &tx);
         let msg = app.status_msg.clone().unwrap_or_default();
         assert!(msg.contains("leaked outside §Steps"), "{msg}");
         // Mechanically reverted; finding still pending; nothing revertable.
@@ -2915,7 +2936,7 @@ mod tests {
         let plan_path = ctx.plan_path.clone();
         app.fix_ctx = Some(ctx);
         // No edit at all -> declined, finding stays pending.
-        app.on_fix_exited(fix_outcome(true, 0.02), &tx);
+        app.on_fix_exited(fix_outcome(true, 0.02), None, &tx);
         let msg = app.status_msg.clone().unwrap_or_default();
         assert!(msg.contains("declined"), "{msg}");
         assert!(!app.fix_revertable());
@@ -2924,7 +2945,7 @@ mod tests {
         let (_cmd, ctx) = app.prepare_finding_fix().unwrap();
         app.fix_ctx = Some(ctx);
         std::fs::write(&plan_path, "half-written garbage\n").unwrap();
-        app.on_fix_exited(fix_outcome(false, 0.01), &tx);
+        app.on_fix_exited(fix_outcome(false, 0.01), None, &tx);
         let msg = app.status_msg.clone().unwrap_or_default();
         assert!(msg.contains("reverted"), "{msg}");
         assert_eq!(std::fs::read_to_string(&plan_path).unwrap(), FIX_PLAN);
@@ -2938,7 +2959,7 @@ mod tests {
         let plan_path = ctx.plan_path.clone();
         app.fix_ctx = Some(ctx);
         std::fs::write(&plan_path, FIX_PLAN.replace("2. second", "2. improved")).unwrap();
-        app.on_fix_exited(fix_outcome(true, 0.05), &tx);
+        app.on_fix_exited(fix_outcome(true, 0.05), None, &tx);
         assert!(app.fix_revertable());
 
         app.doc_undo();
