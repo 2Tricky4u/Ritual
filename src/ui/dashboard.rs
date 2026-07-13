@@ -192,6 +192,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.finding_detail {
         draw_finding_detail(f, app);
     }
+    if app.dismiss_prompt.is_some() {
+        draw_dismiss_prompt(f, app);
+    }
     if app.show_help {
         draw_help(f, t);
     }
@@ -723,7 +726,7 @@ fn draw_greeter(f: &mut Frame, t: &Theme, area: Rect) {
         ("runs", "daemons: quit freely, reattach · a takeover"),
         (
             "findings",
-            "enter details · f/d resolve · F claude-fix · / filter",
+            "enter details · F/m triage · d dismiss · / filter",
         ),
         ("gates", "mutants · secrets · lessons · invariants"),
         ("money", "daily budget · per-run caps · costs"),
@@ -995,6 +998,18 @@ fn draw_findings(f: &mut Frame, app: &App, area: Rect) {
                 "◇single",
                 Style::default().fg(t.warn()).bg(row_bg),
             ));
+        }
+        // Triage answer marker: queued for the claude batch / yours to fix.
+        match finding.answer.as_deref() {
+            Some("auto") if !resolved => spans.push(Span::styled(
+                " ⚑A",
+                Style::default().fg(t.accent()).bg(row_bg),
+            )),
+            Some("manual") if !resolved => spans.push(Span::styled(
+                " ⚑M",
+                Style::default().fg(t.info()).bg(row_bg),
+            )),
+            _ => {}
         }
         spans.push(Span::styled(
             format!(" {} ", finding.location()),
@@ -1278,6 +1293,12 @@ fn draw_statusline(f: &mut Frame, app: &App, area: Rect) {
             t.attention(),
             base,
         ));
+    } else {
+        // Triage progress: answers queued for the claude batch.
+        let queued = app.queued_auto().len();
+        if queued > 0 {
+            right.extend(pl_segment(t, format!(" ⚑{queued} "), t.accent(), base));
+        }
     }
     let check_seg = match &app.check {
         CheckState::Green => Some((format!(" {} ok ", t.icon_check()), t.ok())),
@@ -1362,6 +1383,18 @@ fn draw_finding_detail(f: &mut Frame, app: &App) {
             (" ∅dismissed", t.comment())
         };
         pills.push(Span::styled(mark, Style::default().fg(color)));
+    } else {
+        match finding.answer.as_deref() {
+            Some("auto") => pills.push(Span::styled(
+                " ⚑A queued for claude",
+                Style::default().fg(t.accent()),
+            )),
+            Some("manual") => pills.push(Span::styled(
+                " ⚑M yours to fix",
+                Style::default().fg(t.info()),
+            )),
+            _ => {}
+        }
     }
     lines.push(Line::from(pills));
     let location = match (&finding.file, &finding.plan_step) {
@@ -1373,6 +1406,12 @@ fn draw_finding_detail(f: &mut Frame, app: &App) {
         lines.push(Line::from(Span::styled(
             location,
             Style::default().fg(t.info()),
+        )));
+    }
+    if let Some(reason) = &finding.reason {
+        lines.push(Line::from(Span::styled(
+            format!("reason: {reason}"),
+            Style::default().fg(t.warn()),
         )));
     }
     lines.push(Line::default());
@@ -1401,10 +1440,10 @@ fn draw_finding_detail(f: &mut Frame, app: &App) {
             Style::default().fg(t.comment()),
         ));
     };
-    for (key, label) in [("f", "fix"), ("d", "dismiss")] {
+    for (key, label) in [("f", "fix"), ("d", "dismiss…")] {
         cap(&mut footer, key, label.into());
     }
-    // F only fires for plan findings; the footer says which world we're in.
+    // F answers plan findings; the footer tracks the triage state.
     let plan_finding = finding.file.is_none() && finding.plan_step.is_some();
     if let Some(label) = app.fix_label() {
         footer.push(Span::styled(
@@ -1412,10 +1451,16 @@ fn draw_finding_detail(f: &mut Frame, app: &App) {
             Style::default().fg(t.attention()),
         ));
     } else if plan_finding {
-        cap(&mut footer, "F", "claude-fix".into());
-        if app.fix_revertable() {
-            cap(&mut footer, "u", "revert".into());
-        }
+        let f_label = if finding.answer.as_deref() == Some("auto") {
+            "apply/unqueue"
+        } else {
+            "queue claude"
+        };
+        cap(&mut footer, "F", f_label.into());
+    }
+    cap(&mut footer, "m", "manual".into());
+    if app.fix_revertable() {
+        cap(&mut footer, "u", "revert".into());
     }
     for (key, label) in [("o", "nvim"), ("e", "editor"), ("j/k", "next")] {
         cap(&mut footer, key, label.into());
@@ -1423,7 +1468,7 @@ fn draw_finding_detail(f: &mut Frame, app: &App) {
     cap(&mut footer, "esc", "close".into());
     if !plan_finding && app.fix_label().is_none() {
         footer.push(Span::styled(
-            "F targets plan findings (v1)",
+            "F answers plan findings · m queues manual",
             Style::default().fg(t.comment()).add_modifier(Modifier::DIM),
         ));
     }
@@ -1506,9 +1551,10 @@ fn draw_help(f: &mut Frame, t: &Theme) {
             &[
                 ("enter", "details"),
                 ("f", "mark fixed (toggle)"),
-                ("d", "dismiss (toggle)"),
-                ("F", "claude fix (plan)"),
-                ("u", "revert claude fix"),
+                ("d", "dismiss (+reason)"),
+                ("F", "queue/apply claude answers"),
+                ("m", "queue manual fix"),
+                ("u", "revert applied batch"),
                 ("v", "show/hide resolved"),
                 ("/", "filter list (2/3)"),
             ],
@@ -1548,6 +1594,47 @@ fn draw_help(f: &mut Frame, t: &Theme) {
         lines.push(Line::default());
     }
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// `d`'s one-line reason input (enter = commit, empty ok; esc = cancel).
+fn draw_dismiss_prompt(f: &mut Frame, app: &App) {
+    let t = &app.cfg.theme;
+    let Some(p) = &app.dismiss_prompt else { return };
+    let area = centered_rect(
+        f.area(),
+        64.min(f.area().width.saturating_sub(2)).max(1),
+        4.min(f.area().height.saturating_sub(2)).max(1),
+    );
+    let inner = float_panel(f, t, area, "dismiss — reason (enter = none · esc = cancel)");
+    if inner.height == 0 {
+        return;
+    }
+    let mut lines = vec![Line::from(Span::styled(
+        first_words_pane(&p.title, inner.width),
+        Style::default().fg(t.comment()),
+    ))];
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!(" {} ", t.icon_prompt()),
+            Style::default().fg(t.highlight()).bg(t.bg_row()),
+        ),
+        Span::styled(
+            format!("{} ", p.input),
+            Style::default().fg(t.fg()).bg(t.bg_row()),
+        ),
+        Span::styled("▏", Style::default().fg(t.accent()).bg(t.bg_row())),
+    ]));
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Clip a title to the panel width (…-terminated), char-safe.
+fn first_words_pane(s: &str, width: u16) -> String {
+    let max = (width as usize).saturating_sub(2).max(1);
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let clipped: String = s.chars().take(max.saturating_sub(1)).collect();
+    format!("{clipped}…")
 }
 
 fn draw_confirm_quit(f: &mut Frame, t: &Theme) {

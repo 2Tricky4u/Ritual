@@ -150,6 +150,32 @@ fn dashboard_help_overlay() {
 }
 
 #[test]
+fn dashboard_findings_tab_triage_states() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".ritual/findings")).unwrap();
+    std::fs::write(
+        tmp.path()
+            .join(".ritual/findings/20260713T000000Z-plan-review.json"),
+        r#"{"ritual_findings":1,"stage":"plan-review","branch":"main",
+            "findings":[
+              {"id":1,"severity":"major","title":"queued for the claude batch",
+               "plan_step":"Step 2","scenario":"s1","sources":["claude"],
+               "verdict":"confirmed","action":"pending","answer":"auto"},
+              {"id":2,"severity":"major","title":"yours to fix by hand",
+               "file":"src/a.rs","line":3,"scenario":"s2","sources":["codex"],
+               "verdict":"confirmed","action":"pending","answer":"manual"},
+              {"id":3,"severity":"minor","title":"declined by the last batch",
+               "plan_step":"Step 4","scenario":"s3","sources":["claude"],
+               "verdict":"confirmed","action":"pending","reason":"needs a spec change"}
+            ]}"#,
+    )
+    .unwrap();
+    let mut app = setup_app(&tmp);
+    app.tab = Tab::Findings;
+    insta::assert_snapshot!(render(&app));
+}
+
+#[test]
 fn dashboard_finding_detail_code_finding() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(tmp.path().join(".ritual/findings")).unwrap();
@@ -351,6 +377,30 @@ fn rendering_survives_hostile_sizes_in_every_state() {
                 let t = tempfile::tempdir().unwrap();
                 let mut a = setup_app(&t);
                 a.show_help = true;
+                (t, a)
+            }),
+        ),
+        (
+            "dismiss-prompt",
+            Box::new(|| {
+                let t = tempfile::tempdir().unwrap();
+                std::fs::create_dir_all(t.path().join(".ritual/findings")).unwrap();
+                std::fs::write(
+                    t.path().join(".ritual/findings/20260712T000000Z-plan-review.json"),
+                    r#"{"stage":"plan-review","findings":[
+                        {"id":1,"severity":"minor","title":"a finding being dismissed with a very long title that must clip","plan_step":"Step 1","verdict":"confirmed"}]}"#,
+                )
+                .unwrap();
+                let mut a = setup_app(&t);
+                a.tab = Tab::Findings;
+                a.dismiss_prompt = Some(ritual::ui::app::DismissPrompt {
+                    findings_path: t
+                        .path()
+                        .join(".ritual/findings/20260712T000000Z-plan-review.json"),
+                    pos: 0,
+                    title: "a finding being dismissed with a very long title that must clip".into(),
+                    input: "typed reason".into(),
+                });
                 (t, a)
             }),
         ),

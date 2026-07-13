@@ -95,6 +95,15 @@ struct LastFix {
     pos: usize,
 }
 
+/// The `d` dismiss prompt: identity captured at open (by PATH — a background
+/// reload must not retarget the write), plus the reason being typed.
+pub struct DismissPrompt {
+    pub findings_path: std::path::PathBuf,
+    pub pos: usize,
+    pub title: String,
+    pub input: String,
+}
+
 pub struct App {
     pub cfg: Config,
     pub dirs: RitualDirs,
@@ -111,6 +120,8 @@ pub struct App {
     /// Detail overlay over the selected finding (Enter on the findings tab).
     /// Stateless: it renders whatever the cursor points at.
     pub finding_detail: bool,
+    /// `d`'s one-line reason prompt (None = closed).
+    pub dismiss_prompt: Option<DismissPrompt>,
     /// Show findings already marked fixed/dismissed (toggled with `v`).
     pub show_resolved: bool,
     /// `/` filter over the findings/history lists (empty = inactive).
@@ -250,6 +261,7 @@ impl App {
             findings,
             selected_finding: 0,
             finding_detail: false,
+            dismiss_prompt: None,
             show_resolved: false,
             filter: String::new(),
             filter_editing: false,
@@ -509,6 +521,10 @@ impl App {
             }
             return;
         }
+        if self.dismiss_prompt.is_some() {
+            self.dismiss_input(key.code);
+            return;
+        }
         if self.show_help {
             self.show_help = false;
             return;
@@ -701,8 +717,10 @@ impl App {
             Action::SpecChat => self.open_chat(tx),
             Action::Filter => self.start_filter(),
             Action::FindingFix => self.finding_set_action("fixed"),
-            Action::FindingDismiss => self.finding_set_action("dismissed"),
-            Action::FindingClaudeFix => self.spawn_finding_fix(tx),
+            Action::FindingDismiss => self.open_dismiss_prompt(),
+            Action::FindingClaudeFix => self.finding_claude_answer(tx),
+            Action::FindingManual => self.finding_toggle_manual(),
+            Action::FindingsApply => self.findings_apply_from_palette(tx),
             Action::DocUndo => self.doc_undo(),
             Action::ToggleResolved => {
                 if self.tab == Tab::Findings {
@@ -1873,13 +1891,12 @@ impl App {
                 self.finding_set_action("fixed");
                 self.finding_detail = false;
             }
-            Some(Action::FindingDismiss) => {
-                self.finding_set_action("dismissed");
-                self.finding_detail = false;
-            }
-            // Stays open: the footer shows the in-flight spinner, and
-            // on_fix_exited closes it with the verdict.
-            Some(Action::FindingClaudeFix) => self.spawn_finding_fix(tx),
+            // Opens the reason prompt above the overlay; committing closes both.
+            Some(Action::FindingDismiss) => self.open_dismiss_prompt(),
+            // Stays open: queueing updates the footer, applying shows the
+            // spinner, and on_fix_exited closes it with the verdict.
+            Some(Action::FindingClaudeFix) => self.finding_claude_answer(tx),
+            Some(Action::FindingManual) => self.finding_toggle_manual(),
             Some(Action::DocUndo) => self.doc_undo(),
             Some(Action::NvimOpen) => self.nvim_open(), // stays open (remote jump)
             Some(Action::OpenEditor) => {
@@ -1958,6 +1975,187 @@ impl App {
             Err(e) => self.status_msg = Some(format!("could not update finding: {e:#}")),
         }
         self.clamp_selected_finding();
+    }
+
+    /// `d`: open the one-line reason prompt for the selected finding.
+    /// Already-dismissed findings toggle straight back to pending (no prompt).
+    fn open_dismiss_prompt(&mut self) {
+        if self.tab != Tab::Findings {
+            self.status_msg = Some("dismiss works on the findings tab (2)".into());
+            return;
+        }
+        let Some(af) = self.selected_finding_af() else {
+            self.status_msg = Some("no finding selected".into());
+            return;
+        };
+        if af.finding.action == "dismissed" {
+            self.finding_set_action("dismissed"); // same-value toggle -> pending
+            return;
+        }
+        self.dismiss_prompt = Some(DismissPrompt {
+            findings_path: self.findings[af.file_idx].path.clone(),
+            pos: af.pos,
+            title: af.finding.title.clone(),
+            input: String::new(),
+        });
+    }
+
+    /// Keys while the dismiss prompt is open: Enter commits (empty = plain
+    /// dismiss), Esc cancels without writing anything.
+    fn dismiss_input(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.dismiss_prompt = None;
+            }
+            KeyCode::Enter => {
+                let Some(p) = self.dismiss_prompt.take() else {
+                    return;
+                };
+                // Re-find by PATH: a background reload may have shifted indices.
+                let Some(i) = self
+                    .findings
+                    .iter()
+                    .position(|lf| lf.path == p.findings_path)
+                else {
+                    self.status_msg = Some("finding vanished; nothing dismissed".into());
+                    return;
+                };
+                let reason = p.input.trim();
+                let reason = (!reason.is_empty()).then_some(reason);
+                match crate::findings::set_action_with_reason(
+                    &mut self.findings,
+                    i,
+                    p.pos,
+                    "dismissed",
+                    reason,
+                ) {
+                    Ok(()) => {
+                        self.status_msg = Some(match reason {
+                            Some(r) => format!("{}: dismissed — {r}", p.title),
+                            None => format!("{}: dismissed", p.title),
+                        });
+                    }
+                    Err(e) => self.status_msg = Some(format!("could not dismiss: {e:#}")),
+                }
+                self.finding_detail = false;
+                self.clamp_selected_finding();
+            }
+            KeyCode::Backspace => {
+                if let Some(p) = self.dismiss_prompt.as_mut() {
+                    p.input.pop();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(p) = self.dismiss_prompt.as_mut() {
+                    p.input.push(c);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `m`: toggle the "I'll fix this myself" answer on any open finding
+    /// (code findings are the canonical manual case — `Q` routes them).
+    fn finding_toggle_manual(&mut self) {
+        if self.tab != Tab::Findings {
+            self.status_msg = Some("m works on the findings tab (2)".into());
+            return;
+        }
+        let Some(af) = self.selected_finding_af() else {
+            self.status_msg = Some("no finding selected".into());
+            return;
+        };
+        if af.finding.resolved() {
+            self.status_msg = Some("finding is already resolved".into());
+            return;
+        }
+        let manual = af.finding.answer.as_deref() == Some("manual");
+        let next = if manual { None } else { Some("manual") };
+        match crate::findings::set_answer(&mut self.findings, af.file_idx, af.pos, next, None) {
+            Ok(()) => {
+                self.status_msg = Some(if manual {
+                    format!("{}: manual answer cleared", af.finding.title)
+                } else {
+                    format!(
+                        "⚑M {}: yours to fix (Q routes manual findings)",
+                        af.finding.title
+                    )
+                });
+            }
+            Err(e) => self.status_msg = Some(format!("could not update finding: {e:#}")),
+        }
+    }
+
+    /// Open findings queued for the claude batch (answer == "auto").
+    pub fn queued_auto(&self) -> Vec<crate::findings::AggregatedFinding> {
+        crate::findings::aggregate(&self.findings, false)
+            .into_iter()
+            .filter(|af| af.finding.answer.as_deref() == Some("auto"))
+            .collect()
+    }
+
+    /// `F`: answer a plan finding with "claude fixes it" (⚑A, toggled), the
+    /// triage half of answer-all-then-apply-once.
+    fn finding_claude_answer(&mut self, tx: &mpsc::Sender<AppMsg>) {
+        let _ = tx; // the apply confirm (P6) spawns; queueing itself never does
+        if self.tab != Tab::Findings {
+            self.status_msg = Some("F answers findings on the findings tab (2)".into());
+            return;
+        }
+        let Some(af) = self.selected_finding_af() else {
+            self.status_msg = Some("no finding selected".into());
+            return;
+        };
+        if af.finding.file.is_some() {
+            self.status_msg =
+                Some("F answers plan findings; m queues a manual fix for code".into());
+            return;
+        }
+        if af.finding.plan_step.is_none() {
+            self.status_msg = Some("finding has no plan step to fix".into());
+            return;
+        }
+        if af.finding.resolved() {
+            self.status_msg = Some("finding is already resolved".into());
+            return;
+        }
+        if af.finding.answer.as_deref() == Some("auto") {
+            // P6 turns this arm into the apply-confirm modal.
+            let _ =
+                crate::findings::set_answer(&mut self.findings, af.file_idx, af.pos, None, None);
+            self.status_msg = Some(format!(
+                "{}: unqueued ({} still queued)",
+                af.finding.title,
+                self.queued_auto().len()
+            ));
+            return;
+        }
+        match crate::findings::set_answer(
+            &mut self.findings,
+            af.file_idx,
+            af.pos,
+            Some("auto"),
+            None,
+        ) {
+            Ok(()) => {
+                self.status_msg = Some(format!(
+                    "⚑A queued for claude ({} queued) · F again to apply",
+                    self.queued_auto().len()
+                ));
+            }
+            Err(e) => self.status_msg = Some(format!("could not update finding: {e:#}")),
+        }
+    }
+
+    /// Palette "findings: apply answers" (the modal lands with the batch run).
+    fn findings_apply_from_palette(&mut self, tx: &mpsc::Sender<AppMsg>) {
+        let _ = tx;
+        let n = self.queued_auto().len();
+        self.status_msg = Some(if n == 0 {
+            "no queued answers — F queues a plan finding for claude".into()
+        } else {
+            format!("{n} queued — press F on a queued finding to apply")
+        });
     }
 
     /// Keep the selection valid after resolving/toggling changes the list.
@@ -2086,6 +2284,7 @@ impl App {
     /// built command and write-back context. Pure of side effects except the
     /// undo push + `fix_doc_before` snapshot (the last two steps, after every
     /// guard has passed).
+    #[allow(dead_code)] // superseded by the batch apply; deleted with it next commit
     fn prepare_finding_fix(&mut self) -> Result<(stages::StageCommand, FixCtx), String> {
         let Some(af) = self.selected_finding_af() else {
             return Err("no finding selected".into());
@@ -2172,6 +2371,7 @@ impl App {
 
     /// `F`: spawn ONE headless claude run that fixes the selected plan-review
     /// finding inside its plan section (apply + gate + auto-mark; `u` reverts).
+    #[allow(dead_code)] // superseded by the batch apply; deleted with it next commit
     fn spawn_finding_fix(&mut self, tx: &mpsc::Sender<AppMsg>) {
         if self.tab != Tab::Findings {
             self.status_msg = Some("F fixes findings on the findings tab (2)".into());
@@ -2774,6 +2974,169 @@ mod tests {
         app.dispatch(Action::Confirm, &tx);
         assert!(!app.finding_detail);
         assert_eq!(app.status_msg.as_deref(), Some("no finding selected"));
+    }
+
+    fn seeded_json(app: &App) -> String {
+        std::fs::read_to_string(
+            app.dirs
+                .findings_dir()
+                .join("20260713T000000Z-plan-review.json"),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn f_key_queues_then_unqueues_plan_finding() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_findings(
+            &mut app,
+            r#"{"stage":"plan-review","findings":[
+                {"id":1,"title":"boom","plan_step":"Step 2","severity":"major","verdict":"confirmed"}]}"#,
+        );
+        app.dispatch(Action::FindingClaudeFix, &tx);
+        assert!(seeded_json(&app).contains(r#""answer": "auto""#));
+        assert_eq!(app.queued_auto().len(), 1);
+        assert!(app.status_msg.as_deref().unwrap().contains("⚑A queued"));
+        // Toggle back off (the apply confirm supersedes this next commit).
+        app.dispatch(Action::FindingClaudeFix, &tx);
+        assert!(!seeded_json(&app).contains("answer"));
+        assert_eq!(app.queued_auto().len(), 0);
+    }
+
+    #[test]
+    fn f_refuses_code_findings_m_takes_them() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_findings(
+            &mut app,
+            r#"{"stage":"dual-review","findings":[
+                {"id":1,"title":"code bug","file":"src/a.rs","line":3,"severity":"major","verdict":"confirmed"}]}"#,
+        );
+        app.dispatch(Action::FindingClaudeFix, &tx);
+        assert!(
+            app.status_msg
+                .as_deref()
+                .unwrap()
+                .contains("m queues a manual fix")
+        );
+        assert_eq!(app.queued_auto().len(), 0);
+        // m queues code findings for the human; m again clears.
+        let path = app
+            .dirs
+            .findings_dir()
+            .join("20260713T000000Z-plan-review.json");
+        app.dispatch(Action::FindingManual, &tx);
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains(r#""answer": "manual""#)
+        );
+        app.dispatch(Action::FindingManual, &tx);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("answer"));
+    }
+
+    #[test]
+    fn m_switches_a_queued_auto_finding_to_manual() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_findings(
+            &mut app,
+            r#"{"stage":"plan-review","findings":[
+                {"id":1,"title":"boom","plan_step":"Step 2","severity":"major","verdict":"confirmed"}]}"#,
+        );
+        app.dispatch(Action::FindingClaudeFix, &tx);
+        assert_eq!(app.queued_auto().len(), 1);
+        app.dispatch(Action::FindingManual, &tx);
+        assert!(seeded_json(&app).contains(r#""answer": "manual""#));
+        assert_eq!(app.queued_auto().len(), 0);
+    }
+
+    #[test]
+    fn d_prompt_commits_with_reason_and_esc_cancels() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_findings(
+            &mut app,
+            r#"{"stage":"plan-review","findings":[
+                {"id":1,"title":"noise","plan_step":"Step 3","severity":"minor","verdict":"confirmed"}]}"#,
+        );
+        // Esc cancels without writing.
+        app.dispatch(Action::FindingDismiss, &tx);
+        assert!(app.dismiss_prompt.is_some());
+        app.on_input(
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            &tx,
+        );
+        assert!(app.dismiss_prompt.is_none());
+        assert!(!seeded_json(&app).contains("dismissed"));
+
+        // Typed reason persists in the same write.
+        app.dispatch(Action::FindingDismiss, &tx);
+        for c in "out of scope".chars() {
+            app.on_input(
+                Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+        }
+        app.on_input(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
+        let json = seeded_json(&app);
+        assert!(json.contains(r#""action": "dismissed""#));
+        assert!(json.contains("out of scope"));
+        assert!(app.status_msg.as_deref().unwrap().contains("out of scope"));
+    }
+
+    #[test]
+    fn d_empty_enter_dismisses_plain_and_repeat_toggles_back() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_findings(
+            &mut app,
+            r#"{"stage":"plan-review","findings":[
+                {"id":1,"title":"noise","plan_step":"Step 3","severity":"minor","verdict":"confirmed"}]}"#,
+        );
+        app.dispatch(Action::FindingDismiss, &tx);
+        app.on_input(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
+        assert!(seeded_json(&app).contains(r#""action": "dismissed""#));
+        assert!(!seeded_json(&app).contains("reason"));
+
+        // d on a dismissed finding: NO prompt, plain toggle back to pending.
+        app.show_resolved = true;
+        app.dispatch(Action::FindingDismiss, &tx);
+        assert!(app.dismiss_prompt.is_none());
+        assert!(seeded_json(&app).contains(r#""action": "pending""#));
+    }
+
+    #[test]
+    fn detail_overlay_routes_triage_keys() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_findings(
+            &mut app,
+            r#"{"stage":"plan-review","findings":[
+                {"id":1,"title":"boom","plan_step":"Step 2","severity":"major","verdict":"confirmed"}]}"#,
+        );
+        app.dispatch(Action::Confirm, &tx);
+        assert!(app.finding_detail);
+        // F queues from inside the overlay; overlay stays open.
+        app.on_input(
+            Event::Key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT)),
+            &tx,
+        );
+        assert!(app.finding_detail);
+        assert_eq!(app.queued_auto().len(), 1);
+        // d opens the prompt ABOVE the overlay; committing closes both.
+        app.on_input(
+            Event::Key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert!(app.dismiss_prompt.is_some());
+        app.on_input(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
+        assert!(!app.finding_detail);
+        assert!(seeded_json(&app).contains(r#""action": "dismissed""#));
     }
 
     /// Plan with two sections; "Step 2" maps into "## Steps" (lines 2..6).
@@ -3586,7 +3949,12 @@ mod tests {
         app.tab = Tab::Findings;
         app.selected_finding = 1; // "b" (major sorts after critical)
 
+        // d opens the reason prompt; an empty Enter is the plain dismissal.
         app.dispatch(Action::FindingDismiss, &tx);
+        app.on_input(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        );
         // b is dismissed and hidden; selection clamped to the one visible.
         let agg = crate::findings::aggregate(&app.findings, false);
         assert_eq!(agg.len(), 1);

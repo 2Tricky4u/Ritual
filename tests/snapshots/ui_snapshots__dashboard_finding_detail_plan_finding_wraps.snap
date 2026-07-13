@@ -20,7 +20,7 @@ expression: render(&app)
 "   │                                                                                  │   "
 "   │                                                                                  │   "
 "   │                                                                                  │   "
-"   │ f  fix   d  dismiss   F  claude-fix   o  nvim   e  editor   j/k  next   esc  clos│   "
+"   │ f  fix   d  dismiss…   F  queue claude   m  manual   o  nvim   e  editor   j/k  n│   "
 "   ╰──────────────────────────────────────────────────────────────────────────────────╯   "
 "                            │                                                             "
 " RITUAL   detached  detached                                                          "

@@ -12,7 +12,7 @@ expression: render(&app)
 "  ○ dual-review             │ pipeline  spec → plan → review → tests → impl → dual        "
 "                            │     chat  s: chat to write/edit the spec or plan live       "
 " 󰚩 AGENTS ───────────────── │     runs  daemons: quit freely, reattach · a takeover       "
-"  󰚩 claude …                │ findings  enter details · f/d resolve · F claude-fix · / fi "
+"  󰚩 claude …                │ findings  enter details · F/m triage · d dismiss · / filter "
 "  󰚩 codex …                 │    gates  mutants · secrets · lessons · invariants          "
 "  󱘖 bridge …                │    money  daily budget · per-run caps · costs               "
 "   nvim …                   │   safety  redaction · verify-log chain · repro              "

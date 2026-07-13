@@ -1,0 +1,26 @@
+---
+source: tests/ui_snapshots.rs
+expression: render(&app)
+---
+"                            │   live   findings   history    plan    guide              "
+"  PIPELINE ──────────────── │─────────────────────────────────────────────────────────────"
+"  ○ spec                    │                                                             "
+"  ○ plan                    │   MAJR  ◇single ⚑A Step 2 queued for the claude batch     "
+"  ○ plan-review             │    s1 [plan-review:confirmed]                               "
+"  ○ tests-red               │                                                             "
+"  ○ implement               │   MAJR  ◇single ⚑M src/a.rs:3 yours to fix by hand        "
+"  ○ dual-review             │    s2 [plan-review:confirmed]                               "
+"                            │                                                             "
+" 󰚩 AGENTS ───────────────── │   minr  ◇single Step 4 declined by the last batch         "
+"  󰚩 claude …                │    s3 [plan-review:confirmed]                               "
+"  󰚩 codex …                 │                                                             "
+"  󱘖 bridge …                │                                                             "
+"   nvim …                   │                                                             "
+"   check ?                  │                                                             "
+"                            │                                                             "
+"   detached                 │                                                             "
+"                            │                                                             "
+"                            │                                                             "
+"                            │                                                             "
+"                            │                                                             "
+" RITUAL   detached  detached                                                     ⚑1 "

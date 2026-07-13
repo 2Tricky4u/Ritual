@@ -12,7 +12,7 @@ expression: render(&app)
 "  ○ dual-review  │  cancel running stage                                │pl → dual        "
 "                 │  run check.sh fast                                   │ plan live       "
 " 󰚩 AGENTS ───────│  run full check.sh                                   │a takeover       "
-"  󰚩 claude …     │  take over run in claude (--resume)                  │laude-fix · / fi "
+"  󰚩 claude …     │  take over run in claude (--resume)                  │smiss · / filter "
 "  󰚩 codex …      │  open in running nvim                                │ariants          "
 "  󱘖 bridge …     │  run spec                                            │ts               "
 "   nvim …        │  run plan                                            │pro              "
