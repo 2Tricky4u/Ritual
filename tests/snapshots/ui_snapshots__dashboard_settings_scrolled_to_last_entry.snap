@@ -1,0 +1,26 @@
+---
+source: tests/ui_snapshots.rs
+expression: render(&app)
+---
+"                            │  live   findings    history    plan    guide              "
+"  PIPELINE ─╭ settings — project config ─────────────────────────────────────╮────────────"
+"  ○ spec    │                                                                │            "
+"  ○ plan    │  model: plan-review                                — (default) │            "
+"  ○ plan-rev│  model: dual-review                                — (default) │            "
+"  ○ tests-re│  fallback models                                   — (default) │f y         "
+"  ○ implemen│  effort: plan                                      — (default) │            "
+"  ○ dual-rev│  effort: plan-fix                                  — (default) │dual        "
+"            │  effort: plan-review                               — (default) │ live       "
+" 󰚩 AGENTS ──│  effort: dual-review                               — (default) │eover       "
+"  󰚩 claude …│ appearance                                                     │ · / filter "
+"  󰚩 codex … │  theme                                      eldritch (default) │ts          "
+"  󱘖 bridge …│  icons                                          nerd (default) │            "
+"   nvim …   │  transparency                                   true (default) │            "
+"   check ?  │ behavior                                                       │            "
+"            │  notifications                                  true (default) │            "
+"   detached │  redaction                                      true (default) │ent         "
+"            │  offline                                       false (default) │            "
+"            │  base ref                                       main (default) │            "
+"            │  check timeout (s)                               600 (default) │ q  quit    "
+"            ╰────────────────────────────────────────────────────────────────╯            "
+" RITUAL   detached  detached                                                          "

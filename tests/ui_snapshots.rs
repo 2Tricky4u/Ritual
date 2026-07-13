@@ -353,6 +353,65 @@ fn dashboard_guide_tab_renders() {
     insta::assert_snapshot!(render(&app));
 }
 
+/// A settings overlay with real provenance: one project-config key so its
+/// row carries `(project)` against `(default)` siblings.
+fn setup_settings_app(tmp: &tempfile::TempDir) -> App {
+    std::fs::create_dir_all(tmp.path().join(".ritual")).unwrap();
+    std::fs::write(
+        tmp.path().join(".ritual/config.toml"),
+        "budget_finding_fix_usd = 3.0\n",
+    )
+    .unwrap();
+    let mut app = setup_app(tmp);
+    app.cfg = Config::load(tmp.path(), None, false).unwrap();
+    let project = tmp.path().join(".ritual/config.toml");
+    let sources: Vec<&'static str> = ritual::settings::CATALOG
+        .iter()
+        .map(|d| ritual::settings::source_of(None, &project, d.key).tag())
+        .collect();
+    app.settings = Some(ritual::ui::app::SettingsState {
+        selected: 0,
+        edit: None,
+        sources,
+    });
+    app
+}
+
+fn settings_idx(key: &str) -> usize {
+    ritual::settings::CATALOG
+        .iter()
+        .position(|d| d.key == key)
+        .expect(key)
+}
+
+#[test]
+fn dashboard_settings_overlay() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = setup_settings_app(&tmp);
+    insta::assert_snapshot!(render_at(&app, 90, 30));
+}
+
+#[test]
+fn dashboard_settings_edit_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_settings_app(&tmp);
+    let s = app.settings.as_mut().unwrap();
+    s.selected = settings_idx("budget_finding_fix_usd");
+    s.edit = Some(ritual::ui::app::SettingsEdit {
+        input: "abc".into(),
+        error: Some("must be a number > 0".into()),
+    });
+    insta::assert_snapshot!(render_at(&app, 90, 30));
+}
+
+#[test]
+fn dashboard_settings_scrolled_to_last_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_settings_app(&tmp);
+    app.settings.as_mut().unwrap().selected = ritual::settings::CATALOG.len() - 1;
+    insta::assert_snapshot!(render(&app));
+}
+
 #[test]
 fn dashboard_palette_filters() {
     let tmp = tempfile::tempdir().unwrap();
@@ -499,6 +558,28 @@ fn rendering_survives_hostile_sizes_in_every_state() {
             Box::new(|| {
                 let t = tempfile::tempdir().unwrap();
                 let a = setup_chat_app(&t);
+                (t, a)
+            }),
+        ),
+        (
+            "settings-overlay",
+            Box::new(|| {
+                let t = tempfile::tempdir().unwrap();
+                let a = setup_settings_app(&t);
+                (t, a)
+            }),
+        ),
+        (
+            "settings-edit",
+            Box::new(|| {
+                let t = tempfile::tempdir().unwrap();
+                let mut a = setup_settings_app(&t);
+                let s = a.settings.as_mut().unwrap();
+                s.selected = settings_idx("base_ref");
+                s.edit = Some(ritual::ui::app::SettingsEdit {
+                    input: "a very long base ref typed to test clipping".into(),
+                    error: Some("a value is required (esc to cancel)".into()),
+                });
                 (t, a)
             }),
         ),

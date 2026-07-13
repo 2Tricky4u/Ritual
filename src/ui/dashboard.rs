@@ -1682,6 +1682,7 @@ fn draw_help(f: &mut Frame, t: &Theme) {
             "tools",
             &[
                 (":", "command palette"),
+                ("S", "settings editor"),
                 ("o", "open in running nvim"),
                 ("Q", "findings → nvim quickfix"),
                 ("e", "open in $EDITOR"),
