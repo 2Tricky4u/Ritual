@@ -45,6 +45,13 @@
   </p>
 </div>
 
+<!-- DEMO: run `vhs demo.tape` to render assets/demo.gif, then uncomment this block -->
+<!--
+<div align="center">
+  <img src="assets/demo.gif" alt="ritual: dashboard → findings → detail → settings" width="820" />
+</div>
+-->
+
 <!-- TABLE OF CONTENTS -->
 <details>
   <summary>Table of Contents</summary>
@@ -332,7 +339,7 @@ See the full [ROADMAP.md][roadmap-url] for the design rationale behind each item
 <!-- DEVELOPMENT -->
 ## Development
 
-`./check.sh` = fmt + clippy `-D warnings` + tests (294 across unit/CLI/snapshot suites, incl. proptest property tests); `bash tests/e2e_live.sh` drives the installed binary through 80 lifecycle checks token-free. Builds land in `/var/tmp/ritual-target` (see `.cargo/config.toml`). The repo dogfoods its own workflow (`CLAUDE.md`); `demo.tape` renders the README demo via [vhs][vhs-url].
+`./check.sh` = fmt + clippy `-D warnings` + tests (294 across unit/CLI/snapshot suites, incl. proptest property tests); `bash tests/e2e_live.sh` drives the installed binary through 80 lifecycle checks token-free. Builds land in `/var/tmp/ritual-target` (see `.cargo/config.toml`). The repo dogfoods its own workflow (`CLAUDE.md`); `demo.tape` renders the demo GIF to `assets/demo.gif` via [vhs][vhs-url] (`vhs demo.tape`).
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
