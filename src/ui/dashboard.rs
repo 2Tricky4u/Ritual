@@ -237,6 +237,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.apply_confirm.is_some() {
         draw_apply_confirm(f, app);
     }
+    if app.triage_confirm.is_some() {
+        draw_triage_confirm(f, app);
+    }
     if app.show_help {
         draw_help(f, t);
     }
@@ -1666,6 +1669,7 @@ fn draw_help(f: &mut Frame, t: &Theme) {
                 ("d", "dismiss (+reason)"),
                 ("F", "queue/apply claude answers"),
                 ("m", "queue manual fix"),
+                ("t", "apply recommended triage"),
                 ("u", "revert applied batch"),
                 ("v", "show/hide resolved"),
                 ("/", "filter list (2/3)"),
@@ -1706,6 +1710,47 @@ fn draw_help(f: &mut Frame, t: &Theme) {
         lines.push(Line::default());
     }
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The `t` triage confirm: what one `y` stages — dispositions only, the
+/// plan still mutates exclusively through F-apply.
+fn draw_triage_confirm(f: &mut Frame, app: &App) {
+    let t = &app.cfg.theme;
+    let Some(c) = &app.triage_confirm else { return };
+    let total = c.archive + c.queue_auto + c.queue_manual + c.dismiss;
+    let area = centered_rect(
+        f.area(),
+        62.min(f.area().width.saturating_sub(2)).max(1),
+        5.min(f.area().height.saturating_sub(2)).max(1),
+    );
+    let inner = float_panel(f, t, area, "apply recommended triage");
+    if inner.height == 0 {
+        return;
+    }
+    let mut lines = vec![Line::from(Span::styled(
+        format!("apply recommended triage to {total} finding(s)?"),
+        Style::default().fg(t.fg()).add_modifier(Modifier::BOLD),
+    ))];
+    lines.push(Line::from(Span::styled(
+        format!(
+            "✓ archive {} (prose→reason) · ⚑A {} · ⚑M {} · ∅ dismiss {}",
+            c.archive, c.queue_auto, c.queue_manual, c.dismiss
+        ),
+        Style::default().fg(t.comment()),
+    )));
+    if c.needs_you > 0 {
+        lines.push(Line::from(Span::styled(
+            format!("{} need your judgment — untouched", c.needs_you),
+            Style::default().fg(t.warn()),
+        )));
+    }
+    lines.push(Line::from(vec![
+        keycap(t, "y"),
+        Span::raw(" apply  "),
+        keycap(t, "esc"),
+        Span::raw(" cancel"),
+    ]));
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 /// The F-apply confirm: what one `y` will send to claude, and how degraded

@@ -186,6 +186,22 @@ fn dashboard_findings_tab_triage_states() {
 }
 
 #[test]
+fn dashboard_triage_confirm() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_app(&tmp);
+    app.tab = Tab::Findings;
+    app.triage_confirm = Some(ritual::ui::app::TriageConfirm {
+        items: Vec::new(),
+        archive: 31,
+        queue_auto: 2,
+        queue_manual: 1,
+        dismiss: 1,
+        needs_you: 3,
+    });
+    insta::assert_snapshot!(render(&app));
+}
+
+#[test]
 fn dashboard_finding_detail_code_finding() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(tmp.path().join(".ritual/findings")).unwrap();
@@ -387,6 +403,23 @@ fn rendering_survives_hostile_sizes_in_every_state() {
                 let t = tempfile::tempdir().unwrap();
                 let mut a = setup_app(&t);
                 a.show_help = true;
+                (t, a)
+            }),
+        ),
+        (
+            "triage-confirm",
+            Box::new(|| {
+                let t = tempfile::tempdir().unwrap();
+                let mut a = setup_app(&t);
+                a.tab = Tab::Findings;
+                a.triage_confirm = Some(ritual::ui::app::TriageConfirm {
+                    items: Vec::new(),
+                    archive: 31,
+                    queue_auto: 2,
+                    queue_manual: 1,
+                    dismiss: 1,
+                    needs_you: 3,
+                });
                 (t, a)
             }),
         ),

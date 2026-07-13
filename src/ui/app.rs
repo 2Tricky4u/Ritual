@@ -125,6 +125,17 @@ pub struct ApplyConfirm {
     pub unqueue: Option<(std::path::PathBuf, usize)>,
 }
 
+/// The `t` one-touch triage confirm: every recommended disposition, staged.
+/// Identities by PATH (a background reload must not retarget the writes).
+pub struct TriageConfirm {
+    pub items: Vec<(std::path::PathBuf, usize, crate::findings::Recommendation)>,
+    pub archive: usize,
+    pub queue_auto: usize,
+    pub queue_manual: usize,
+    pub dismiss: usize,
+    pub needs_you: usize,
+}
+
 /// The `d` dismiss prompt: identity captured at open (by PATH — a background
 /// reload must not retarget the write), plus the reason being typed.
 pub struct DismissPrompt {
@@ -154,6 +165,8 @@ pub struct App {
     pub dismiss_prompt: Option<DismissPrompt>,
     /// The F-apply confirm modal (None = closed).
     pub apply_confirm: Option<ApplyConfirm>,
+    /// The `t` triage-all confirm modal (None = closed).
+    pub triage_confirm: Option<TriageConfirm>,
     /// Show findings already marked fixed/dismissed (toggled with `v`).
     pub show_resolved: bool,
     /// `/` filter over the findings/history lists (empty = inactive).
@@ -298,6 +311,7 @@ impl App {
             finding_detail: false,
             dismiss_prompt: None,
             apply_confirm: None,
+            triage_confirm: None,
             show_resolved: false,
             filter: String::new(),
             filter_editing: false,
@@ -601,6 +615,10 @@ impl App {
             self.apply_confirm_input(key.code, tx);
             return;
         }
+        if self.triage_confirm.is_some() {
+            self.triage_confirm_input(key.code);
+            return;
+        }
         if self.show_help {
             self.show_help = false;
             return;
@@ -797,6 +815,7 @@ impl App {
             Action::FindingClaudeFix => self.finding_claude_answer(tx),
             Action::FindingManual => self.finding_toggle_manual(),
             Action::FindingsApply => self.findings_apply_from_palette(tx),
+            Action::TriageAll => self.open_triage_confirm(),
             Action::DocUndo => self.doc_undo(),
             Action::ToggleResolved => {
                 if self.tab == Tab::Findings {
@@ -2447,6 +2466,117 @@ impl App {
         });
     }
 
+    /// `t`: compute the recommended disposition for every VISIBLE open
+    /// finding (filter + hidden-resolved honored — exactly what the user
+    /// sees) and stage them behind a confirm modal. Dispositions only:
+    /// the plan itself still changes exclusively through F-apply.
+    fn open_triage_confirm(&mut self) {
+        if self.tab != Tab::Findings {
+            self.status_msg = Some("t triages on the findings tab (2)".into());
+            return;
+        }
+        let mut items = Vec::new();
+        let (mut archive, mut qa, mut qm, mut dismiss, mut needs_you) = (0, 0, 0, 0, 0);
+        for af in self.visible_findings() {
+            let Some(rec) = crate::findings::recommend(&af.finding) else {
+                continue; // resolved / triaged / declined: already handled
+            };
+            use crate::findings::Recommendation as R;
+            match rec {
+                R::Archive => archive += 1,
+                R::QueueAuto => qa += 1,
+                R::QueueManual => qm += 1,
+                R::Dismiss(_) => dismiss += 1,
+                R::NeedsYou => {
+                    needs_you += 1;
+                    continue; // shown in the count, never auto-applied
+                }
+            }
+            items.push((self.findings[af.file_idx].path.clone(), af.pos, rec));
+        }
+        if items.is_empty() {
+            self.status_msg = Some(if needs_you > 0 {
+                format!("nothing to auto-triage — {needs_you} need your judgment")
+            } else {
+                "nothing to triage".into()
+            });
+            return;
+        }
+        self.triage_confirm = Some(TriageConfirm {
+            items,
+            archive,
+            queue_auto: qa,
+            queue_manual: qm,
+            dismiss,
+            needs_you,
+        });
+    }
+
+    /// Keys while the triage confirm is open: `y` writes every staged
+    /// disposition, anything else closes without writing.
+    fn triage_confirm_input(&mut self, code: KeyCode) {
+        let Some(confirm) = self.triage_confirm.take() else {
+            return;
+        };
+        if code != KeyCode::Char('y') {
+            return;
+        }
+        let mut applied = 0usize;
+        for (path, pos, rec) in &confirm.items {
+            // Re-find by PATH: a background reload may have shifted indices.
+            let Some(i) = self.findings.iter().position(|lf| lf.path == *path) else {
+                continue;
+            };
+            // A finding resolved mid-modal wins over the staged decision.
+            if self.findings[i]
+                .file
+                .findings
+                .get(*pos)
+                .is_none_or(|f| f.resolved())
+            {
+                continue;
+            }
+            use crate::findings::Recommendation as R;
+            let ok = match rec {
+                // set_action_with_reason migrates prose actions into reason.
+                R::Archive => crate::findings::set_action_with_reason(
+                    &mut self.findings,
+                    i,
+                    *pos,
+                    "fixed",
+                    None,
+                ),
+                R::Dismiss(reason) => crate::findings::set_action_with_reason(
+                    &mut self.findings,
+                    i,
+                    *pos,
+                    "dismissed",
+                    Some(reason),
+                ),
+                R::QueueAuto => {
+                    crate::findings::set_answer(&mut self.findings, i, *pos, Some("auto"), None)
+                }
+                R::QueueManual => {
+                    crate::findings::set_answer(&mut self.findings, i, *pos, Some("manual"), None)
+                }
+                R::NeedsYou => Ok(()), // never staged
+            };
+            if ok.is_ok() {
+                applied += 1;
+            }
+        }
+        self.recompute_anchors();
+        self.clamp_selected_finding();
+        self.status_msg = Some(format!(
+            "triaged {applied}: {} archived · {} ⚑A · {} ⚑M · {} dismissed · {} need you",
+            confirm.archive,
+            confirm.queue_auto,
+            confirm.queue_manual,
+            confirm.dismiss,
+            confirm.needs_you
+        ));
+    }
+
     /// Everything that must hold before the batch apply may spawn, plus the
     /// built command and write-back context. Side-effect-free until the last
     /// two steps (undo push + `fix_doc_before` snapshot), after every guard.
@@ -3416,6 +3546,107 @@ mod tests {
         );
         assert!(!app.finding_detail);
         assert!(seeded_json(&app).contains(r#""action": "dismissed""#));
+    }
+
+    const TRIAGE_SEED: &str = r#"{"stage":"plan-review","findings":[
+        {"id":1,"title":"prose resolved","plan_step":"Step 1","severity":"major",
+         "verdict":"accepted","action":"Resolved by narrowing the scope."},
+        {"id":2,"title":"retracted","plan_step":"Step 2","severity":"minor","verdict":"refuted"},
+        {"id":3,"title":"plan gap","plan_step":"Step 3","severity":"major","verdict":"confirmed"},
+        {"id":4,"title":"code bug","file":"src/a.rs","line":3,"severity":"major","verdict":"confirmed"},
+        {"id":5,"title":"maybe","plan_step":"Step 4","severity":"minor","verdict":"unconfirmed"},
+        {"id":6,"title":"already queued","plan_step":"Step 5","severity":"minor",
+         "verdict":"confirmed","answer":"manual"}]}"#;
+
+    #[test]
+    fn triage_all_counts_and_applies_to_disk() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_findings(&mut app, TRIAGE_SEED);
+        app.dispatch(Action::TriageAll, &tx);
+        let c = app.triage_confirm.as_ref().expect("modal open");
+        assert_eq!(
+            (
+                c.archive,
+                c.queue_auto,
+                c.queue_manual,
+                c.dismiss,
+                c.needs_you
+            ),
+            (1, 1, 1, 1, 1)
+        );
+        app.on_input(
+            Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert!(app.triage_confirm.is_none());
+        let json = seeded_json(&app);
+        // Archive: fixed + prose preserved as reason.
+        assert!(json.contains(r#""action": "fixed""#), "{json}");
+        assert!(json.contains("Resolved by narrowing the scope."), "{json}");
+        // Refuted: dismissed with the rule's reason.
+        assert!(json.contains(r#""action": "dismissed""#), "{json}");
+        assert!(json.contains("withdrawn/refuted by review"), "{json}");
+        // Confirmed plan -> ⚑A; confirmed code -> ⚑M (plus the pre-queued one).
+        assert!(json.contains(r#""answer": "auto""#), "{json}");
+        assert_eq!(json.matches(r#""answer": "manual""#).count(), 2, "{json}");
+        // Unconfirmed untouched.
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let maybe = &parsed["findings"][4];
+        assert_eq!(maybe["action"], "".to_string(), "untouched as seeded");
+        assert!(maybe.get("answer").is_none());
+        assert!(
+            app.status_msg
+                .as_deref()
+                .is_some_and(|m| m.contains("1 archived · 1 ⚑A · 1 ⚑M · 1 dismissed · 1 need you"))
+        );
+    }
+
+    #[test]
+    fn triage_all_esc_writes_nothing() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_findings(&mut app, TRIAGE_SEED);
+        let before = seeded_json(&app);
+        app.dispatch(Action::TriageAll, &tx);
+        app.on_input(
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            &tx,
+        );
+        assert!(app.triage_confirm.is_none());
+        assert_eq!(seeded_json(&app), before, "esc must write nothing");
+    }
+
+    #[test]
+    fn triage_all_respects_filter_scope() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_findings(&mut app, TRIAGE_SEED);
+        // Narrow to the code finding only; t must stage exactly it.
+        app.dispatch(Action::Filter, &tx);
+        for ch in "code bug".chars() {
+            app.filter_input(KeyCode::Char(ch));
+        }
+        app.filter_input(KeyCode::Enter);
+        assert_eq!(app.visible_findings().len(), 1);
+        app.dispatch(Action::TriageAll, &tx);
+        let c = app.triage_confirm.as_ref().expect("modal open");
+        assert_eq!(
+            (
+                c.archive,
+                c.queue_auto,
+                c.queue_manual,
+                c.dismiss,
+                c.needs_you
+            ),
+            (0, 0, 1, 0, 0)
+        );
+        app.on_input(
+            Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
+            &tx,
+        );
+        let json = seeded_json(&app);
+        // Only the code finding was written; the prose finding kept its prose action.
+        assert_eq!(json.matches(r#""answer": "manual""#).count(), 2); // pre-queued + this
+        assert!(json.contains("Resolved by narrowing the scope."));
+        assert!(!json.contains(r#""action": "fixed""#));
     }
 
     /// Plan with two sections; "Step 2" maps into "## Steps" (lines 2..6),

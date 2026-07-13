@@ -42,6 +42,7 @@ pub enum Action {
     FindingClaudeFix,
     FindingManual,
     FindingsApply,
+    TriageAll,
     DocUndo,
     ToggleResolved,
     RunStage(StageId),
@@ -107,6 +108,11 @@ pub const ACTIONS: &[(&str, Action, &str)] = &[
         "findings-apply",
         Action::FindingsApply,
         "findings: apply answers",
+    ),
+    (
+        "triage-all",
+        Action::TriageAll,
+        "findings: apply recommended triage",
     ),
     ("doc-undo", Action::DocUndo, "undo last plan fix"),
     (
@@ -225,6 +231,7 @@ impl Default for Keymap {
             ("d", "finding-dismiss"),
             ("F", "finding-claude-fix"),
             ("m", "finding-manual"),
+            ("t", "triage-all"),
             ("u", "doc-undo"),
             ("v", "toggle-resolved"),
         ];
@@ -345,6 +352,10 @@ mod tests {
         assert_eq!(
             km.resolve(KeyCode::Char('m'), KeyModifiers::NONE),
             Some(Action::FindingManual)
+        );
+        assert_eq!(
+            km.resolve(KeyCode::Char('t'), KeyModifiers::NONE),
+            Some(Action::TriageAll)
         );
         // findings-apply is palette-only: no default chord.
         assert!(!km.map.values().any(|a| *a == Action::FindingsApply));
