@@ -21,6 +21,9 @@ pub struct FileConfig {
     pub budget_dual_review_usd: Option<f64>,
     /// Per-message ceiling for a spec/plan chat edit (one small Edit each).
     pub budget_doc_chat_usd: Option<f64>,
+    /// Per-run ceiling for a claude plan fix (`F` on a finding): reads the
+    /// whole plan + spec for consistency, edits one section.
+    pub budget_finding_fix_usd: Option<f64>,
     /// `[keys]` table: action name -> chord ("check-full = \"F\"").
     pub keys: Option<HashMap<String, String>>,
     /// Redact secrets from archives/streams/reports (default true).
@@ -134,6 +137,7 @@ pub struct Config {
     pub budget_plan_review_usd: f64,
     pub budget_dual_review_usd: f64,
     pub budget_doc_chat_usd: f64,
+    pub budget_finding_fix_usd: f64,
     pub keymap: Keymap,
     pub redaction: bool,
     pub budget_daily_usd: Option<f64>,
@@ -170,6 +174,7 @@ impl Default for Config {
             budget_plan_review_usd: 5.0,
             budget_dual_review_usd: 10.0,
             budget_doc_chat_usd: 0.50,
+            budget_finding_fix_usd: 1.0,
             keymap: Keymap::default(),
             redaction: true,
             budget_daily_usd: None,
@@ -250,6 +255,9 @@ impl Config {
             }
             if let Some(b) = fc.budget_doc_chat_usd {
                 cfg.budget_doc_chat_usd = b;
+            }
+            if let Some(b) = fc.budget_finding_fix_usd {
+                cfg.budget_finding_fix_usd = b;
             }
             if let Some(keys) = fc.keys {
                 key_overrides.extend(keys); // later layers win per-action
@@ -449,6 +457,7 @@ mod tests {
             tmp.path().join(".ritual/config.toml"),
             r#"
 fallback_model = "claude-sonnet-5"
+budget_finding_fix_usd = 2.5
 
 [keys]
 check-full = "F"
@@ -490,6 +499,7 @@ alpha = "echo a"
         .unwrap();
         let cfg = Config::load(tmp.path(), None, false).unwrap();
         assert_eq!(cfg.fallback_model.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(cfg.budget_finding_fix_usd, 2.5);
         assert_eq!(cfg.models["plan-review"], "opus");
         assert_eq!(cfg.effort["plan"], "xhigh");
         assert_eq!(cfg.retry_models, vec!["claude-opus-4-8", "claude-sonnet-5"]);

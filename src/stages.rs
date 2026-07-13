@@ -178,6 +178,109 @@ pub fn doc_chat_command(
     cmd
 }
 
+/// The slice of a plan-review finding that rides in a fix prompt.
+pub struct FindingBrief<'a> {
+    pub title: &'a str,
+    pub severity: &'a str,
+    pub scenario: &'a str,
+    pub plan_step: &'a str,
+    pub snippet: Option<&'a str>,
+}
+
+/// Build the headless command for ONE claude plan fix (`F` on a plan-review
+/// finding). Same contract as `doc_chat_command` — single `-p` prompt, edits
+/// locked to the plan file, `dontAsk` — but the REQUEST is the finding plus
+/// the global-read/local-write policy, and the budget/model/effort routing
+/// use the fix's own knobs. Scoping stays prompt-level here; the caller
+/// enforces it mechanically afterwards (`spec::edits_confined`).
+pub fn finding_fix_command(
+    cfg: &Config,
+    plan_path: &Path,
+    scope: &Scope,
+    finding: &FindingBrief,
+    spec_path: Option<&Path>,
+    invariants: Option<&Path>,
+) -> StageCommand {
+    let scope_line = match scope {
+        Scope::Whole => "SCOPE: whole".to_string(),
+        Scope::Section(name) => format!("SCOPE: section \"{name}\""),
+    };
+    let spec_line = match spec_path {
+        Some(p) => format!("SPEC_FILE: {}\n", p.display()),
+        None => String::new(),
+    };
+    let inv_line = match invariants {
+        Some(p) => format!(
+            "INVARIANTS_FILE: {} (non-negotiable constraints; never write content that contradicts them)\n",
+            p.display()
+        ),
+        None => String::new(),
+    };
+    let snippet_block = match finding.snippet {
+        Some(s) => format!("snippet:\n{s}\n"),
+        None => String::new(),
+    };
+    let prompt = format!(
+        "/spec Apply one scoped change to this ritual document.\n\n\
+         DOC_FILE: {}\n\
+         DOC_KIND: plan\n\
+         {spec_line}{inv_line}{scope_line}\n\n\
+         FINDING (from plan-review):\n\
+         severity: {}\n\
+         title: {}\n\
+         plan step: {}\n\
+         scenario: {}\n\
+         {snippet_block}\n\
+         REQUEST:\n\
+         Fix the plan so this finding no longer applies. Read the whole plan, \
+         the spec, and the invariants for consistency, but EDIT ONLY the scoped \
+         section. If a correct fix requires changes outside that section, make \
+         NO edit at all and explain the broader change needed instead.",
+        plan_path.display(),
+        finding.severity,
+        finding.title,
+        finding.plan_step,
+        finding.scenario,
+    );
+    let mut cmd = StageCommand {
+        mode: Mode::Headless,
+        agent: AgentKind::Claude,
+        argv: [
+            cfg.claude_cmd.clone(),
+            vec![
+                "-p".into(),
+                prompt,
+                "--output-format".into(),
+                "stream-json".into(),
+                "--verbose".into(),
+                "--permission-mode".into(),
+                "dontAsk".into(),
+                "--allowedTools".into(),
+                doc_chat_tools(plan_path),
+                "--max-budget-usd".into(),
+                cfg.budget_finding_fix_usd.to_string(),
+            ],
+        ]
+        .concat(),
+        env: vec![],
+        needs_codex: false,
+    };
+    // Routing: the plan's model, the fix's own effort key, the usual fallback.
+    if let Some(model) = cfg.models.get(DocKind::Plan.label()) {
+        cmd.argv.push("--model".into());
+        cmd.argv.push(model.clone());
+    }
+    if let Some(effort) = cfg.effort.get("plan-fix") {
+        cmd.argv.push("--effort".into());
+        cmd.argv.push(effort.clone());
+    }
+    if let Some(fb) = &cfg.fallback_model {
+        cmd.argv.push("--fallback-model".into());
+        cmd.argv.push(fb.clone());
+    }
+    cmd
+}
+
 /// Build the exact command for a stage. `arg` is the optional user argument
 /// (plan path for plan-review, base ref for dual-review). `model_override`
 /// (retry-with-model, `run --model`) beats the `[models]` routing table.
@@ -559,6 +662,100 @@ mod tests {
         assert!(prompt.contains("DOC_KIND: plan"));
         assert!(prompt.contains(&format!("SPEC_FILE: {}", spec.display())));
         assert!(cmd.argv.windows(2).any(|w| w == ["--model", "opus"]));
+    }
+
+    #[test]
+    fn finding_fix_command_shape() {
+        let (_tmp, mut cfg, dirs) = setup();
+        cfg.budget_finding_fix_usd = 1.25;
+        let plan = dirs.plan_file("feat-x");
+        let brief = FindingBrief {
+            title: "step 2 deletes chained runs",
+            severity: "major",
+            scenario: "verify-log breaks for retained runs",
+            plan_step: "Step 2 (deletion)",
+            snippet: Some("2. Enumerate by FILENAME"),
+        };
+        let cmd = finding_fix_command(
+            &cfg,
+            &plan,
+            &Scope::Section("Steps".into()),
+            &brief,
+            None,
+            None,
+        );
+        assert_eq!(cmd.mode, Mode::Headless);
+        assert!(!cmd.needs_codex);
+        assert!(cmd.env.is_empty(), "fix runs write no findings, set no env");
+        let prompt = cmd
+            .argv
+            .iter()
+            .find(|a| a.starts_with("/spec"))
+            .expect("has a /spec prompt");
+        // The finding rides whole; the policy sentence is the contract.
+        assert!(prompt.contains("DOC_KIND: plan"));
+        assert!(prompt.contains(r#"SCOPE: section "Steps""#));
+        assert!(prompt.contains("FINDING (from plan-review):"));
+        assert!(prompt.contains("severity: major"));
+        assert!(prompt.contains("title: step 2 deletes chained runs"));
+        assert!(prompt.contains("plan step: Step 2 (deletion)"));
+        assert!(prompt.contains("scenario: verify-log breaks"));
+        assert!(prompt.contains("snippet:\n2. Enumerate by FILENAME"));
+        assert!(prompt.contains("EDIT ONLY the scoped section"));
+        assert!(prompt.contains("make NO edit at all"));
+        // Same hard lock as doc-chat: dontAsk + Edit/Write anchored to the plan.
+        assert!(cmd.argv.contains(&"dontAsk".to_string()));
+        let tools = cmd
+            .argv
+            .iter()
+            .find(|a| a.starts_with("Read,"))
+            .expect("allowedTools value");
+        assert!(tools.contains(&format!("Edit(/{})", plan.display())));
+        // The fix's own budget knob.
+        let i = cmd
+            .argv
+            .iter()
+            .position(|a| a == "--max-budget-usd")
+            .unwrap();
+        assert_eq!(cmd.argv[i + 1], "1.25");
+    }
+
+    #[test]
+    fn finding_fix_routing_composes_model_effort_and_fallback() {
+        let (_tmp, mut cfg, dirs) = setup();
+        cfg.models.insert("plan".into(), "claude-fable-5".into());
+        cfg.effort.insert("plan-fix".into(), "xhigh".into());
+        cfg.fallback_model = Some("claude-opus-4-8".into());
+        let brief = FindingBrief {
+            title: "t",
+            severity: "minor",
+            scenario: "s",
+            plan_step: "Step 1",
+            snippet: None,
+        };
+        let cmd = finding_fix_command(
+            &cfg,
+            &dirs.plan_file("s"),
+            &Scope::Whole,
+            &brief,
+            None,
+            None,
+        );
+        assert!(
+            cmd.argv
+                .windows(2)
+                .any(|w| w == ["--model", "claude-fable-5"])
+        );
+        assert!(cmd.argv.windows(2).any(|w| w == ["--effort", "xhigh"]));
+        assert!(
+            cmd.argv
+                .windows(2)
+                .any(|w| w == ["--fallback-model", "claude-opus-4-8"])
+        );
+        // No snippet -> no empty snippet block in the prompt.
+        let prompt = cmd.argv.iter().find(|a| a.starts_with("/spec")).unwrap();
+        assert!(!prompt.contains("snippet:"));
+        assert!(prompt.contains("SCOPE: whole"));
     }
 
     #[test]

@@ -417,6 +417,7 @@ fn budget_check(cfg: &Config) -> CheckResult {
         ("plan-review", cfg.budget_plan_review_usd),
         ("dual-review", cfg.budget_dual_review_usd),
         ("doc-chat", cfg.budget_doc_chat_usd),
+        ("finding-fix", cfg.budget_finding_fix_usd),
     ] {
         if per_run > daily {
             over.push(format!("{name} (${per_run})"));
