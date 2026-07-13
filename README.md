@@ -297,6 +297,7 @@ All rebindable via `[keys]`:
 - [x] **v0.3**: interactive spec/plan chat (`s`) + `/spec` skill + `ritual chat`
 - [x] **v0.4**: `clean` with chain checkpoints, findings lifecycle (f/d/v + CI contract), chat undo/cancel/queue/highlight, vendored workbench, hard permission-scoping, `ps`/`attach`, `doctor`, consensus tier, `pr-comment`
 - [x] **v0.5**: mutation + secrets gates, invariants constitution, review memory, findings snippets, `costs`, fallback + retry-with-model, sandbox wrapper, CodeRabbit third reviewer, OTel GenAI semconv + IETF audit-trail export, chat undo stack + reattach
+- [x] **v0.6**: finding detail overlay (enter), claude-scoped plan fix (`F`) with a mechanical section gate + one-key revert (`u`), plan-step routing for `o`/`Q`, `[effort]` routing
 - [ ] **Deferred**: steerable runs (Agent SDK), `ritual mcp-server`, SQLite/fuzzy history, chat fork-at-turn, container worktrees, OTLP receiver + in-TUI span waterfall, tree-sitter repo map
 
 See the full [ROADMAP.md][roadmap-url] for the design rationale behind each item, and the non-goals.
@@ -348,7 +349,7 @@ See the full [ROADMAP.md][roadmap-url] for the design rationale behind each item
 </div>
 
 <!-- MARKDOWN LINKS & IMAGES -->
-[version-shield]: https://img.shields.io/badge/version-0.5.1-9d7cd8?style=for-the-badge
+[version-shield]: https://img.shields.io/badge/version-0.6.0-9d7cd8?style=for-the-badge
 [tests-shield]: https://img.shields.io/badge/cargo_tests-294_passing-73daca?style=for-the-badge
 [e2e-shield]: https://img.shields.io/badge/live_driver-80%2F80-7aa2f7?style=for-the-badge
 [chain-shield]: https://img.shields.io/badge/audit-tamper--evident-e0af68?style=for-the-badge
