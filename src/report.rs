@@ -1,4 +1,4 @@
-//! `ritual report` — one Markdown document summarizing a feature's journey:
+//! `ritual report` produces one Markdown document summarizing a feature's journey:
 //! spec → plan → findings → runs → costs. Optionally converted to PDF via
 //! pandoc. All content passes through redaction.
 
@@ -47,7 +47,7 @@ pub fn generate(
     let mut md = String::new();
     let now = Utc::now();
     md.push_str(&format!(
-        "---\ntitle: \"{}\"\nsubtitle: \"ritual report — branch {}\"\ndate: {}\n---\n\n",
+        "---\ntitle: \"{}\"\nsubtitle: \"ritual report, branch {}\"\ndate: {}\n---\n\n",
         feat.title.replace('"', "'"),
         feat.branch,
         now.format("%Y-%m-%d")
@@ -73,7 +73,7 @@ pub fn generate(
     }
 
     // Findings, most severe first. Reports are the record: include resolved
-    // ones too — the action column shows fixed/dismissed.
+    // ones too. The action column shows fixed/dismissed.
     let agg = findings::aggregate(&loaded, true);
     md.push_str("## Findings\n\n");
     if agg.is_empty() {
@@ -120,7 +120,7 @@ pub fn generate(
             md.push_str("### Evidence\n\n");
             for af in with_snippets {
                 let f = &af.finding;
-                md.push_str(&format!("**{}** — {}\n\n", f.location(), f.title));
+                md.push_str(&format!("**{}**: {}\n\n", f.location(), f.title));
                 md.push_str(&format!("```\n{}\n```\n\n", f.snippet.as_deref().unwrap()));
             }
         }
@@ -194,7 +194,7 @@ pub fn generate(
 /// Best-effort pandoc conversion. Engine order favors Unicode-correct
 /// renderers first: typst (no LaTeX needed), then xelatex (handles the
 /// report's Nerd-Font/box-drawing glyphs, unlike pdflatex), then pandoc's
-/// default. Reports carry unicode, so a plain pdflatex-only box fails —
+/// default. Reports carry unicode, so a plain pdflatex-only box fails;
 /// falling through to markdown-only is the documented graceful degrade.
 fn convert_pdf(md: &std::path::Path) -> Result<Option<PathBuf>> {
     let out = md.with_extension("pdf");
@@ -219,7 +219,7 @@ fn convert_pdf(md: &std::path::Path) -> Result<Option<PathBuf>> {
         }
     }
     eprintln!(
-        "pdf conversion failed (is pandoc + typst or a LaTeX engine installed?) — markdown kept"
+        "pdf conversion failed (is pandoc + typst or a LaTeX engine installed?); markdown kept"
     );
     Ok(None)
 }

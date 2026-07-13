@@ -39,7 +39,7 @@ pub struct Finding {
     pub line: Option<u32>,
     #[serde(default)]
     pub plan_step: Option<String>,
-    /// 1-3 verbatim source lines at the finding — hunk-anchored evidence
+    /// 1-3 verbatim source lines at the finding: hunk-anchored evidence
     /// (reviewers act on snippet-bearing findings; absent for plan findings).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
@@ -62,7 +62,7 @@ impl Finding {
     }
 
     /// A human closed this finding out ("fixed" from the TUI or a skill,
-    /// "dismissed" from the TUI). Anything else — "pending", "", free text —
+    /// "dismissed" from the TUI). Anything else ("pending", "", free text)
     /// is unresolved. Resolved findings don't block CI or the exit code.
     pub fn resolved(&self) -> bool {
         matches!(self.action.as_str(), "fixed" | "dismissed")
@@ -143,7 +143,7 @@ pub struct AggregatedFinding {
 }
 
 /// Flatten + sort: severity first (critical on top), then newest file first.
-/// The resolved filter lives HERE — the single chokepoint every consumer
+/// The resolved filter lives HERE, the single chokepoint every consumer
 /// (TUI selection, editor jump, quickfix, custom commands) goes through, so
 /// `selected_finding` indexes stay consistent everywhere.
 pub fn aggregate(loaded: &[LoadedFindings], show_resolved: bool) -> Vec<AggregatedFinding> {
@@ -348,7 +348,7 @@ mod tests {
         assert_eq!(loaded[0].file.findings[1].snippet, None);
 
         // A rewrite keeps the snippet and does NOT invent one where absent
-        // (skip_serializing_if — external emitters' files stay minimal).
+        // (skip_serializing_if: external emitters' files stay minimal).
         set_action(&mut loaded, 0, 0, "fixed").unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("let x = 1;"));

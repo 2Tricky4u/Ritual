@@ -1,4 +1,4 @@
-//! `ritual doctor` — one command that checks every prerequisite the workflow
+//! `ritual doctor`: one command that checks every prerequisite the workflow
 //! depends on: agents, auth, MCP wiring, skills drift, hooks, check.sh, disk
 //! pressure, and budget sanity. Hard failures (things nothing works without)
 //! exit nonzero; drift and optional pieces warn.
@@ -46,7 +46,7 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
         check(
             "project",
             CheckStatus::Fail,
-            "no .ritual/ here — run `ritual init`",
+            "no .ritual/ here; run `ritual init`",
         )
     });
 
@@ -55,7 +55,7 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
         check(
             "check.sh",
             CheckStatus::Fail,
-            "missing — the whole loop depends on it (`ritual init`)",
+            "missing: the whole loop depends on it (`ritual init`)",
         )
     } else if !is_executable(&check_sh) {
         check("check.sh", CheckStatus::Fail, "not executable (chmod +x)")
@@ -92,7 +92,7 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
             (Some(v), _) => check(
                 "claude",
                 CheckStatus::Fail,
-                format!("{v} · NOT logged in — run `claude` once to auth"),
+                format!("{v} · NOT logged in; run `claude` once to auth"),
             ),
             (None, _) => check(
                 "claude",
@@ -106,7 +106,7 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
             Some(false) => check(
                 "codex",
                 CheckStatus::Warn,
-                "not logged in (`codex login`) — cross-model stages unavailable",
+                "not logged in (`codex login`). Cross-model stages unavailable",
             ),
             None => check(
                 "codex",
@@ -135,7 +135,7 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
             None if cfg.consensus_enabled => check(
                 "pal mcp",
                 CheckStatus::Warn,
-                "consensus enabled but pal is not registered — see the guide",
+                "consensus enabled but pal is not registered; see the guide",
             ),
             None => check(
                 "pal mcp",
@@ -179,7 +179,7 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
             check(
                 "sandbox",
                 CheckStatus::Fail,
-                "[sandbox] enabled but no wrapper configured — see docs/srt-settings.example.json",
+                "[sandbox] enabled but no wrapper configured; see docs/srt-settings.example.json",
             )
         } else if which(&cfg.sandbox_wrapper[0]) {
             check(
@@ -195,7 +195,7 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
                 "sandbox",
                 CheckStatus::Fail,
                 format!(
-                    "wrapper `{}` not on PATH — headless runs would fail to spawn",
+                    "wrapper `{}` not on PATH: headless runs would fail to spawn",
                     cfg.sandbox_wrapper[0]
                 ),
             )
@@ -205,7 +205,7 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
                 out.push(check(
                     "sandbox",
                     CheckStatus::Warn,
-                    format!("`{dep}` missing (pacman -S bubblewrap socat ripgrep) — srt needs it"),
+                    format!("`{dep}` missing (pacman -S bubblewrap socat ripgrep); srt needs it"),
                 ));
             }
         }
@@ -224,7 +224,7 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
                 "coderabbit",
                 CheckStatus::Warn,
                 format!(
-                    "`{}` not runnable — install + `coderabbit auth login` (see the guide)",
+                    "`{}` not runnable; install + `coderabbit auth login` (see the guide)",
                     cfg.coderabbit_cmd.join(" ")
                 ),
             )
@@ -245,7 +245,7 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
             "secrets",
             CheckStatus::Warn,
             format!(
-                "`{}` not runnable — gate silently skipped (pacman -S gitleaks)",
+                "`{}` not runnable; gate silently skipped (pacman -S gitleaks)",
                 cfg.gitleaks_cmd.join(" ")
             ),
         )
@@ -261,7 +261,7 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
         None => check(
             "invariants",
             CheckStatus::Skipped,
-            "none — optional; add bullets to .ritual/invariants.md (ritual init scaffolds it)",
+            "none: optional; add bullets to .ritual/invariants.md (ritual init scaffolds it)",
         ),
     });
 
@@ -288,7 +288,7 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
                 Some(_) => check(
                     "check.sh fast",
                     CheckStatus::Fail,
-                    "red — fix before running stages",
+                    "red: fix before running stages",
                 ),
                 None => check("check.sh fast", CheckStatus::Fail, "timed out"),
             }
@@ -372,7 +372,7 @@ fn hooks_check() -> CheckResult {
         check(
             "hooks",
             CheckStatus::Warn,
-            "check-on-edit hook not in settings.json — see workbench/settings-snippet.json",
+            "check-on-edit hook not in settings.json; see workbench/settings-snippet.json",
         )
     }
 }
@@ -385,7 +385,7 @@ fn claude_home() -> Option<std::path::PathBuf> {
     }
 }
 
-/// Disk pressure on the project filesystem — a chronically full disk is a
+/// Disk pressure on the project filesystem: a chronically full disk is a
 /// real failure mode here (archives, builds).
 fn disk_check(root: &Path) -> CheckResult {
     match nix::sys::statvfs::statvfs(root) {
@@ -396,7 +396,7 @@ fn disk_check(root: &Path) -> CheckResult {
                 check(
                     "disk",
                     CheckStatus::Fail,
-                    format!("{gib:.1} GiB free — runs and builds will start failing"),
+                    format!("{gib:.1} GiB free; runs and builds will start failing"),
                 )
             } else if gib < 5.0 {
                 check("disk", CheckStatus::Warn, format!("{gib:.1} GiB free"))

@@ -31,7 +31,7 @@ const DUAL_REVIEW_TOOLS: &str =
     "Task Read Glob Grep Edit Write Bash mcp__codex__codex mcp__codex__codex-reply";
 
 /// plan-review's tool grant, plus the third-model consensus tool when the
-/// (dark-by-default) escalation tier is enabled — the skill only escalates
+/// (dark-by-default) escalation tier is enabled; the skill only escalates
 /// genuinely contested findings, and only when the pal MCP server exists.
 fn plan_review_tools(cfg: &Config) -> String {
     if cfg.consensus_enabled {
@@ -43,7 +43,7 @@ fn plan_review_tools(cfg: &Config) -> String {
 /// The doc-chat agent may read anything but edit ONLY the one document it's
 /// given. Path rules are gitignore-style; a single leading '/' anchors at the
 /// settings source, so a filesystem-absolute path needs '//'. Enforced by
-/// `dontAsk` mode — `acceptEdits` would auto-approve edits everywhere and
+/// `dontAsk` mode; `acceptEdits` would auto-approve edits everywhere and
 /// defeat the scoping (verified against the permission docs).
 fn doc_chat_tools(doc_path: &Path) -> String {
     let p = doc_path.display().to_string(); // absolute, starts with '/'
@@ -51,7 +51,7 @@ fn doc_chat_tools(doc_path: &Path) -> String {
 }
 
 /// Sandbox argv prefix for a run: only headless runs are wrapped (interactive
-/// stages own the user's terminal — bubblewrap-style isolation would break
+/// stages own the user's terminal; bubblewrap-style isolation would break
 /// them), and only when `[sandbox]` is enabled with a wrapper configured.
 pub fn wrapper_argv(cfg: &Config, mode: Mode) -> Vec<String> {
     if cfg.sandbox_enabled && mode == Mode::Headless {
@@ -98,7 +98,7 @@ pub enum Scope {
 /// be absolute (headless runs execute in `work_root`, but the document lives
 /// under `project_root/.ritual`). `spec_path` rides along for plan targets so
 /// a missing plan can be DRAFTED from the spec. `context` is a short "recent
-/// conversation" block (may be empty). Everything — paths, scope, message —
+/// conversation" block (may be empty). Everything (paths, scope, message)
 /// rides in the single `-p` prompt, because the agent has no Bash to read env.
 #[allow(clippy::too_many_arguments)] // every arg is one prompt line; a params struct would just rename them
 pub fn doc_chat_command(
@@ -121,7 +121,7 @@ pub fn doc_chat_command(
     };
     let inv_line = match invariants {
         Some(p) => format!(
-            "INVARIANTS_FILE: {} (non-negotiable constraints — never write content that contradicts them)\n",
+            "INVARIANTS_FILE: {} (non-negotiable constraints; never write content that contradicts them)\n",
             p.display()
         ),
         None => String::new(),
@@ -129,7 +129,7 @@ pub fn doc_chat_command(
     let ctx_block = if context.trim().is_empty() {
         String::new()
     } else {
-        format!("\n\nRECENT CONVERSATION (context only — do NOT re-apply):\n{context}")
+        format!("\n\nRECENT CONVERSATION (context only; do NOT re-apply):\n{context}")
     };
     let prompt = format!(
         "/spec Apply one scoped change to this ritual document.\n\n\
@@ -152,7 +152,7 @@ pub fn doc_chat_command(
                 "stream-json".into(),
                 "--verbose".into(),
                 // dontAsk: everything outside the allow rules is denied
-                // instantly (no headless hang) — the doc is the only
+                // instantly (no headless hang); the doc is the only
                 // writable file.
                 "--permission-mode".into(),
                 "dontAsk".into(),
@@ -229,7 +229,7 @@ pub fn build(
                 .unwrap_or_else(|| dirs.plan_file(slug).display().to_string());
             anyhow::ensure!(
                 std::path::Path::new(&plan).exists(),
-                "plan file not found: {plan} — run the plan stage first (or pass a path)"
+                "plan file not found: {plan}; run the plan stage first (or pass a path)"
             );
             StageCommand {
                 mode: Mode::Headless,
@@ -414,7 +414,7 @@ mod tests {
             .expect("headless claude gains the flag");
         assert_eq!(cmd.argv[i + 1], "claude-sonnet-5");
 
-        // Interactive stages negotiate with the user — no fallback flag.
+        // Interactive stages negotiate with the user; no fallback flag.
         let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None, None).unwrap();
         assert!(!cmd.argv.contains(&"--fallback-model".to_string()));
 
@@ -449,7 +449,7 @@ mod tests {
             &cfg,
             &path,
             DocKind::Spec,
-            &Scope::Section("Behavior (the contract — WHAT, not HOW)".into()),
+            &Scope::Section("Behavior (the contract: WHAT, not HOW)".into()),
             "add a retry invariant",
             "you: earlier thing\nassistant: did it",
             None,
@@ -671,7 +671,7 @@ mod tests {
             wrapper_argv(&cfg, Mode::Headless),
             vec!["srt", "--settings", "/s.json"]
         );
-        // Interactive stages own the terminal — never wrapped.
+        // Interactive stages own the terminal; never wrapped.
         assert!(wrapper_argv(&cfg, Mode::Interactive).is_empty());
         assert!(wrapper_argv(&cfg, Mode::Local).is_empty());
 

@@ -8,7 +8,7 @@ use std::ops::Range;
 /// Selectable sections of a document: one entry per level-2 (`##`) ATX
 /// heading, each range spanning the heading line through the line before the
 /// next `##`/`#`. The document title (`#`) and deeper subheadings (`###`+) are
-/// not separately selectable — a `###` lives inside its parent `##` range.
+/// not separately selectable: a `###` lives inside its parent `##` range.
 /// Returns `[]` for a document with no `##` headings (chat then offers only
 /// the whole document). Both the spec template and ritual's plans use `##`
 /// for their sections.
@@ -33,7 +33,7 @@ pub fn sections(text: &str) -> Vec<(String, Range<usize>)> {
     out
 }
 
-/// The ATX heading level (1–6) and trimmed title text, or None. Requires the
+/// The ATX heading level (1-6) and trimmed title text, or None. Requires the
 /// mandatory space after the `#`s (so `###` alone or `#tag` is not a heading).
 fn heading(line: &str) -> Option<(usize, String)> {
     let t = line.trim_start();
@@ -45,12 +45,12 @@ fn heading(line: &str) -> Option<(usize, String)> {
     Some((level, title.to_string()))
 }
 
-/// True once the document has real prose — any visible line that is non-empty
+/// True once the document has real prose: any visible line that is non-empty
 /// and not a markdown heading (`#`) or an HTML/template tag (`<`). This is
 /// the contract for "the spec stage is done": the template's headings and
 /// `<!-- ... -->` prompts alone do not count. Comment state is tracked ACROSS
 /// lines, so the inner lines of a multi-line `<!-- ... -->` block never count
-/// as content (they used to — a false positive that marked untouched specs
+/// as content (they used to, a false positive that marked untouched specs
 /// done and injected empty invariants).
 pub fn has_meaningful_content(text: &str) -> bool {
     let mut in_comment = false;
@@ -103,7 +103,7 @@ mod tests {
             names,
             vec![
                 "Goal",
-                "Behavior (the contract — WHAT, not HOW)",
+                "Behavior (the contract: WHAT, not HOW)",
                 "Edge cases & failure modes",
                 "Out of scope",
             ]

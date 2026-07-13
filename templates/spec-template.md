@@ -3,7 +3,7 @@
 ## Goal
 <!-- One paragraph: what should exist when this is done, and why. -->
 
-## Behavior (the contract — WHAT, not HOW)
+## Behavior (the contract: WHAT, not HOW)
 <!-- Inputs, outputs, invariants. Be concrete. -->
 
 ## Edge cases & failure modes

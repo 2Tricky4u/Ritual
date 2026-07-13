@@ -133,7 +133,7 @@ pub struct ChatTarget {
     pub section: Option<String>,
     /// Line range in the source file that the preview focuses on.
     pub range: std::ops::Range<usize>,
-    /// The document doesn't exist yet — the first message drafts it.
+    /// The document doesn't exist yet; the first message drafts it.
     pub missing: bool,
 }
 
@@ -167,11 +167,11 @@ pub struct ChatState {
     pub scroll: usize,
     pub in_flight: bool,
     /// Messages typed while an edit was in flight, sent one at a time as
-    /// each edit finishes (capped — this is a chat, not a job queue).
+    /// each edit finishes (capped, since this is a chat, not a job queue).
     pub pending: std::collections::VecDeque<String>,
 }
 
-/// Beyond this the user should wait — queued edits compound unpredictably.
+/// Beyond this the user should wait: queued edits compound unpredictably.
 const CHAT_QUEUE_CAP: usize = 3;
 
 impl ChatState {
@@ -180,7 +180,7 @@ impl ChatState {
     }
 }
 
-/// First `max` chars of a heading, ellipsized — keeps the chat header tidy.
+/// First `max` chars of a heading, ellipsized to keep the chat header tidy.
 fn first_words(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -252,7 +252,7 @@ impl App {
         for (i, (name, _)) in self.cfg.commands.iter().enumerate() {
             entries.push((format!("cmd: {name}"), Action::Custom(i)));
         }
-        // Retry-with-model: offered only where it can act — a failed (or
+        // Retry-with-model: offered only where it can act, on a failed (or
         // needs-attention) headless stage, with [retry] models configured.
         if let Some(feature) = self.state.features.get(&self.slug) {
             for id in [StageId::PlanReview, StageId::DualReview] {
@@ -658,7 +658,7 @@ impl App {
                 self.on_enter(tx);
             }
         }
-        // A filter is scoped to its list — leaving the tab drops it so it
+        // A filter is scoped to its list; leaving the tab drops it so it
         // can't silently empty the next tab's view.
         if self.tab != prev_tab {
             self.clear_filter();
@@ -715,12 +715,12 @@ impl App {
             return;
         }
         if self.running.is_some() || self.chat_running() {
-            self.status_msg = Some("a run is already active — x to cancel".into());
+            self.status_msg = Some("a run is already active; press x to cancel".into());
             return;
         }
         let Some(run_cwd) = self.run_cwd() else {
             self.status_msg = Some(format!(
-                "branch '{}' has no checkout — `ritual new --worktree {}` or switch to it",
+                "branch '{}' has no checkout; run `ritual new --worktree {}` or switch to it",
                 self.branch, self.branch
             ));
             return;
@@ -742,7 +742,7 @@ impl App {
             }
         };
         if cmd.needs_codex && self.agents.codex_cli_ok == Some(false) {
-            self.status_msg = Some("codex not authenticated — run `codex login`".into());
+            self.status_msg = Some("codex not authenticated; run `codex login`".into());
             return;
         }
         match cmd.mode {
@@ -825,7 +825,7 @@ impl App {
     ) {
         if let Some((spent, budget)) = crate::run_cmd::budget_exceeded(&self.cfg, &self.dirs) {
             self.status_msg = Some(format!(
-                "daily budget reached (${spent:.2}/${budget:.2}) — `ritual run {} --force` to override",
+                "daily budget reached (${spent:.2}/${budget:.2}); run `ritual run {} --force` to override",
                 stage.label()
             ));
             return;
@@ -837,7 +837,7 @@ impl App {
             if let Some(msg) = crate::secrets::preflight(&self.cfg, &self.dirs) {
                 self.status_msg = Some(msg);
             }
-            // Cloud review can take minutes — run it off the event loop; its
+            // Cloud review can take minutes, so run it off the event loop; its
             // findings file lands via the .ritual watcher when done.
             if self.cfg.coderabbit_enabled {
                 let (cfg, dirs) = (self.cfg.clone(), self.dirs.clone());
@@ -878,7 +878,7 @@ impl App {
         let tx_events = tx.clone();
         let tx_done = tx.clone();
         self.run_task = Some(tokio::spawn(async move {
-            // Provenance collection shells out (git, --version) — keep it off
+            // Provenance collection shells out (git, --version), so keep it off
             // the UI thread and off the async executor.
             let dirs_probe = dirs.clone();
             req.repro =
@@ -935,8 +935,8 @@ impl App {
             in_flight: false,
             pending: Default::default(),
         };
-        // Reattach: a chat edit daemonized before the TUI died is still live —
-        // rebuild the view around it instead of orphaning it (the archive
+        // Reattach: a chat edit daemonized before the TUI died is still live,
+        // so rebuild the view around it instead of orphaning it (the archive
         // replay repaints the assistant turn; completion lands normally).
         if self.chat_task.is_none()
             && let Some((run_id, status)) = runner::live_runs(&self.dirs)
@@ -985,7 +985,7 @@ impl App {
             let missing = !path.exists();
             let text = std::fs::read_to_string(&path).unwrap_or_default();
             let n = text.lines().count().max(1);
-            // A missing plan is still a target — the first message DRAFTS it
+            // A missing plan is still a target: the first message DRAFTS it
             // from the spec (whole-doc only; sections appear once it exists).
             targets.push(ChatTarget {
                 doc,
@@ -1041,7 +1041,7 @@ impl App {
                     }
                     if chat.pending.len() >= CHAT_QUEUE_CAP {
                         chat.transcript.push(ChatTurn::System(
-                            "queue full — wait for the current edit".into(),
+                            "queue full; wait for the current edit".into(),
                         ));
                         return;
                     }
@@ -1104,8 +1104,8 @@ impl App {
     }
 
     /// A bracketed-paste blob lands in whichever text surface is focused:
-    /// the chat input (newlines kept literal — no mid-paste submit) or the
-    /// palette filter (flattened to one line — a filter is single-line). Any
+    /// the chat input (newlines kept literal, no mid-paste submit) or the
+    /// palette filter (flattened to one line, since a filter is single-line). Any
     /// other context ignores it.
     fn on_paste(&mut self, text: &str) {
         if let Some(chat) = self.chat.as_mut() {
@@ -1121,7 +1121,7 @@ impl App {
     }
 
     /// Ctrl+X: kill an in-flight chat edit. The aborted tail task means
-    /// on_chat_exited never fires for this run — reset state here.
+    /// on_chat_exited never fires for this run, so reset state here.
     fn chat_cancel(&mut self) {
         let in_flight = self.chat.as_ref().is_some_and(|c| c.in_flight);
         if !in_flight {
@@ -1142,7 +1142,7 @@ impl App {
             let dropped = chat.pending.len();
             chat.pending.clear();
             chat.transcript.push(ChatTurn::System(format!(
-                "edit cancelled{} — Ctrl+Z restores the pre-edit document",
+                "edit cancelled{}; Ctrl+Z restores the pre-edit document",
                 if dropped > 0 {
                     format!(" ({dropped} queued message(s) dropped)")
                 } else {
@@ -1157,12 +1157,12 @@ impl App {
     /// (press again to redo). The snapshot file is written on every chat
     /// edit, so undo survives TUI restarts and covers CLI chats too.
     /// Ctrl+Z walks the snapshot stack back one edit; Alt+Z walks forward
-    /// again. Persisted stacks (cap 10) — they survive TUI restarts.
+    /// again. Persisted stacks (cap 10) that survive TUI restarts.
     fn chat_undo_redo(&mut self, back: bool) {
         if self.chat.as_ref().is_some_and(|c| c.in_flight) {
             if let Some(chat) = self.chat.as_mut() {
                 chat.transcript.push(ChatTurn::System(
-                    "cannot undo while an edit is in flight — Ctrl+X to cancel first".into(),
+                    "cannot undo while an edit is in flight; Ctrl+X to cancel first".into(),
                 ));
             }
             return;
@@ -1183,7 +1183,7 @@ impl App {
         let note = match (back, result) {
             (true, Ok(true)) => {
                 let left = crate::undo::depth(&self.dirs, &self.slug, label);
-                format!("undid last edit ({left} more) — Alt+Z to redo")
+                format!("undid last edit ({left} more); Alt+Z to redo")
             }
             (false, Ok(true)) => "redid edit".to_string(),
             (true, Ok(false)) => format!("nothing to undo for {label}"),
@@ -1201,7 +1201,7 @@ impl App {
     }
 
     /// Consume the input as a submitted message: records the user turn, clears
-    /// the input, and returns the text to send — or None if empty or a run is
+    /// the input, and returns the text to send, or None if empty or a run is
     /// already in flight. Split out from spawning so it is unit-testable.
     fn chat_take_submit(&mut self) -> Option<String> {
         let chat = self.chat.as_mut()?;
@@ -1250,13 +1250,13 @@ impl App {
     }
 
     /// Spawn one chat edit: a detached `/spec` run whose events stream into the
-    /// transcript. Never touches `self.running`/`run_task` — the pipeline is
+    /// transcript. Never touches `self.running`/`run_task`; the pipeline is
     /// independent of the chat.
     fn spawn_doc_chat(&mut self, message: String, tx: &mpsc::Sender<AppMsg>) {
         if let Some((spent, budget)) = crate::run_cmd::budget_exceeded(&self.cfg, &self.dirs) {
             if let Some(chat) = self.chat.as_mut() {
                 chat.transcript.push(ChatTurn::System(format!(
-                    "daily budget reached (${spent:.2}/${budget:.2}) — `ritual chat … --force` to override"
+                    "daily budget reached (${spent:.2}/${budget:.2}); run `ritual chat … --force` to override"
                 )));
             }
             return;
@@ -1319,7 +1319,7 @@ impl App {
             feature: title,
             branch: self.branch.clone(),
             redact: self.cfg.redaction,
-            repro: None, // chat edits are frequent + small — skip provenance
+            repro: None, // chat edits are frequent + small, so skip provenance
             cwd: run_cwd,
             wrapper: stages::wrapper_argv(&self.cfg, cmd.mode),
         };
@@ -1400,7 +1400,7 @@ impl App {
         } else if outcome.meta.ok {
             format!("no change · ${cost:.3}")
         } else {
-            "chat edit failed — see the transcript above".to_string()
+            "chat edit failed; see the transcript above".to_string()
         };
         // Refresh targets against the new content (a section may have appeared
         // or vanished); clamp the selection.
@@ -1413,7 +1413,7 @@ impl App {
         }
         self.reload_artifacts();
         // Send the next queued message, if any (one at a time). Note: each
-        // send replaces the undo snapshot — undo covers the LAST edit.
+        // send replaces the undo snapshot, so undo covers the LAST edit.
         if let Some(msg) = self.chat.as_mut().and_then(|c| c.pending.pop_front()) {
             if let Some(chat) = self.chat.as_mut() {
                 chat.transcript.push(ChatTurn::User(msg.clone()));
@@ -1588,7 +1588,7 @@ impl App {
                         }
                     ),
                     &format!(
-                        "{} — {} new findings, ${:.2}",
+                        "{}: {} new findings, ${:.2}",
                         self.branch,
                         new_findings.len(),
                         out.meta.total_cost_usd.unwrap_or(0.0)
@@ -1596,13 +1596,13 @@ impl App {
                 );
                 self.status_msg = Some(match status {
                     StageStatus::Done => format!(
-                        "{} done — {} new findings file(s), ${:.3}",
+                        "{} done: {} new findings file(s), ${:.3}",
                         stage.label(),
                         new_findings.len(),
                         out.meta.total_cost_usd.unwrap_or(0.0)
                     ),
                     StageStatus::NeedsAttention => format!(
-                        "{} finished without findings — needs attention{}",
+                        "{} finished without findings, needs attention{}",
                         stage.label(),
                         out.meta
                             .session_id
@@ -1644,7 +1644,7 @@ impl App {
                     StageStatus::Done
                 } else {
                     self.status_msg = Some(format!(
-                        "plan.md not written — save it to {}",
+                        "plan.md not written; save it to {}",
                         self.dirs.plan_file(&self.slug).display()
                     ));
                     StageStatus::NeedsAttention
@@ -1667,7 +1667,7 @@ impl App {
             self.status_msg = Some("no active run".into());
             return;
         };
-        // The run is a detached process group — kill it there, then stop
+        // The run is a detached process group, so kill it there, then stop
         // the local tail.
         let killed = runner::kill_run(&self.dirs, &run_id);
         if let Some(task) = self.run_task.take() {
@@ -1688,8 +1688,7 @@ impl App {
             return;
         }
         if !self.dirs.work_root.join("check.sh").exists() {
-            self.status_msg =
-                Some("no check.sh in this project — `ritual init` creates one".into());
+            self.status_msg = Some("no check.sh in this project; `ritual init` creates one".into());
             return;
         }
         self.check = CheckState::Running;
@@ -1800,7 +1799,7 @@ impl App {
             .clone()
             .or_else(|| crate::nvim::discover(self.cfg.nvim_server.as_deref()));
         let Some(server) = server else {
-            self.status_msg = Some("no running nvim found — falling back to $EDITOR".into());
+            self.status_msg = Some("no running nvim found; falling back to $EDITOR".into());
             self.open_editor();
             return;
         };
@@ -1887,17 +1886,17 @@ impl App {
 }
 
 /// The newest live run the TUI can resume. Chat runs ("spec-chat" etc.) have
-/// stages that don't parse to a StageId and stay daemon-only — a newer live
+/// stages that don't parse to a StageId and stay daemon-only; a newer live
 /// chat run must never shadow an older pipeline run (follow chat runs with
 /// `ritual attach` instead).
-/// With worktree parallelism a second live run can't attach into this TUI —
+/// With worktree parallelism a second live run can't attach into this TUI,
 /// but it must not be invisible either (chat runs count too: `ps` sees them).
 fn other_live_runs_notice(dirs: &RitualDirs, resumed: Option<&str>) -> Option<String> {
     let others = runner::live_runs(dirs)
         .into_iter()
         .filter(|(id, _)| Some(id.as_str()) != resumed)
         .count();
-    (others > 0).then(|| format!("{others} other live run(s) — `ritual ps` / `ritual attach <id>`"))
+    (others > 0).then(|| format!("{others} other live run(s): `ritual ps` / `ritual attach <id>`"))
 }
 
 fn newest_resumable_run(dirs: &RitualDirs) -> Option<(String, runner::RunStatus)> {
@@ -1918,7 +1917,7 @@ fn list_dir(dir: &std::path::Path) -> Vec<String> {
 }
 
 /// Input reader task: owns the crossterm EventStream. Must be stopped (and
-/// awaited) before any terminal suspend — see term.rs contract.
+/// awaited) before any terminal suspend; see term.rs contract.
 pub struct InputTask {
     stop: oneshot::Sender<()>,
     handle: JoinHandle<()>,
@@ -1954,7 +1953,7 @@ impl InputTask {
 
 /// The main TUI entry point.
 pub async fn run(cfg: Config, dirs: RitualDirs) -> Result<()> {
-    anyhow::ensure!(dirs.exists(), "no .ritual/ here — run `ritual init` first");
+    anyhow::ensure!(dirs.exists(), "no .ritual/ here; run `ritual init` first");
     let mut term = Term::enter()?;
     let (tx, mut rx) = mpsc::channel::<AppMsg>(512);
 
@@ -2547,7 +2546,7 @@ mod tests {
         assert!(app.filter_active());
 
         // Selecting past the filtered length was clamped, and f/d act on the
-        // VISIBLE row's real finding — not the underlying full-list index.
+        // VISIBLE row's real finding, not the underlying full-list index.
         app.selected_finding = 5;
         app.clamp_selected_finding();
         assert_eq!(app.selected_finding, 1); // 2 visible → max index 1
@@ -2810,7 +2809,7 @@ mod tests {
             app.chat.as_ref().unwrap().transcript.last(),
             Some(ChatTurn::System(n)) if n.contains("nothing in flight")
         ));
-        // In flight (no real daemon — kill_run on a missing id is a no-op).
+        // In flight (no real daemon, so kill_run on a missing id is a no-op).
         app.chat.as_mut().unwrap().in_flight = true;
         app.current_chat_run_id = Some("20260712T000000Z-0-0-spec-chat".into());
         app.chat_input(
@@ -2932,9 +2931,9 @@ mod tests {
         assert!(
             chat.targets
                 .iter()
-                .any(|t| t.section.as_deref() == Some("Behavior (the contract — WHAT, not HOW)"))
+                .any(|t| t.section.as_deref() == Some("Behavior (the contract: WHAT, not HOW)"))
         );
-        // The MISSING plan is still a target — labeled as a draft.
+        // The MISSING plan is still a target, labeled as a draft.
         let plan_target = chat
             .targets
             .iter()
@@ -3166,7 +3165,7 @@ mod tests {
                 .iter()
                 .any(|(l, _)| l.contains("retry implement"))
         );
-        let _ = tx; // dispatch would spawn — consumption is on_enter's take()
+        let _ = tx; // dispatch would spawn; consumption is on_enter's take()
     }
 
     #[test]

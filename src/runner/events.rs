@@ -3,7 +3,7 @@ use serde_json::Value;
 use crate::history::{RateLimitInfo, Usage};
 
 /// Unified event stream from any agent (claude stream-json, codex exec
-/// --json, or a check.sh run). Anything unrecognized becomes `Raw` — the
+/// --json, or a check.sh run). Anything unrecognized becomes `Raw`; the
 /// parsers must never error on schema drift.
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
@@ -40,7 +40,7 @@ pub enum AgentEvent {
     Stderr {
         line: String,
     },
-    /// Unrecognized JSON event — rendered dimmed, never dropped.
+    /// Unrecognized JSON event, rendered dimmed, never dropped.
     Raw {
         value: Value,
     },
@@ -123,7 +123,7 @@ mod tests {
     fn summarize_flattens_deeply_nested_structures() {
         let v = json!({"a": {"b": [1, {"c": "line\nbreak"}]}, "e": null});
         let out = summarize(&v, 200);
-        // Nested values arrive JSON-escaped — never a literal newline.
+        // Nested values arrive JSON-escaped, never a literal newline.
         assert!(!out.contains('\n'), "always a single line: {out}");
         assert!(out.contains("\"c\""));
         // A TOP-LEVEL string keeps its newlines -> visible ⏎ markers.

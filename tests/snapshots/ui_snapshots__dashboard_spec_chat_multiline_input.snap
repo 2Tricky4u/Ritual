@@ -1,21 +1,22 @@
 ---
 source: tests/ui_snapshots.rs
+assertion_line: 240
 expression: "render_at(&app, 100, 26)"
 ---
-"                            │ spec · § Behavior (the contract — WHAT│ 󰚩 chat · spec · § Behavior (th"
+"                            │ spec · § Behavior (the contract: WHAT,│ 󰚩 chat · spec · § Behavior (th"
 "  PIPELINE ──────────────── │󰲡 Feature: Audio                       │› make behavior stricter: retry"
 "  ○ spec                    │                                       │3x                             "
 "  ○ plan                    │󰲣 Goal                                 │Tightening the retry rule.     "
 "  ○ plan-review             │                                       │ $0.030 4.2s                   "
 "  ○ tests-red               │low-latency playback                   │  ✓ spec updated · $0.030      "
 "  ○ implement               │                                       │                               "
-"  ○ dual-review             │󰲣 Behavior (the contract — WHAT, not   │                               "
+"  ○ dual-review             │󰲣 Behavior (the contract: WHAT, not    │                               "
 "                            │HOW)                                   │                               "
 " 󰚩 AGENTS ───────────────── │                                       │                               "
 "  󰚩 claude …                │must retry on drop                     │                               "
 "  󰚩 codex …                 │                                       │                               "
 "  󱘖 bridge …                │󰲣 Edge cases & failure modes           │                               "
-"   nvim —                   │                                       │                               "
+"   nvim …                   │                                       │                               "
 "   check ?                  │󰲣 Out of scope                         │                               "
 "                            │                                       │                               "
 "   detached                 │                                       │                               "

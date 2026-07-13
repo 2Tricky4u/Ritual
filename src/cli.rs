@@ -47,7 +47,7 @@ pub enum Command {
         #[arg(long)]
         all: bool,
     },
-    /// Regenerate .ritual/lessons.md — review memory from finding
+    /// Regenerate .ritual/lessons.md: review memory from finding
     /// dispositions (dismissed = known noise, fixed = real-bug areas)
     Lessons {
         /// Print the generated markdown instead of only writing the file

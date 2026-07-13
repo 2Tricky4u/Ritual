@@ -1,7 +1,7 @@
 # Invariants
 
 <!-- The project constitution: non-negotiable constraints, one bullet each. -->
-<!-- Reviewers treat every bullet as an acceptance criterion — any plan step -->
+<!-- Reviewers treat every bullet as an acceptance criterion: any plan step -->
 <!-- or diff that violates one becomes a finding (severity >= major). -->
 <!-- Keep bullets short, testable, and permanent. Examples: -->
 <!-- - All TUI state mutations flow through the single AppMsg channel. -->

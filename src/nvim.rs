@@ -1,4 +1,4 @@
-//! Remote control of a RUNNING nvim instance — no TUI suspend, no nested
+//! Remote control of a RUNNING nvim instance: no TUI suspend, no nested
 //! editors. Discovery order: config `nvim_server` → `$NVIM` (set inside
 //! nvim terminals) → newest `$XDG_RUNTIME_DIR/nvim.*.0` socket.
 //! All commands go through `nvim --server <sock> --remote-expr execute(...)`,
@@ -141,7 +141,7 @@ mod tests {
             .output()
             .is_err()
         {
-            eprintln!("nvim not installed — skipping");
+            eprintln!("nvim not installed, skipping");
             return;
         }
         let tmp = tempfile::tempdir().unwrap();

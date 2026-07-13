@@ -21,7 +21,7 @@ pub fn available(cfg: &Config) -> bool {
         .is_some_and(|o| o.status.success())
 }
 
-/// Scan what changed (tracked modifications + untracked files — exactly the
+/// Scan what changed (tracked modifications + untracked files, exactly the
 /// agent's attack surface) for leaked secrets. Changed files are staged into
 /// a temp dir preserving relative paths and scanned with ONE `gitleaks dir`
 /// run: full file/line anchoring (a piped diff loses it) while staying
@@ -83,7 +83,7 @@ pub fn scan(cfg: &Config, dirs: &RitualDirs) -> Result<SecretsReport> {
                 ..Default::default()
             });
         }
-        Some(2) => {} // leaks found — the gate's whole point
+        Some(2) => {} // leaks found, the gate's whole point
         c => anyhow::bail!(
             "`{}` failed ({c:?}): {}",
             argv.join(" "),
@@ -130,7 +130,7 @@ pub fn preflight(cfg: &Config, dirs: &RitualDirs) -> Option<String> {
         return None;
     }
     if !available(cfg) {
-        return Some("secrets gate skipped — gitleaks not installed".into());
+        return Some("secrets gate skipped: gitleaks not installed".into());
     }
     match scan(cfg, dirs) {
         Ok(r) if r.leaks > 0 => Some(format!(
@@ -154,7 +154,7 @@ fn changed_files(dirs: &RitualDirs) -> Result<Vec<PathBuf>> {
             .current_dir(&dirs.work_root)
             .output()
             .context("running git")?;
-        // `git diff HEAD` fails on a repo with no commits — treat as empty.
+        // `git diff HEAD` fails on a repo with no commits, so treat as empty.
         if !out.status.success() {
             continue;
         }
@@ -205,7 +205,7 @@ fn findings_from_report(text: &str, scan_root: &Path, redact: bool) -> Result<Ve
                 .map(|l| redactor.text(l.trim()))
                 .filter(|l| !l.is_empty()),
             scenario: format!(
-                "{} — committed secrets outlive the commit; rotate it and use env/secret storage",
+                "{}: committed secrets outlive the commit; rotate it and use env/secret storage",
                 hit["Description"]
                     .as_str()
                     .unwrap_or("secret detected in the diff")

@@ -15,7 +15,7 @@ fn available() -> bool {
     })
 }
 
-/// Fire-and-forget. Never blocks, never errors — a missing notify-send or a
+/// Fire-and-forget. Never blocks, never errors: a missing notify-send or a
 /// dead session bus must not affect the pipeline.
 pub fn notify(enabled: bool, summary: &str, body: &str) {
     if !enabled || !available() {

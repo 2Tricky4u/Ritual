@@ -11,7 +11,7 @@
 #   FAKE_AGENT_FINDINGS   if set, write a canned findings file there before exiting
 #   FAKE_AGENT_SESSION_ID if set, prepend a system/init line carrying this id
 #   FAKE_AGENT_TRUNCATE   if set, stop after the first 2 fixture lines (no
-#                         result event — an interrupted stream)
+#                         result event, an interrupted stream)
 set -u
 # `<fake> login status` = the codex auth preflight: always "logged in".
 if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then

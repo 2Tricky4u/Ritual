@@ -1,5 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
+assertion_line: 257
 expression: render(&app)
 ---
 "                            │   live    findings    history    plan   guide             "
@@ -7,20 +8,20 @@ expression: render(&app)
 "  ○ spec                    │ 󰲣 Why this shape                                     5/221  "
 "  ○ plan                    │                                                             "
 "  ○ plan-review             │ Research verdict behind the workflow: external feedback     "
-"  ○ tests-red               │ (tests, execution, checks) is the quality engine — not      "
-"  ○ implement               │ model debate. A second model pays off in exactly three      "
-"  ○ dual-review             │ roles: plan critic, independent test designer, and second   "
+"  ○ tests-red               │ (tests, execution, checks) is the quality engine, not model "
+"  ○ implement               │ debate. A second model pays off in exactly three roles:     "
+"  ○ dual-review             │ plan critic, independent test designer, and second          "
 "                            │ reviewer. That is the pipeline.                             "
 " 󰚩 AGENTS ───────────────── │                                                             "
 "  󰚩 claude …                │ 󰲣 The pipeline                                              "
 "  󰚩 codex …                 │                                                             "
-"  󱘖 bridge …                │  • spec — you write intent in  spec.md  ( ⟨enter⟩  opens it "
-"   nvim —                   │ in $EDITOR; or press  ⟨s⟩  to chat it into shape — see      "
+"  󱘖 bridge …                │  • spec: you write intent in  spec.md  ( ⟨enter⟩  opens it  "
+"   nvim …                   │ in $EDITOR; or press  ⟨s⟩  to chat it into shape, see       "
 "   check ?                  │ below)                                                      "
-"                            │  • plan — Claude drafts  plan.md  from the spec             "
-"   detached                 │  • plan-review — Codex attacks the plan; bounded 2-round    "
+"                            │  • plan: Claude drafts  plan.md  from the spec              "
+"   detached                 │  • plan-review: Codex attacks the plan; bounded 2-round     "
 "                            │ debate; plan revised in place                               "
-"                            │  • tests-red — Codex designs tests from the spec — written  "
+"                            │  • tests-red: Codex designs tests from the spec, written    "
 "                            │ red, no implementation                                      "
-"                            │  • implement — Claude implements until  check.sh  is green  "
+"                            │  • implement: Claude implements until  check.sh  is green   "
 " RITUAL   detached  detached                                                          "

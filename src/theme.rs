@@ -1,6 +1,6 @@
 //! base46-faithful theming. The eldritch palette is copied VERBATIM from the
 //! user's NvChad install (base46/themes/eldritch.lua); tokyonight carries the
-//! canonical base46 values. All UI code goes through the semantic accessors —
+//! canonical base46 values. All UI code goes through the semantic accessors;
 //! never raw hex outside this file.
 
 use ratatui::style::Color;

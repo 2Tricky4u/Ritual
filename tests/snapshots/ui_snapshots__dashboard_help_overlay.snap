@@ -1,5 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
+assertion_line: 149
 expression: render(&app)
 ---
 "                      ╭ keys ──────────────────────────────────────╮   guide              "
@@ -9,16 +10,16 @@ expression: render(&app)
 "  ○ plan-review       │   [ ]  cycle features                      │▄▄                    "
 "  ○ tests-red         │   tab 1-5  panes                           │  v e r i f y         "
 "  ○ implement         │   g/G  top / follow                        │                      "
-"  ○ dual-review       │                                            │ts → impl → dual      "
+"  ○ dual-review       │                                            │sts → impl → dual     "
 "                      │ run                                        │ spec or plan live    "
-" 󰚩 AGENTS ────────────│   enter  run stage / open                  │tach · a takeover     "
-"  󰚩 claude …          │   s  chat: edit spec/plan                  │er · Q quickfix       "
-"  󰚩 codex …           │   a  take over session                     │s · invariants        "
-"  󱘖 bridge …          │   x  cancel run                            │s · costs             "
-"   nvim —             │   c/C  check fast / full                   │in · repro            "
-"   check ?            │                                            │it codes              "
-"                      │ findings                                   │h features            "
-"   detached           │   f  mark fixed (toggle)                   │an · pr-comment       "
+" 󰚩 AGENTS ────────────│   enter  run stage / open                  │ttach · a takeover    "
+"  󰚩 claude …          │   s  chat: edit spec/plan                  │ter · Q quickfix      "
+"  󰚩 codex …           │   a  take over session                     │ns · invariants       "
+"  󱘖 bridge …          │   x  cancel run                            │ps · costs            "
+"   nvim …             │   c/C  check fast / full                   │ain · repro           "
+"   check ?            │                                            │xit codes             "
+"                      │ findings                                   │ch features           "
+"   detached           │   f  mark fixed (toggle)                   │ean · pr-comment      "
 "                      │   d  dismiss (toggle)                      │ips, in-app           "
 "                      │   v  show/hide resolved                    │                      "
 "                      │   /  filter list (2/3)                     │?  keys    q  quit    "

@@ -102,7 +102,7 @@ pub fn init(project_root: &Path, force: bool) -> Result<InitReport> {
         report.actions.push("created .ritual/state.json".into());
     }
 
-    // invariants.md: only create, never touch — it's the user's constitution.
+    // invariants.md: only create, never touch; it's the user's constitution.
     if !dirs.invariants_file().exists() {
         std::fs::write(dirs.invariants_file(), INVARIANTS_TEMPLATE)?;
         report

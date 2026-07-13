@@ -14,7 +14,7 @@ pub fn available(cfg: &Config) -> bool {
 }
 
 /// Run a CodeRabbit CLI review over uncommitted changes and record its
-/// comments as SINGLE-SOURCE findings (verdict "unconfirmed" — an ensemble's
+/// comments as SINGLE-SOURCE findings (verdict "unconfirmed", an ensemble's
 /// third voice, never a blocker; the dual-review skill verifies/refutes and
 /// only then adds `coderabbit` to a finding's sources). Cloud-backed and
 /// rate-limited (3/hour free), so failures are the caller's notice, not a
@@ -141,7 +141,7 @@ pub fn preflight(cfg: &Config, dirs: &RitualDirs) -> Option<String> {
         return None;
     }
     if !available(cfg) {
-        return Some("coderabbit skipped — CLI not installed (see the guide)".into());
+        return Some("coderabbit skipped: CLI not installed (see the guide)".into());
     }
     match review(cfg, dirs) {
         Ok(Some(path)) => Some(format!(
@@ -168,7 +168,7 @@ mod tests {
                  "code_snippet": "for i in 0..len - 1 {"},
                 {"path": "src/b.rs", "startLine": 4,
                  "body": "Consider renaming for clarity"},
-                {"note": "no file here — not a comment"}
+                {"note": "no file here, not a comment"}
             ]
         }"#;
         let f = findings_from_agent_json(json, true);

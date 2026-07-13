@@ -22,7 +22,7 @@ pub struct MutantsReport {
 
 /// Mutation-kill gate over the current diff (Meta-ACH style): mutate only
 /// the changed code, run the tests, and turn every SURVIVING mutant into a
-/// major/confirmed finding — proof the diff's tests don't discriminate it.
+/// major/confirmed finding: proof the diff's tests don't discriminate it.
 /// Advisory by design: major findings never block the CI contract; the
 /// findings tab (f/d) is the adjudication surface.
 pub fn run(cfg: &Config, dirs: &RitualDirs, base: Option<&str>) -> Result<MutantsReport> {
@@ -72,11 +72,11 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, base: Option<&str>) -> Result<Mutant
         })?;
 
     // 0 = all caught (or nothing to mutate), 2 = missed mutants (the gate's
-    // whole point — not an error), 3 = timeouts occurred. 4 means the tree's
+    // whole point, not an error), 3 = timeouts occurred. 4 means the tree's
     // own tests already fail: nothing was measured.
     match status.code() {
         Some(0) | Some(2) | Some(3) => {}
-        Some(4) => anyhow::bail!("baseline tests already failing — get ./check.sh green first"),
+        Some(4) => anyhow::bail!("baseline tests already failing; get ./check.sh green first"),
         Some(1) => anyhow::bail!(
             "`{}` rejected its arguments (version too old?)",
             argv.join(" ")
@@ -150,7 +150,7 @@ fn finding_from(mutant: &serde_json::Value, idx: u32) -> Finding {
             .as_str()
             .filter(|r| !r.is_empty())
             .map(|r| format!("mutated to: {r}")),
-        scenario: "the test suite passes with this mutation applied — the diff's tests do not discriminate it".into(),
+        scenario: "the test suite passes with this mutation applied, and the diff's tests do not discriminate it".into(),
         sources: vec!["cargo-mutants".into()],
         verdict: "confirmed".into(),
         action: "pending".into(),

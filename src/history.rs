@@ -164,7 +164,7 @@ pub struct StageCostSummary {
 }
 
 impl StageCostSummary {
-    /// Share of prompt tokens served from cache — the cache economics gauge.
+    /// Share of prompt tokens served from cache, the cache economics gauge.
     pub fn cache_hit_pct(&self) -> Option<f64> {
         let prompt = self.input_tokens + self.cache_read;
         (prompt > 0).then(|| 100.0 * self.cache_read as f64 / prompt as f64)

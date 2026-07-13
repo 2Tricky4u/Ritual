@@ -3,7 +3,7 @@
 # fast  = build + static checks only (no hardware needed)
 # full  = flash the target, capture serial output, assert on it
 #
-# Pair with `check_timeout_secs` in .ritual/config.toml — a dead board must
+# Pair with `check_timeout_secs` in .ritual/config.toml; a dead board must
 # fail the check, not hang the pipeline.
 set -e
 

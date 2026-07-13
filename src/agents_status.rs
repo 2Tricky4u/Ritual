@@ -51,7 +51,7 @@ pub(crate) fn probe_codex_cli(cfg: &Config) -> Option<bool> {
         .map(|s| s.success())
 }
 
-/// `claude mcp list` is plain text and slow (live health checks) — parse one
+/// `claude mcp list` is plain text and slow (live health checks), so parse one
 /// server's line tolerantly; anything unexpected reads as unknown, not error.
 pub(crate) fn probe_mcp_server(cfg: &Config, name: &str) -> Option<bool> {
     let out = run_capture(&cfg.claude_cmd, &["mcp", "list"])?;

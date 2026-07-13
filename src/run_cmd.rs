@@ -1,4 +1,4 @@
-//! `ritual run <stage>` — non-TUI stage execution with live styled output.
+//! `ritual run <stage>`: non-TUI stage execution with live styled output.
 
 use std::path::Path;
 
@@ -23,13 +23,13 @@ pub fn execute(
 ) -> Result<()> {
     let stage = StageId::parse(stage_str)
         .with_context(|| format!("unknown stage '{stage_str}' (spec, plan, plan-review, tests-red, implement, dual-review)"))?;
-    anyhow::ensure!(dirs.exists(), "no .ritual/ here — run `ritual init` first");
+    anyhow::ensure!(dirs.exists(), "no .ritual/ here; run `ritual init` first");
 
     if let Some((spent, budget)) = budget_exceeded(cfg, dirs)
         && !force
     {
         anyhow::bail!(
-            "daily budget reached: ${spent:.2} of ${budget:.2} spent today — rerun with --force to override"
+            "daily budget reached: ${spent:.2} of ${budget:.2} spent today; rerun with --force to override"
         );
     }
 
@@ -47,7 +47,7 @@ pub fn execute(
 
     if cmd.needs_codex && !cfg.offline && !stages::codex_ready(cfg) {
         anyhow::bail!(
-            "codex is not authenticated — run `codex login` first (stage '{}' talks to Codex via MCP)",
+            "codex is not authenticated. Run `codex login` first (stage '{}' talks to Codex via MCP)",
             stage.label()
         );
     }
@@ -59,8 +59,8 @@ pub fn execute(
     }
 }
 
-/// Follow a (possibly detached) run to completion, rendering each event —
-/// the shared tail loop behind `ritual run`, `ritual chat`, and `ritual
+/// Follow a (possibly detached) run to completion, rendering each event.
+/// This is the shared tail loop behind `ritual run`, `ritual chat`, and `ritual
 /// attach`. Ctrl-C here leaves the daemon alive.
 pub fn follow_run(
     cfg: &Config,
@@ -81,7 +81,7 @@ pub fn follow_run(
     })
 }
 
-/// `ritual ps` — live detached runs (pipeline and chat alike).
+/// `ritual ps`: live detached runs (pipeline and chat alike).
 pub fn ps(dirs: &RitualDirs) -> Result<()> {
     let live = runner::live_runs(dirs);
     if live.is_empty() {
@@ -121,7 +121,7 @@ fn run_age(run_id: &str) -> String {
     }
 }
 
-/// `ritual attach <run-id>` — follow a live detached run from any terminal
+/// `ritual attach <run-id>`: follow a live detached run from any terminal
 /// (or --kill it); finished runs print their summary.
 pub fn attach(cfg: &Config, dirs: &RitualDirs, run_id: &str, kill: bool) -> Result<()> {
     match runner::run_state(dirs, run_id) {
@@ -158,7 +158,7 @@ pub fn attach(cfg: &Config, dirs: &RitualDirs, run_id: &str, kill: bool) -> Resu
             if any_trace {
                 anyhow::bail!("run '{run_id}' vanished (daemon died before writing meta)");
             }
-            anyhow::bail!("no such run '{run_id}' — see `ritual ps` or `ritual history`");
+            anyhow::bail!("no such run '{run_id}'; see `ritual ps` or `ritual history`");
         }
     }
 }
@@ -223,7 +223,7 @@ fn run_spec_stage(
         if meaningful {
             "done"
         } else {
-            "still empty — left pending"
+            "still empty, left pending"
         },
         spec.display()
     );
@@ -257,7 +257,7 @@ fn run_interactive(
                 StageStatus::Done
             } else {
                 println!(
-                    "plan.md unchanged — marking needs-attention (save the plan to {})",
+                    "plan.md unchanged, marking needs-attention (save the plan to {})",
                     dirs.plan_file(&slug).display()
                 );
                 StageStatus::NeedsAttention
@@ -267,10 +267,10 @@ fn run_interactive(
             if check_green(&dirs.work_root) {
                 // /tdd went all the way to green: tests-red AND implement done.
                 set_stage(st, branch, StageId::Implement, StageStatus::Done, None);
-                println!("check.sh green — tests-red and implement both done");
+                println!("check.sh green: tests-red and implement both done");
                 StageStatus::Done
             } else {
-                println!("check.sh red — failing tests in place, ready to implement");
+                println!("check.sh red: failing tests in place, ready to implement");
                 StageStatus::Done
             }
         }
@@ -278,7 +278,7 @@ fn run_interactive(
             if check_green(&dirs.work_root) {
                 StageStatus::Done
             } else {
-                println!("check.sh still red — implement stays needs-attention");
+                println!("check.sh still red: implement stays needs-attention");
                 StageStatus::NeedsAttention
             }
         }
@@ -340,7 +340,7 @@ fn run_headless(
     // Daemonize, then follow along. Ctrl-C here leaves the run alive.
     let run_id = runner::new_run_id(stage.label());
     runner::spawn_detached(dirs, &req, &run_id)?;
-    println!("run {run_id} started (detached — survives this terminal)");
+    println!("run {run_id} started (detached, survives this terminal)");
 
     let outcome = follow_run(cfg, dirs, req.agent, &run_id)?;
 
@@ -354,7 +354,7 @@ fn run_headless(
     } else if new_findings.is_empty() {
         // Review stages must leave a findings artifact; an ok run without one
         // means the skill under-delivered (asked a question, hit a wall...).
-        println!("run finished ok but wrote no findings file — needs attention");
+        println!("run finished ok but wrote no findings file; needs attention");
         StageStatus::NeedsAttention
     } else {
         StageStatus::Done
@@ -393,7 +393,7 @@ fn run_headless(
             junit.failures
         );
         if junit.failures > 0 {
-            anyhow::bail!("{} blocking finding(s) — see JUnit report", junit.failures);
+            anyhow::bail!("{} blocking finding(s); see JUnit report", junit.failures);
         }
     }
 
@@ -410,7 +410,7 @@ fn run_headless(
             }
         ),
         &format!(
-            "{} — {} new findings, ${:.2}",
+            "{}: {} new findings, ${:.2}",
             branch,
             new_findings.len(),
             outcome.meta.total_cost_usd.unwrap_or(0.0)
@@ -418,7 +418,7 @@ fn run_headless(
     );
     if !outcome.meta.permission_denials.is_empty() {
         println!(
-            "  ⚠ permission denials: {} — tune allowedTools or permission mode",
+            "  ⚠ permission denials: {}; tune allowedTools or permission mode",
             outcome.meta.permission_denials.len()
         );
     }
@@ -431,7 +431,7 @@ fn run_headless(
     Ok(())
 }
 
-/// `ritual chat <message>` — one spec/plan chat edit, headless. Mirrors
+/// `ritual chat <message>`: one spec/plan chat edit, headless. Mirrors
 /// `run_headless` but builds via `stages::doc_chat_command`, writes no
 /// findings, and finalizes the stage by whether the document actually changed.
 pub fn run_doc_chat(
@@ -442,14 +442,14 @@ pub fn run_doc_chat(
     section: Option<String>,
     force: bool,
 ) -> Result<()> {
-    anyhow::ensure!(dirs.exists(), "no .ritual/ here — run `ritual init` first");
+    anyhow::ensure!(dirs.exists(), "no .ritual/ here; run `ritual init` first");
     anyhow::ensure!(!message.trim().is_empty(), "usage: ritual chat <message>");
 
     if let Some((spent, budget)) = budget_exceeded(cfg, dirs)
         && !force
     {
         anyhow::bail!(
-            "daily budget reached: ${spent:.2} of ${budget:.2} spent today — rerun with --force to override"
+            "daily budget reached: ${spent:.2} of ${budget:.2} spent today; rerun with --force to override"
         );
     }
 
@@ -500,18 +500,18 @@ pub fn run_doc_chat(
         feature: title,
         branch: branch.clone(),
         redact: cfg.redaction,
-        repro: None, // chat edits are frequent + small — skip provenance probes
+        repro: None, // chat edits are frequent + small, so skip provenance probes
         cwd: dirs.work_root.clone(),
         wrapper: stages::wrapper_argv(cfg, cmd.mode),
     };
     let run_id = runner::new_run_id(&stage_label);
     runner::spawn_detached(dirs, &req, &run_id)?;
-    println!("chat {run_id} started (detached — survives this terminal)");
+    println!("chat {run_id} started (detached, survives this terminal)");
 
     let outcome = follow_run(cfg, dirs, req.agent, &run_id)?;
 
     if !outcome.meta.ok {
-        anyhow::bail!("chat edit failed — see the stream above");
+        anyhow::bail!("chat edit failed; see the stream above");
     }
 
     // Done iff the document actually changed to something meaningful; never
@@ -545,7 +545,7 @@ fn check_green(work_root: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Spawn, poll, and kill on deadline — a hung check.sh (wedged build, dead
+/// Spawn, poll, and kill on deadline: a hung check.sh (wedged build, dead
 /// board on a HIL rig) must never wedge the pipeline. None = timeout/error.
 pub(crate) fn run_with_timeout(
     mut cmd: std::process::Command,

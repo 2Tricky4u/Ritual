@@ -11,7 +11,7 @@ use crate::scaffold::InitReport;
 use crate::state::{Feature, PIPELINE, StageStatus};
 use crate::theme::Theme;
 
-/// Colors only when stdout is a real terminal and NO_COLOR is unset —
+/// Colors only when stdout is a real terminal and NO_COLOR is unset;
 /// piped output (scripts, tests) stays clean.
 fn colors_enabled() -> bool {
     use std::io::IsTerminal;
@@ -43,7 +43,7 @@ pub fn stage_icon(t: &Theme, status: StageStatus) -> String {
 pub fn render_status(cfg: &Config, features: &[(String, Feature)], current_branch: Option<&str>) {
     let t = &cfg.theme;
     let p = t.palette;
-    println!("{}", hex(t, p.purple, "ritual — pipeline status"));
+    println!("{}", hex(t, p.purple, "ritual: pipeline status"));
     println!();
     if features.is_empty() {
         println!(
@@ -51,7 +51,7 @@ pub fn render_status(cfg: &Config, features: &[(String, Feature)], current_branc
             hex(
                 t,
                 p.light_grey,
-                "no features yet — run `ritual new <title>` or just start a branch"
+                "no features yet; run `ritual new <title>` or just start a branch"
             )
         );
         return;
@@ -107,12 +107,12 @@ pub fn render_findings(cfg: &Config, loaded: &[LoadedFindings], json: bool, show
             hex(
                 t,
                 p.light_grey,
-                "no findings recorded — run plan-review or dual-review first"
+                "no findings recorded; run plan-review or dual-review first"
             )
         );
         return;
     }
-    println!("{}", hex(t, p.purple, "ritual — findings"));
+    println!("{}", hex(t, p.purple, "ritual: findings"));
     println!();
     for af in &agg {
         let f = &af.finding;
@@ -158,7 +158,7 @@ pub fn render_findings(cfg: &Config, loaded: &[LoadedFindings], json: bool, show
             hex(
                 t,
                 p.light_grey,
-                &format!("{hidden} resolved finding(s) hidden — `ritual findings --all`")
+                &format!("{hidden} resolved finding(s) hidden; see `ritual findings --all`")
             )
         );
     }
@@ -167,7 +167,7 @@ pub fn render_findings(cfg: &Config, loaded: &[LoadedFindings], json: bool, show
 pub fn render_history(cfg: &Config, metas: &[RunMeta], summary: &DaySummary, limit: usize) {
     let t = &cfg.theme;
     let p = t.palette;
-    println!("{}", hex(t, p.purple, "ritual — run history"));
+    println!("{}", hex(t, p.purple, "ritual: run history"));
     println!();
     if metas.is_empty() {
         println!("  {}", hex(t, p.light_grey, "no runs yet"));
@@ -231,12 +231,12 @@ pub fn render_history(cfg: &Config, metas: &[RunMeta], summary: &DaySummary, lim
     );
 }
 
-/// `ritual costs` — cache-aware spend analytics over the run metas.
+/// `ritual costs`: cache-aware spend analytics over the run metas.
 pub fn render_costs(cfg: &Config, metas: &[RunMeta]) {
     use crate::history::{CostWindow, by_stage};
     let t = &cfg.theme;
     let p = t.palette;
-    println!("{}", hex(t, p.purple, "ritual — costs"));
+    println!("{}", hex(t, p.purple, "ritual: costs"));
     println!();
     if metas.is_empty() {
         println!("  {}", hex(t, p.light_grey, "no runs yet"));
@@ -419,7 +419,7 @@ pub fn render_run_summary(cfg: &Config, meta: &RunMeta, new_findings: &[String])
             hex(
                 t,
                 p.white,
-                &format!("findings: .ritual/findings/{f} — browse with `ritual findings`")
+                &format!("findings: .ritual/findings/{f} (browse with `ritual findings`)")
             )
         );
     }
@@ -545,7 +545,7 @@ fn clip(s: &str, max: usize) -> String {
 
 /// A block-character sparkline of `values`, each scaled relative to the window
 /// max (so it shows the *shape*, not absolute magnitude). `None` when there
-/// isn't enough signal to draw — fewer than two points, or an all-zero window.
+/// isn't enough signal to draw: fewer than two points, or an all-zero window.
 pub fn sparkline(values: &[f64]) -> Option<String> {
     const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     if values.len() < 2 {
@@ -586,7 +586,7 @@ pub fn render_init(cfg: &Config, report: &InitReport) {
     if report.actions.is_empty() {
         println!(
             "  {}",
-            hex(t, p.light_grey, "nothing to do — already initialized")
+            hex(t, p.light_grey, "nothing to do; already initialized")
         );
     }
 }
@@ -638,7 +638,7 @@ mod tests {
 
     #[test]
     fn stage_icon_is_distinct_per_status_in_ascii() {
-        // In ASCII mode every status still gets a distinct, non-empty glyph —
+        // In ASCII mode every status still gets a distinct, non-empty glyph;
         // state is never color-only.
         let t = Theme {
             icons: crate::theme::IconSet::Ascii,

@@ -1,6 +1,6 @@
 //! User-configurable keybindings: every UI input is an [`Action`], resolved
 //! through a [`Keymap`] (defaults merged with the `[keys]` config table).
-//! The command palette dispatches the same actions — one source of truth.
+//! The command palette dispatches the same actions: one source of truth.
 
 use std::collections::HashMap;
 
@@ -222,7 +222,7 @@ impl Keymap {
     /// Apply `[keys]` overrides: `action-name = "chord"`. An unknown action
     /// name or unparseable chord is a config error. An override is a REBIND,
     /// not an alias: the action's previous chord(s) are removed first, and
-    /// whatever action held the new chord loses it (least surprise — the help
+    /// whatever action held the new chord loses it (least surprise: the help
     /// overlay and muscle memory see exactly one binding per rebound action).
     pub fn with_overrides(mut self, overrides: &HashMap<String, String>) -> Result<Self> {
         for (name, chord_str) in overrides {
@@ -361,7 +361,7 @@ mod tests {
         assert_eq!(
             km.resolve(KeyCode::Char('C'), KeyModifiers::SHIFT),
             None,
-            "old chord removed — a rebind, not an alias"
+            "old chord removed: a rebind, not an alias"
         );
         assert_eq!(km.chords_for(Action::CheckFull).len(), 1);
 

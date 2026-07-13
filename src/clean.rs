@@ -1,4 +1,4 @@
-//! `ritual clean` — prune old run artifacts safely. Design cross-model
+//! `ritual clean`: prune old run artifacts safely. Design cross-model
 //! reviewed (plan-review, 2026-07-11): enumeration is by FILENAME (never by
 //! `history::load_all`, which silently skips exactly the malformed metas that
 //! most need cleaning), deletion ids come only from discovered filenames
@@ -26,11 +26,11 @@ pub enum KeepReason {
     KeepWindow,
     /// Referenced by a feature stage in state.json (takeover/reconcile need it).
     StateRef,
-    /// Started today (UTC) — pruning it would silently reset the daily budget.
+    /// Started today (UTC). Pruning it would silently reset the daily budget.
     Today,
     /// A live daemon owns it.
     Running,
-    /// A newer chained run than this one is kept — pruning this would punch a
+    /// A newer chained run than this one is kept, so pruning this would punch a
     /// hole in the hash-chain walk that no checkpoint could represent.
     ChainContinuity,
 }
@@ -70,7 +70,7 @@ pub fn clean(dirs: &RitualDirs, keep: usize, dry_run: bool) -> Result<CleanRepor
     if !runs_dir.is_dir() {
         report
             .notices
-            .push("no runs directory — nothing to do".into());
+            .push("no runs directory, nothing to do".into());
         return Ok(report);
     }
 
@@ -96,16 +96,16 @@ pub fn clean(dirs: &RitualDirs, keep: usize, dry_run: bool) -> Result<CleanRepor
                 .flat_map(|s| s.runs.iter().cloned())
                 .collect(),
             Err(e) => {
-                report.notices.push(format!(
-                    "state.json unreadable ({e:#}) — protecting nothing"
-                ));
+                report
+                    .notices
+                    .push(format!("state.json unreadable ({e:#}); protecting nothing"));
                 HashSet::new()
             }
         }
     } else {
         report
             .notices
-            .push("no state.json — protecting nothing".into());
+            .push("no state.json, protecting nothing".into());
         HashSet::new()
     };
     let today = Utc::now().date_naive();
@@ -167,7 +167,7 @@ pub fn clean(dirs: &RitualDirs, keep: usize, dry_run: bool) -> Result<CleanRepor
             VerifyOutcome::Broken { run_id, .. } => {
                 chain_verified = false;
                 report.notices.push(format!(
-                    "chain already broken at {run_id} — not checkpointing over it; chained runs kept"
+                    "chain already broken at {run_id}: not checkpointing over it; chained runs kept"
                 ));
             }
         }
@@ -192,7 +192,7 @@ pub fn clean(dirs: &RitualDirs, keep: usize, dry_run: bool) -> Result<CleanRepor
         }
     });
 
-    // 5. New checkpoint covering the pruned chained prefix — written BEFORE
+    // 5. New checkpoint covering the pruned chained prefix, written BEFORE
     //    any deletion, and never moving backwards.
     if !prunable_chained.is_empty() {
         let newest_pruned = prunable_chained.iter().max().unwrap().clone();
@@ -404,7 +404,7 @@ mod tests {
         mk_finished(&d, "20260701T000001Z-x");
         mk_finished(&d, "20260701T000002Z-x");
         // Make ONE suffix un-deletable: a non-empty DIRECTORY named like the
-        // archive — remove_file() fails on it while the meta unlinks fine.
+        // archive, so remove_file() fails on it while the meta unlinks fine.
         let blocker = d.runs_dir().join("20260701T000001Z-x.jsonl");
         std::fs::remove_file(&blocker).unwrap();
         std::fs::create_dir(&blocker).unwrap();
@@ -497,7 +497,7 @@ mod tests {
     fn malformed_meta_and_orphan_sidecars_are_garbage() {
         let tmp = tempfile::tempdir().unwrap();
         let d = dirs(&tmp);
-        // Malformed meta (load_all would skip it — filename enumeration must not).
+        // Malformed meta (load_all would skip it, but filename enumeration must not).
         std::fs::write(d.runs_dir().join("20260701T000001Z-bad.meta.json"), "{oops").unwrap();
         std::fs::write(d.runs_dir().join("20260701T000001Z-bad.jsonl"), "x\n").unwrap();
         // Orphan sidecars from a crashed launch (dead pid).
@@ -595,7 +595,7 @@ mod tests {
 
         let r = clean(&d, 1, false).unwrap();
         // b is a candidate but sits AFTER the kept a in the chain: pruning it
-        // would hole the walk — kept with ChainContinuity, nothing deleted.
+        // would hole the walk; kept with ChainContinuity, nothing deleted.
         assert!(r.deleted_groups.is_empty(), "{r:?}");
         assert!(
             r.kept
@@ -656,7 +656,7 @@ mod tests {
         // A victim file OUTSIDE the runs dir.
         let victim = tmp.path().join("victim.jsonl");
         std::fs::write(&victim, "precious").unwrap();
-        // A meta whose run_id field tries to escape — deletion ids come from
+        // A meta whose run_id field tries to escape. Deletion ids come from
         // filenames only, so this must be irrelevant.
         let meta = RunMeta {
             run_id: "../../victim".into(),

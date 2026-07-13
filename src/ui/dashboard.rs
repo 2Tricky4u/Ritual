@@ -1,6 +1,6 @@
 //! All drawing. Pure: reads App, writes the frame. No state mutations.
 //!
-//! Visual language: NvChad/base46 — borderless panels separated by background
+//! Visual language: NvChad/base46, borderless panels separated by background
 //! shades (darker sidebar, statusline_bg bottom bar), powerline statusline
 //! with the user's live separator glyphs ( / ), PmenuSel purple selection,
 //! tabufline pills, nvdash greeter, telescope-style palette, which-key help.
@@ -20,7 +20,7 @@ use crate::ui::app::{App, ChatState, ChatTurn, CheckState, TABS, Tab};
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SIDEBAR_W: u16 = 28;
 const MIN_SIDEBAR_TERM_W: u16 = 70;
-/// In chat mode the sidebar only survives on wide terminals — below this the
+/// In chat mode the sidebar only survives on wide terminals; below this the
 /// preview | chat split takes the full width (fits an 80-col terminal).
 const CHAT_SIDEBAR_MIN_TERM_W: u16 = 100;
 /// Below this main width, chat stacks vertically (preview above, chat below).
@@ -345,7 +345,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
     };
     let nvim = match &app.agents.nvim {
         Some(_) => ("nvim ok".to_string(), t.ok()),
-        None => ("nvim —".to_string(), t.comment()),
+        None => ("nvim …".to_string(), t.comment()),
     };
     for (icon, (text, color)) in [
         (t.icon_agent(), claude),
@@ -515,7 +515,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// The live document (re-read every frame, so edits appear as they happen),
-/// focused on the current target — the whole doc, or one section's raw slice.
+/// focused on the current target: the whole doc, or one section's raw slice.
 fn draw_chat_preview(f: &mut Frame, app: &App, chat: &ChatState, area: Rect) {
     let t = &app.cfg.theme;
     let target = chat.target();
@@ -530,7 +530,7 @@ fn draw_chat_preview(f: &mut Frame, app: &App, chat: &ChatState, area: Rect) {
         None => (app.dirs.spec_file(&app.slug), "spec"),
     };
     let full = std::fs::read_to_string(&path).unwrap_or_default();
-    // The FULL document renders; a section target becomes a focus range —
+    // The FULL document renders; a section target becomes a focus range:
     // banded and auto-scrolled to, with the rest visible for context.
     let (header, focus) = match target {
         Some(tg) if tg.section.is_some() => (
@@ -716,7 +716,7 @@ fn draw_greeter(f: &mut Frame, t: &Theme, area: Rect) {
     // keeps a clean label column.
     let guide: [(&str, &str); 11] = [
         ("pipeline", "spec → plan → review → tests → impl → dual"),
-        ("chat", "s — chat to write/edit the spec or plan live"),
+        ("chat", "s: chat to write/edit the spec or plan live"),
         ("runs", "daemons: quit freely, reattach · a takeover"),
         ("findings", "f fix · d dismiss · / filter · Q quickfix"),
         ("gates", "mutants · secrets · lessons · invariants"),
@@ -725,7 +725,7 @@ fn draw_greeter(f: &mut Frame, t: &Theme, area: Rect) {
         ("ci", "--ci → JUnit · --json + exit codes"),
         ("parallel", "new --worktree · [ ] switch features"),
         ("more", "ps · attach · doctor · clean · pr-comment"),
-        ("guide", "5 — the detailed guide & tips, in-app"),
+        ("guide", "5: the detailed guide & tips, in-app"),
     ];
     let label_w = guide
         .iter()
@@ -949,7 +949,7 @@ fn draw_findings(f: &mut Frame, app: &App, area: Rect) {
         let msg = if app.filter_active() {
             "no findings match the filter"
         } else {
-            "no findings — run plan-review or dual-review"
+            "no findings; run plan-review or dual-review"
         };
         f.render_widget(
             Paragraph::new(Span::styled(msg, Style::default().fg(t.comment())))
@@ -1089,7 +1089,7 @@ fn draw_history(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(
                 m.total_cost_usd
                     .map(|c| format!("{:>9}", format!("${c:.3}")))
-                    .unwrap_or_else(|| format!("{:>9}", "—")),
+                    .unwrap_or_else(|| format!("{:>9}", "-")),
                 Style::default().fg(t.warn()).bg(row_bg),
             ),
             Span::styled(
@@ -1110,8 +1110,8 @@ fn draw_plan(f: &mut Frame, app: &App, area: Rect) {
     let spec = std::fs::read_to_string(app.dirs.spec_file(&app.slug)).ok();
     let text = match (plan, spec) {
         (Some(p), _) => p,
-        (None, Some(s)) => format!("*(no plan yet — spec below)*\n\n{s}"),
-        (None, None) => "no spec or plan yet — press enter on the spec stage".into(),
+        (None, Some(s)) => format!("*(no plan yet; spec below)*\n\n{s}"),
+        (None, None) => "no spec or plan yet; press enter on the spec stage".into(),
     };
     draw_markdown_scrolled(f, &app.cfg.theme, area, &text, app.plan_scroll, None);
 }
@@ -1123,7 +1123,7 @@ fn draw_guide(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Themed markdown (pulldown-cmark) with j/k scrolling and a top-right
-/// position hint — shared by the plan/guide tabs and the chat preview.
+/// position hint, shared by the plan/guide tabs and the chat preview.
 /// `focus` is a SOURCE-line range: matching output lines get a subtle band,
 /// and (when the caller isn't scrolling) the view auto-scrolls to it.
 fn draw_markdown_scrolled(
@@ -1227,7 +1227,7 @@ fn draw_statusline(f: &mut Frame, app: &App, area: Rect) {
     left.push(middle);
 
     let mut right: Vec<Span> = Vec::new();
-    // A compact spend sparkline over recent runs (older → newer) — the shape
+    // A compact spend sparkline over recent runs (older → newer); the shape
     // of the burn at a glance. Suppressed on narrow bars where it'd crowd out
     // the budget/run segments.
     if area.width >= 80
@@ -1411,7 +1411,7 @@ fn draw_confirm_quit(f: &mut Frame, t: &Theme) {
     let inner = float_panel(f, t, area, "confirm");
     f.render_widget(
         Paragraph::new(Span::styled(
-            "a run is active — quit anyway? (y/n)",
+            "a run is active; quit anyway? (y/n)",
             Style::default().fg(t.attention()),
         ))
         .alignment(Alignment::Center),

@@ -1,5 +1,5 @@
 //! Secret redaction. Applied to every agent line BEFORE it is archived,
-//! parsed, or rendered, and to generated reports — the audit trail must be
+//! parsed, or rendered, and to generated reports: the audit trail must be
 //! safe to commit and share. gitleaks-style patterns, conservative about
 //! false positives (hashes/uuids/hex are allowlisted).
 
@@ -93,10 +93,10 @@ impl Redactor {
 }
 
 /// Long mixed-class tokens that look like credentials. Allowlist: pure hex
-/// (git shas, digests), uuids, and paths — common false positives.
+/// (git shas, digests), uuids, and paths, all common false positives.
 fn redact_entropy(line: &str) -> String {
     static CANDIDATE: OnceLock<Regex> = OnceLock::new();
-    // NOTE: no '/' in the class — file paths are long mixed-class tokens too
+    // NOTE: no '/' in the class, since file paths are long mixed-class tokens too
     // (found live: `.ritual/findings/2026...-plan-review.json` got redacted).
     // Slash-bearing base64 secrets are still caught by the structured
     // patterns (bearer/assignment/vendor keys).
@@ -171,7 +171,7 @@ mod tests {
         );
         assert_eq!(r.line("next line untouched"), "next line untouched");
 
-        // Certificates are not secrets — BEGIN without PRIVATE KEY passes.
+        // Certificates are not secrets, so BEGIN without PRIVATE KEY passes.
         assert_eq!(
             one("-----BEGIN CERTIFICATE-----"),
             "-----BEGIN CERTIFICATE-----"
@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn file_paths_are_not_entropy() {
-        // Regression: found live — the findings path was redacted in the
+        // Regression: found live, the findings path was redacted in the
         // run archive because '/' was in the entropy charset.
         let line = r#""file_path": "/home/u/Documents/project/ritual/.ritual/findings/20260711T234357Z-plan-review.json""#;
         assert_eq!(one(line), line);
