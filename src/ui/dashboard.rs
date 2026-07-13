@@ -1014,6 +1014,13 @@ fn draw_findings(f: &mut Frame, app: &App, area: Rect) {
             )),
             _ => {}
         }
+        // The plan step no longer locates: don't pretend the link holds.
+        if app.is_anchor_lost(af) {
+            spans.push(Span::styled(
+                " ⚓",
+                Style::default().fg(t.warn()).bg(row_bg),
+            ));
+        }
         spans.push(Span::styled(
             format!(" {} ", finding.location()),
             Style::default().fg(t.info()).bg(row_bg),
@@ -1414,6 +1421,12 @@ fn draw_finding_detail(f: &mut Frame, app: &App) {
     if let Some(reason) = &finding.reason {
         lines.push(Line::from(Span::styled(
             format!("reason: {reason}"),
+            Style::default().fg(t.warn()),
+        )));
+    }
+    if app.is_anchor_lost(&af) {
+        lines.push(Line::from(Span::styled(
+            "⚓ anchor lost — step no longer found in plan.md",
             Style::default().fg(t.warn()),
         )));
     }

@@ -182,6 +182,9 @@ pub struct App {
     fix_ctx: Option<BatchFixCtx>,
     /// The last APPLIED batch, revertable with `u` until a newer doc edit lands.
     last_fix: Option<LastBatch>,
+    /// Open plan findings whose step no longer locates (path, pos): shown as
+    /// ⚓ instead of silently mis-anchoring. Rebuilt on every artifact reload.
+    anchor_lost: std::collections::HashSet<(std::path::PathBuf, usize)>,
 }
 
 /// Command palette state: typed filter + selection over matching entries.
@@ -271,7 +274,7 @@ impl App {
         st.feature_for_branch_mut(&branch);
         let findings = crate::findings::load_all(&dirs.findings_dir()).unwrap_or_default();
         let metas = crate::history::load_all(&dirs.runs_dir()).unwrap_or_default();
-        Ok(Self {
+        let mut app = Self {
             cfg,
             dirs,
             state: st,
@@ -315,7 +318,10 @@ impl App {
             fix_doc_before: String::new(),
             fix_ctx: None,
             last_fix: None,
-        })
+            anchor_lost: std::collections::HashSet::new(),
+        };
+        app.recompute_anchors();
+        Ok(app)
     }
 
     /// True while a claude plan fix (`F`) is running.
@@ -466,6 +472,42 @@ impl App {
     fn reload_artifacts(&mut self) {
         self.findings = crate::findings::load_all(&self.dirs.findings_dir()).unwrap_or_default();
         self.metas = crate::history::load_all(&self.dirs.runs_dir()).unwrap_or_default();
+        self.recompute_anchors();
+    }
+
+    /// Re-resolve every open plan finding's step against the CURRENT plan.
+    /// Any edit (batch fix, chat, undo, external) can move or delete a step;
+    /// findings whose anchor no longer locates get an explicit ⚓ marker
+    /// instead of silently mis-anchoring. Runs on every artifact reload —
+    /// the funnel every edit path already goes through.
+    fn recompute_anchors(&mut self) {
+        let mut plans: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut lost = std::collections::HashSet::new();
+        for (file_idx, lf) in self.findings.iter().enumerate() {
+            for (pos, f) in lf.file.findings.iter().enumerate() {
+                if f.resolved() || f.file.is_some() {
+                    continue;
+                }
+                let Some(step) = f.plan_step.as_deref() else {
+                    continue;
+                };
+                let slug = self.finding_slug(file_idx);
+                let plan = plans.entry(slug.clone()).or_insert_with(|| {
+                    std::fs::read_to_string(self.dirs.plan_file(&slug)).unwrap_or_default()
+                });
+                if locate_plan_step(plan, step).is_none() {
+                    lost.insert((lf.path.clone(), pos));
+                }
+            }
+        }
+        self.anchor_lost = lost;
+    }
+
+    /// True when this finding's plan step no longer locates in the plan.
+    pub fn is_anchor_lost(&self, af: &crate::findings::AggregatedFinding) -> bool {
+        self.findings
+            .get(af.file_idx)
+            .is_some_and(|lf| self.anchor_lost.contains(&(lf.path.clone(), af.pos)))
     }
 
     /// Handle one message. Side effects that need the terminal (attached
@@ -2297,43 +2339,69 @@ impl App {
             self.status_msg = Some("no running nvim found (start nvim or set nvim_server)".into());
             return;
         };
+        let (entries, manual_only) = self.quickfix_entries();
+        let title = if manual_only {
+            "ritual manual findings"
+        } else {
+            "ritual findings"
+        };
+        match crate::nvim::send_quickfix(&server, &entries, title) {
+            Ok(n) => {
+                self.status_msg = Some(if manual_only {
+                    format!(" {n} manual finding(s) → nvim quickfix")
+                } else {
+                    format!(" {n} finding(s) → nvim quickfix")
+                });
+            }
+            Err(e) => self.status_msg = Some(format!("nvim: {e:#}")),
+        }
+    }
+
+    /// Quickfix candidates. When any open ⚑M (queued-manual) finding is
+    /// locatable, `Q` becomes the MANUAL PASS and sends only those; with no
+    /// manual queue it sends every locatable finding as before.
+    pub fn quickfix_entries(&self) -> (Vec<crate::nvim::QfEntry>, bool) {
         let cwd = self
             .run_cwd()
             .unwrap_or_else(|| self.dirs.work_root.clone());
-        let entries: Vec<crate::nvim::QfEntry> =
-            crate::findings::aggregate(&self.findings, self.show_resolved)
-                .into_iter()
-                .filter_map(|af| {
-                    let f = &af.finding;
-                    let (file, line) = if let Some(rel) = &f.file {
-                        (cwd.join(rel).display().to_string(), f.line.unwrap_or(1))
-                    } else if let Some(step) = &f.plan_step {
-                        let plan = self.plan_path_for(af.file_idx);
-                        let line = std::fs::read_to_string(&plan)
-                            .ok()
-                            .and_then(|t| locate_plan_step(&t, step))
-                            .unwrap_or(1);
-                        (plan.display().to_string(), line)
-                    } else {
-                        return None;
-                    };
-                    Some(crate::nvim::QfEntry {
-                        file,
-                        line,
-                        text: format!(
-                            "{}{}: {} [{}]",
-                            f.severity.label(),
-                            if f.cross_confirmed() { " ◆both" } else { "" },
-                            f.title,
-                            f.verdict
-                        ),
-                    })
+        let all = crate::findings::aggregate(&self.findings, self.show_resolved);
+        let manual_only = all
+            .iter()
+            .any(|af| !af.finding.resolved() && af.finding.answer.as_deref() == Some("manual"));
+        let entries = all
+            .into_iter()
+            .filter(|af| {
+                !manual_only
+                    || (!af.finding.resolved() && af.finding.answer.as_deref() == Some("manual"))
+            })
+            .filter_map(|af| {
+                let f = &af.finding;
+                let (file, line) = if let Some(rel) = &f.file {
+                    (cwd.join(rel).display().to_string(), f.line.unwrap_or(1))
+                } else if let Some(step) = &f.plan_step {
+                    let plan = self.plan_path_for(af.file_idx);
+                    let line = std::fs::read_to_string(&plan)
+                        .ok()
+                        .and_then(|t| locate_plan_step(&t, step))
+                        .unwrap_or(1);
+                    (plan.display().to_string(), line)
+                } else {
+                    return None;
+                };
+                Some(crate::nvim::QfEntry {
+                    file,
+                    line,
+                    text: format!(
+                        "{}{}: {} [{}]",
+                        f.severity.label(),
+                        if f.cross_confirmed() { " ◆both" } else { "" },
+                        f.title,
+                        f.verdict
+                    ),
                 })
-                .collect();
-        match crate::nvim::send_quickfix(&server, &entries, "ritual findings") {
-            Ok(n) => self.status_msg = Some(format!(" {n} finding(s) → nvim quickfix")),
-            Err(e) => self.status_msg = Some(format!("nvim: {e:#}")),
-        }
+            })
+            .collect();
+        (entries, manual_only)
     }
 
     fn open_editor(&mut self) {
@@ -3588,6 +3656,66 @@ mod tests {
                 .is_some_and(|m| m.contains("reverted"))
         );
         assert_eq!(app.queued_auto().len(), 2, "queue survives a failed run");
+    }
+
+    #[test]
+    fn anchor_lost_flags_after_plan_edit_and_recovers() {
+        let (_t, mut app, _tx, _rx) = test_app();
+        seed_fixable(&mut app);
+        // Both steps locate against the seeded plan.
+        assert!(
+            app.visible_findings()
+                .iter()
+                .all(|af| !app.is_anchor_lost(af))
+        );
+        // Rewrite the plan without the numbered list: "Step 2 (x)" is lost,
+        // "chain breakage" still matches verbatim.
+        let plan = app.dirs.plan_file(&app.slug);
+        std::fs::write(
+            &plan,
+            "# Plan\n\n## Steps\nrewritten prose\n\n## Risks\nchain breakage risk\n",
+        )
+        .unwrap();
+        app.reload_artifacts();
+        let lost: Vec<bool> = app
+            .visible_findings()
+            .iter()
+            .map(|af| app.is_anchor_lost(af))
+            .collect();
+        assert_eq!(lost, vec![true, false], "step 2 lost, chain breakage held");
+        // Restoring the plan clears the marker.
+        std::fs::write(&plan, FIX_PLAN).unwrap();
+        app.reload_artifacts();
+        assert!(
+            app.visible_findings()
+                .iter()
+                .all(|af| !app.is_anchor_lost(af))
+        );
+    }
+
+    #[test]
+    fn quickfix_entries_narrow_to_manual_when_queued() {
+        let (_t, mut app, _tx, _rx) = test_app();
+        let plan = app.dirs.plan_file(&app.slug);
+        std::fs::create_dir_all(plan.parent().unwrap()).unwrap();
+        std::fs::write(&plan, FIX_PLAN).unwrap();
+        seed_findings(
+            &mut app,
+            r#"{"stage":"plan-review","findings":[
+                {"id":1,"title":"code bug","file":"src/a.rs","line":3,"severity":"major","verdict":"confirmed"},
+                {"id":2,"title":"plan gap","plan_step":"Step 2 (x)","severity":"minor","verdict":"confirmed"}]}"#,
+        );
+        // No manual queue -> every locatable finding rides (old behavior).
+        let (entries, manual_only) = app.quickfix_entries();
+        assert!(!manual_only);
+        assert_eq!(entries.len(), 2);
+        // Queue the code finding manually -> Q becomes the manual pass.
+        app.dispatch(Action::FindingManual, &_tx);
+        let (entries, manual_only) = app.quickfix_entries();
+        assert!(manual_only);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].file.ends_with("src/a.rs"));
+        assert!(entries[0].text.contains("code bug"));
     }
 
     #[test]
