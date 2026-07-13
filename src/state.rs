@@ -74,6 +74,11 @@ pub struct StageState {
     pub finished_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runs: Vec<String>,
+    /// The claude session id this stage owns. Set for interactive stages that
+    /// ritual pins with `--session-id` (tests-red) so a later stage can
+    /// `--resume` the exact conversation instead of "most recent in cwd".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,6 +157,22 @@ impl State {
         self.features
             .entry(slug)
             .or_insert_with(|| Feature::new(branch, branch))
+    }
+
+    /// The claude session id pinned to `stage` of the feature keyed by `slug`.
+    pub fn stage_session_id(&self, slug: &str, stage: StageId) -> Option<String> {
+        self.features
+            .get(slug)
+            .and_then(|f| f.stages.get(&stage))
+            .and_then(|s| s.session_id.clone())
+    }
+
+    /// Pin (or clear) `stage`'s claude session id; creates the stage entry if
+    /// absent. Persist with `save` afterwards.
+    pub fn set_stage_session_id(&mut self, slug: &str, stage: StageId, id: Option<String>) {
+        if let Some(feature) = self.features.get_mut(slug) {
+            feature.stages.entry(stage).or_default().session_id = id;
+        }
     }
 }
 
@@ -380,6 +401,7 @@ mod tests {
                 started_at: Some(Utc::now()),
                 finished_at: None,
                 runs: vec!["20260711T000000Z-plan-review".into()],
+                ..Default::default()
             },
         );
         state.save(&dirs).unwrap();
@@ -392,6 +414,59 @@ mod tests {
         assert_eq!(f.stage(StageId::PlanReview).runs.len(), 1);
         // Untouched stages default to pending.
         assert_eq!(f.stage(StageId::Spec).status, StageStatus::Pending);
+    }
+
+    #[test]
+    fn stage_session_id_round_trips_and_is_absent_by_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        let mut state = State::default();
+        state.feature_for_branch_mut("feat/x");
+        let slug = branch_slug("feat/x");
+
+        // Absent by default; helper returns None.
+        assert_eq!(state.stage_session_id(&slug, StageId::TestsRed), None);
+
+        state.set_stage_session_id(
+            &slug,
+            StageId::TestsRed,
+            Some("11111111-1111-4111-8111-111111111111".into()),
+        );
+        state.save(&dirs).unwrap();
+
+        let loaded = State::load(&dirs).unwrap();
+        assert_eq!(
+            loaded.stage_session_id(&slug, StageId::TestsRed).as_deref(),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+        // Stages without a pinned session omit the key entirely on disk.
+        let raw = std::fs::read_to_string(dirs.state_file()).unwrap();
+        assert_eq!(
+            raw.matches("session_id").count(),
+            1,
+            "only tests-red carries one"
+        );
+    }
+
+    #[test]
+    fn legacy_state_without_session_id_loads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        std::fs::create_dir_all(tmp.path().join(".ritual")).unwrap();
+        // A state.json written before session_id existed.
+        std::fs::write(
+            dirs.state_file(),
+            r#"{"version":1,"features":{"feat-x":{"branch":"feat/x","title":"x",
+                "created_at":"2026-07-11T00:00:00Z","updated_at":"2026-07-11T00:00:00Z",
+                "stages":{"tests_red":{"status":"done"}}}}}"#,
+        )
+        .unwrap();
+        let loaded = State::load(&dirs).unwrap();
+        assert_eq!(loaded.stage_session_id("feat-x", StageId::TestsRed), None);
+        assert_eq!(
+            loaded.features["feat-x"].stage(StageId::TestsRed).status,
+            StageStatus::Done
+        );
     }
 
     #[test]

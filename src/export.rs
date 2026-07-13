@@ -177,8 +177,25 @@ fn canonical(v: &serde_json::Value) -> String {
     serde_json::to_string(v).unwrap_or_default()
 }
 
+/// A fresh, unused UUIDv4-formatted id for pinning a claude session
+/// (`--session-id`). Not cryptographic — uniqueness (not unpredictability) is
+/// what `--session-id` needs, so we seed the deterministic hasher with the
+/// same time+pid+counter ingredients as `runner::new_run_id`, which are unique
+/// per invocation on this machine.
+pub fn fresh_session_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    synth_uuid(&format!("session-{nanos}-{}-{seq}", std::process::id()))
+}
+
 /// Deterministic UUIDv4-formatted id from a seed (version/variant bits set).
-fn synth_uuid(seed: &str) -> String {
+pub fn synth_uuid(seed: &str) -> String {
     let hex = sha256_hex(seed.as_bytes());
     let mut c: Vec<char> = hex[..32].chars().collect();
     c[12] = '4';
@@ -194,7 +211,7 @@ fn synth_uuid(seed: &str) -> String {
     )
 }
 
-fn is_uuid(s: &str) -> bool {
+pub fn is_uuid(s: &str) -> bool {
     s.len() == 36
         && s.chars().enumerate().all(|(i, ch)| match i {
             8 | 13 | 18 | 23 => ch == '-',
@@ -219,6 +236,17 @@ fn attr_i64(key: &str, v: i64) -> serde_json::Value {
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    #[test]
+    fn fresh_session_id_is_valid_uuid_and_unique() {
+        let a = fresh_session_id();
+        let b = fresh_session_id();
+        assert!(is_uuid(&a), "not a uuid: {a}");
+        assert!(is_uuid(&b), "not a uuid: {b}");
+        assert_ne!(a, b, "consecutive session ids must differ");
+        // v4 version nibble is set (synth_uuid forces it).
+        assert_eq!(a.as_bytes()[14], b'4');
+    }
 
     fn write_meta(runs: &std::path::Path, name: &str, json: &str) {
         std::fs::write(runs.join(name), json).unwrap();
