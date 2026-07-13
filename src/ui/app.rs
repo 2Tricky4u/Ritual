@@ -954,6 +954,22 @@ impl App {
         };
         let stage = self.selected_stage();
         let model_override = self.pending_model_override.take();
+        // Pin/resolve the claude session so the tests-red → implement handoff is
+        // deterministic. tests-red mints a ritual-owned id (persisted only once
+        // the launch is committed, below); implement resumes that exact id, or
+        // falls back to the `--resume` picker when none is pinned.
+        let session: Option<String> = match stage {
+            StageId::TestsRed => Some(crate::export::fresh_session_id()),
+            StageId::Implement => {
+                let sid = self.state.stage_session_id(&self.slug, StageId::TestsRed);
+                self.status_msg = Some(match &sid {
+                    Some(_) => "resuming the tests-red session".into(),
+                    None => "no pinned tests-red session — pick it from the resume list".into(),
+                });
+                sid
+            }
+            _ => None,
+        };
         let cmd = match stages::build(
             stage,
             &self.cfg,
@@ -961,7 +977,7 @@ impl App {
             &self.slug,
             None,
             model_override.as_deref(),
-            None,
+            session.as_deref(),
         ) {
             Ok(c) => c,
             Err(e) => {
@@ -997,6 +1013,19 @@ impl App {
                 });
             }
             Mode::Interactive => {
+                // Now that the launch is committed, persist tests-red's pinned
+                // session id so a later `implement` resumes this exact
+                // conversation (survives quitting mid-run).
+                if stage == StageId::TestsRed
+                    && let Some(sid) = &session
+                {
+                    self.state.set_stage_session_id(
+                        &self.slug,
+                        StageId::TestsRed,
+                        Some(sid.clone()),
+                    );
+                    let _ = self.state.save(&self.dirs);
+                }
                 self.pending_attached = Some(AttachedRequest {
                     stage: Some(stage),
                     argv: cmd.argv,
@@ -1007,27 +1036,21 @@ impl App {
         }
     }
 
-    /// `a`: reattach interactively to the selected stage's last recorded
-    /// session (`claude --resume <session_id>`).
+    /// `a`: reattach interactively to the selected stage's session
+    /// (`claude --resume <session_id>`). Headless stages resolve the id from
+    /// the last run's meta; interactive stages (tests-red/implement) use the
+    /// session id ritual pinned on the stage.
     fn takeover(&mut self) {
         let stage = self.selected_stage();
-        let Some(run_id) = self
-            .state
-            .features
-            .get(&self.slug)
-            .map(|f| f.stage(stage))
-            .and_then(|s| s.runs.last().cloned())
-        else {
-            self.status_msg = Some(format!("no recorded runs for {}", stage.label()));
-            return;
-        };
-        let Some(sid) = self
-            .metas
-            .iter()
-            .find(|m| m.run_id == run_id)
-            .and_then(|m| m.session_id.clone())
-        else {
-            self.status_msg = Some(format!("run {run_id} recorded no session id"));
+        let st = self.state.features.get(&self.slug).map(|f| f.stage(stage));
+        let from_run = st.as_ref().and_then(|s| s.runs.last()).and_then(|rid| {
+            self.metas
+                .iter()
+                .find(|m| &m.run_id == rid)
+                .and_then(|m| m.session_id.clone())
+        });
+        let Some(sid) = from_run.or_else(|| st.and_then(|s| s.session_id)) else {
+            self.status_msg = Some(format!("no session recorded for {}", stage.label()));
             return;
         };
         let Some(cwd) = self.run_cwd() else {
@@ -4977,15 +5000,16 @@ mod tests {
     #[test]
     fn takeover_notices_when_nothing_is_resumable() {
         let (_t, mut app, _tx, _rx) = test_app();
-        // No recorded runs for the selected stage.
+        // No recorded runs and no pinned session for the selected stage.
         app.takeover();
         assert!(
             app.status_msg
                 .as_deref()
                 .unwrap()
-                .contains("no recorded runs")
+                .contains("no session recorded")
         );
-        // A recorded run without a session id.
+        // A recorded run whose meta carries no session id, and no pinned
+        // stage session either → still nothing to resume.
         let branch = app.branch.clone();
         let f = app.state.feature_for_branch_mut(&branch);
         f.stages.entry(StageId::Spec).or_default().runs = vec!["r-nosession".into()];
@@ -4995,7 +5019,7 @@ mod tests {
             app.status_msg
                 .as_deref()
                 .unwrap()
-                .contains("recorded no session id")
+                .contains("no session recorded")
         );
         assert!(app.pending_attached.is_none());
     }
@@ -5656,6 +5680,70 @@ mod tests {
         let (_t, mut app, _tx, _rx) = test_app();
         app.selected = 999;
         assert_eq!(app.selected_stage(), PIPELINE[PIPELINE.len() - 1]);
+    }
+
+    #[test]
+    fn tests_red_pins_a_session_that_implement_resumes() {
+        let (_t, mut app, tx, _rx) = test_app();
+
+        // Launching tests-red mints + stores a session id and pins it in argv.
+        app.dispatch(Action::RunStage(StageId::TestsRed), &tx);
+        let req = app.pending_attached.take().expect("tests-red queued");
+        let i = req
+            .argv
+            .iter()
+            .position(|a| a == "--session-id")
+            .expect("tests-red pins --session-id");
+        let sid = req.argv[i + 1].clone();
+        assert!(crate::export::is_uuid(&sid), "pinned a real uuid: {sid}");
+        assert_eq!(
+            app.state
+                .stage_session_id(&app.slug, StageId::TestsRed)
+                .as_deref(),
+            Some(sid.as_str()),
+            "persisted to state so implement can find it"
+        );
+
+        // implement resumes THAT exact session and auto-sends the kickoff.
+        app.dispatch(Action::RunStage(StageId::Implement), &tx);
+        let req = app.pending_attached.take().expect("implement queued");
+        assert_eq!(req.argv[0], "claude");
+        assert_eq!(req.argv[1], "--resume");
+        assert_eq!(req.argv[2], sid);
+        assert_eq!(req.argv[3], crate::stages::IMPLEMENT_PROMPT);
+        assert_eq!(req.argv.len(), 4);
+        assert!(!req.argv.iter().any(|a| a == "--continue"));
+    }
+
+    #[test]
+    fn implement_without_pinned_session_opens_the_picker() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.dispatch(Action::RunStage(StageId::Implement), &tx);
+        let req = app.pending_attached.take().expect("implement queued");
+        // Picker form: claude --resume <prompt>, no id, never --continue.
+        assert_eq!(req.argv[1], "--resume");
+        assert_eq!(req.argv.len(), 3);
+        assert!(!req.argv.iter().any(|a| a == "--continue"));
+        assert!(app.status_msg.as_deref().unwrap().contains("pick it"));
+    }
+
+    #[test]
+    fn takeover_reads_the_pinned_tests_red_session() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.dispatch(Action::RunStage(StageId::TestsRed), &tx);
+        let sid = app
+            .state
+            .stage_session_id(&app.slug, StageId::TestsRed)
+            .expect("pinned");
+        app.pending_attached = None;
+        app.selected = PIPELINE
+            .iter()
+            .position(|s| *s == StageId::TestsRed)
+            .unwrap();
+        app.takeover();
+        let req = app.pending_attached.take().expect("takeover queued");
+        assert!(req.argv.contains(&"--resume".to_string()));
+        assert!(req.argv.contains(&sid));
     }
 
     #[test]
