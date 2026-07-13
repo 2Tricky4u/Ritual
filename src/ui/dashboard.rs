@@ -721,7 +721,10 @@ fn draw_greeter(f: &mut Frame, t: &Theme, area: Rect) {
         ("pipeline", "spec → plan → review → tests → impl → dual"),
         ("chat", "s: chat to write/edit the spec or plan live"),
         ("runs", "daemons: quit freely, reattach · a takeover"),
-        ("findings", "f fix · d dismiss · / filter · Q quickfix"),
+        (
+            "findings",
+            "enter details · f/d resolve · F claude-fix · / filter",
+        ),
         ("gates", "mutants · secrets · lessons · invariants"),
         ("money", "daily budget · per-run caps · costs"),
         ("safety", "redaction · verify-log chain · repro"),
@@ -1267,6 +1270,15 @@ fn draw_statusline(f: &mut Frame, app: &App, area: Rect) {
             base,
         ));
     }
+    // A claude plan fix runs on its own track (independent of `running`).
+    if let Some(label) = app.fix_label() {
+        right.extend(pl_segment(
+            t,
+            format!(" {} {} ", SPINNER[app.spinner % SPINNER.len()], label),
+            t.attention(),
+            base,
+        ));
+    }
     let check_seg = match &app.check {
         CheckState::Green => Some((format!(" {} ok ", t.icon_check()), t.ok())),
         CheckState::Red { .. } => Some((format!(" {} RED ", t.icon_check()), t.error())),
@@ -1382,18 +1394,37 @@ fn draw_finding_detail(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), rows[0]);
 
     let mut footer: Vec<Span> = Vec::new();
-    for (key, label) in [
-        ("f", "fix"),
-        ("d", "dismiss"),
-        ("o", "nvim"),
-        ("e", "editor"),
-        ("j/k", "next"),
-        ("esc", "close"),
-    ] {
+    let cap = |footer: &mut Vec<Span<'_>>, key: &'static str, label: String| {
         footer.push(keycap(t, key));
         footer.push(Span::styled(
             format!(" {label}  "),
             Style::default().fg(t.comment()),
+        ));
+    };
+    for (key, label) in [("f", "fix"), ("d", "dismiss")] {
+        cap(&mut footer, key, label.into());
+    }
+    // F only fires for plan findings; the footer says which world we're in.
+    let plan_finding = finding.file.is_none() && finding.plan_step.is_some();
+    if let Some(label) = app.fix_label() {
+        footer.push(Span::styled(
+            format!("{} {label}  ", SPINNER[app.spinner % SPINNER.len()]),
+            Style::default().fg(t.attention()),
+        ));
+    } else if plan_finding {
+        cap(&mut footer, "F", "claude-fix".into());
+        if app.fix_revertable() {
+            cap(&mut footer, "u", "revert".into());
+        }
+    }
+    for (key, label) in [("o", "nvim"), ("e", "editor"), ("j/k", "next")] {
+        cap(&mut footer, key, label.into());
+    }
+    cap(&mut footer, "esc", "close".into());
+    if !plan_finding && app.fix_label().is_none() {
+        footer.push(Span::styled(
+            "F targets plan findings (v1)",
+            Style::default().fg(t.comment()).add_modifier(Modifier::DIM),
         ));
     }
     f.render_widget(Paragraph::new(Line::from(footer)), rows[1]);
@@ -1473,8 +1504,11 @@ fn draw_help(f: &mut Frame, t: &Theme) {
         (
             "findings",
             &[
+                ("enter", "details"),
                 ("f", "mark fixed (toggle)"),
                 ("d", "dismiss (toggle)"),
+                ("F", "claude fix (plan)"),
+                ("u", "revert claude fix"),
                 ("v", "show/hide resolved"),
                 ("/", "filter list (2/3)"),
             ],

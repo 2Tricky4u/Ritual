@@ -39,6 +39,8 @@ pub enum Action {
     Filter,
     FindingFix,
     FindingDismiss,
+    FindingClaudeFix,
+    DocUndo,
     ToggleResolved,
     RunStage(StageId),
     /// Re-run a failed stage with `[retry] models[i]` (palette-only, dynamic).
@@ -89,6 +91,12 @@ pub const ACTIONS: &[(&str, Action, &str)] = &[
         Action::FindingDismiss,
         "finding: dismiss",
     ),
+    (
+        "finding-claude-fix",
+        Action::FindingClaudeFix,
+        "finding: fix in plan via claude",
+    ),
+    ("doc-undo", Action::DocUndo, "undo last plan fix"),
     (
         "toggle-resolved",
         Action::ToggleResolved,
@@ -203,6 +211,8 @@ impl Default for Keymap {
             ("/", "filter"),
             ("f", "finding-fix"),
             ("d", "finding-dismiss"),
+            ("F", "finding-claude-fix"),
+            ("u", "doc-undo"),
             ("v", "toggle-resolved"),
         ];
         let map = defaults
@@ -310,6 +320,14 @@ mod tests {
         assert_eq!(
             km.resolve(KeyCode::Char('C'), KeyModifiers::SHIFT),
             Some(Action::CheckFull)
+        );
+        assert_eq!(
+            km.resolve(KeyCode::Char('F'), KeyModifiers::SHIFT),
+            Some(Action::FindingClaudeFix)
+        );
+        assert_eq!(
+            km.resolve(KeyCode::Char('u'), KeyModifiers::NONE),
+            Some(Action::DocUndo)
         );
         assert_eq!(km.resolve(KeyCode::Char('z'), KeyModifiers::NONE), None);
     }

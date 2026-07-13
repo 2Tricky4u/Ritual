@@ -1,6 +1,5 @@
 ---
 source: tests/ui_snapshots.rs
-assertion_line: 268
 expression: render(&app)
 ---
 "                            │  live   findings    history    plan    guide              "
@@ -10,17 +9,17 @@ expression: render(&app)
 "  ○ plan-review  │  run▏                                                │                 "
 "  ○ tests-red    │                                                      │ r i f y         "
 "  ○ implement    │  run selected stage / open item                      │                 "
-"  ○ dual-review  │  cancel running stage                                │ impl → dual     "
-"                 │  run check.sh fast                                   │ or plan live    "
-" 󰚩 AGENTS ───────│  run full check.sh                                   │ · a takeover    "
-"  󰚩 claude …     │  take over run in claude (--resume)                  │ Q quickfix      "
-"  󰚩 codex …      │  open in running nvim                                │invariants       "
-"  󱘖 bridge …     │  run spec                                            │costs            "
-"   nvim …        │  run plan                                            │ repro           "
-"   check ?       │  run plan-review                                     │odes             "
-"                 │  run tests-red                                       │atures           "
-"   detached      │  run implement                                       │ pr-comment      "
-"                 │  run dual-review                                     │in-app           "
+"  ○ dual-review  │  cancel running stage                                │pl → dual        "
+"                 │  run check.sh fast                                   │ plan live       "
+" 󰚩 AGENTS ───────│  run full check.sh                                   │a takeover       "
+"  󰚩 claude …     │  take over run in claude (--resume)                  │laude-fix · / fi "
+"  󰚩 codex …      │  open in running nvim                                │ariants          "
+"  󱘖 bridge …     │  run spec                                            │ts               "
+"   nvim …        │  run plan                                            │pro              "
+"   check ?       │  run plan-review                                     │s                "
+"                 │  run tests-red                                       │res              "
+"   detached      │  run implement                                       │-comment         "
+"                 │  run dual-review                                     │app              "
 "                 ╰──────────────────────────────────────────────────────╯                 "
 "                            │     enter  run stage    :  palette    ?  keys    q  quit    "
 "                            │                                                             "

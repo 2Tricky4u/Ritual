@@ -20,7 +20,7 @@ expression: render(&app)
 "   │                                                                                  │   "
 "   │                                                                                  │   "
 "   │                                                                                  │   "
-"   │ f  fix   d  dismiss   o  nvim   e  editor   j/k  next   esc  close               │   "
+"   │ f  fix   d  dismiss   o  nvim   e  editor   j/k  next   esc  close  F targets pla│   "
 "   ╰──────────────────────────────────────────────────────────────────────────────────╯   "
 "                            │                                                             "
 " RITUAL   detached  detached                                                          "
