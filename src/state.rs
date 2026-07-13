@@ -181,7 +181,11 @@ impl RitualDirs {
     /// when committed `.ritual` files (invariants.md, config.toml, specs)
     /// materialize a `.ritual/` inside the worktree checkout.
     pub fn discover(cwd: &Path) -> Self {
-        let work_root = git_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
+        // Both git helpers canonicalize internally, so the worktree check
+        // below compares canonical against canonical; the non-git fallback
+        // canonicalizes here for the same reason.
+        let work_root = git_root(cwd)
+            .unwrap_or_else(|| cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf()));
         if let Some(main_root) = git_main_root(cwd)
             && main_root != work_root
             && main_root.join(".ritual").is_dir()
@@ -195,7 +199,7 @@ impl RitualDirs {
         while let Some(d) = dir {
             if d.join(".ritual").is_dir() {
                 return Self {
-                    project_root: d.to_path_buf(),
+                    project_root: d.canonicalize().unwrap_or_else(|_| d.to_path_buf()),
                     work_root,
                 };
             }
@@ -280,12 +284,19 @@ pub fn git_main_root(dir: &Path) -> Option<PathBuf> {
         return None;
     }
     let common = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    // From a repo SUBDIRECTORY git returns a RELATIVE common dir ("../.git"):
+    // joining leaves a `subdir/..` in the root, and every derived path
+    // (plan/spec files) inherits it — which broke the doc-edit tool-lock
+    // rules, since the Edit tool reports NORMALIZED paths that never match
+    // an unnormalized rule. Canonicalize at the source.
     let common_path = if Path::new(&common).is_absolute() {
         PathBuf::from(common)
     } else {
         dir.join(common)
     };
-    common_path.parent().map(|p| p.to_path_buf())
+    common_path
+        .parent()
+        .map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()))
 }
 
 /// branch -> checkout dir for every worktree of this repo.
@@ -324,7 +335,10 @@ pub fn git_root(dir: &Path) -> Option<PathBuf> {
         return None;
     }
     let s = String::from_utf8(out.stdout).ok()?;
-    Some(PathBuf::from(s.trim()))
+    // Canonicalize so symlinked cwds compare equal to git_main_root's
+    // canonicalized output (discover's worktree check relies on it).
+    let p = PathBuf::from(s.trim());
+    Some(p.canonicalize().unwrap_or(p))
 }
 
 pub fn current_branch(dir: &Path) -> Option<String> {
@@ -399,6 +413,77 @@ mod tests {
             dirs.project_root.canonicalize().unwrap(),
             tmp.path().canonicalize().unwrap()
         );
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    }
+
+    fn no_parent_dirs(p: &Path) -> bool {
+        !p.components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    }
+
+    #[test]
+    fn git_main_root_from_subdir_is_normalized() {
+        // From a repo subdir, `--git-common-dir` is RELATIVE ("../.git");
+        // the naive join left `sub/..` in the root, which poisoned the
+        // doc-edit tool-lock rules (rules never matched normalized paths).
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q", "-b", "main"]);
+        let deep = tmp.path().join("sub/deep");
+        std::fs::create_dir_all(&deep).unwrap();
+        let root = git_main_root(&deep).expect("in a repo");
+        assert!(no_parent_dirs(&root), "unnormalized root: {root:?}");
+        assert_eq!(root, tmp.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn discover_from_repo_subdir_yields_normalized_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q", "-b", "main"]);
+        std::fs::create_dir_all(tmp.path().join(".ritual")).unwrap();
+        let deep = tmp.path().join("sub/deep");
+        std::fs::create_dir_all(&deep).unwrap();
+        let dirs = RitualDirs::discover(&deep);
+        assert!(
+            no_parent_dirs(&dirs.project_root),
+            "{:?}",
+            dirs.project_root
+        );
+        assert!(no_parent_dirs(&dirs.work_root), "{:?}", dirs.work_root);
+        // The exact path class that broke the Edit(//…) permission rule.
+        assert!(no_parent_dirs(&dirs.plan_file("main")));
+    }
+
+    #[test]
+    fn discover_prefers_main_root_across_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "-q", "-b", "main"]);
+        std::fs::create_dir_all(main.join(".ritual")).unwrap();
+        std::fs::write(main.join("a.txt"), "a").unwrap();
+        git(&main, &["add", "."]);
+        git(&main, &["commit", "-qm", "init"]);
+        let wt = tmp.path().join("wt");
+        git(
+            &main,
+            &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "feat"],
+        );
+        let dirs = RitualDirs::discover(&wt);
+        assert_eq!(dirs.project_root, main.canonicalize().unwrap());
+        assert_eq!(dirs.work_root, wt.canonicalize().unwrap());
+        assert!(no_parent_dirs(&dirs.project_root));
     }
 
     #[test]
