@@ -1,5 +1,13 @@
 # ritual roadmap
 
+> **Status (v0.9.0, 2026-07-13)**: v0.6–v0.9 shipped the findings-triage
+> cycle — finding detail overlay, claude-scoped plan fix (`F`) with a
+> mechanical gate + revert, triage → one-run batch apply with per-finding
+> ANSWERS verdicts, recommendation chips + `t` one-touch triage, decoded
+> failure reasons — and the in-TUI settings editor (`S`: effective values +
+> source tags, comment-preserving project-config writes, transactional
+> live-apply). Per-release detail lives in the README Roadmap.
+>
 > **Status (v0.5.0, 2026-07-12): the evidence-backed quality batch shipped**:
 > mutation-kill gate (`mutants`), secrets gate (gitleaks, blocking), invariants
 > constitution, review memory (`lessons`), findings snippets, `costs`

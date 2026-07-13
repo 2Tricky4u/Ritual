@@ -323,6 +323,32 @@ or pin one: `nvim_server = "/path/to/socket"`, or launch with
   SHA-256 hash-chained JSONL, the compliance-shaped view of the
   same history the chain already protects)
 
+## Settings editor (S)
+
+`S` opens an in-TUI editor over the practical config knobs: budgets,
+model/effort routing, theme/icons/transparency, notifications,
+redaction, offline, base ref, check timeout. Each row shows the
+EFFECTIVE value after layering plus its source — `(default)`,
+`(user)` = `~/.config/ritual/`, `(project)` = `.ritual/config.toml`,
+`(flag)` = a CLI flag shadows it this session.
+
+- `enter` on a toggle/choice flips or cycles it in place; on a
+  number/text row it opens an inline edit line (prefilled, validated —
+  a bad value keeps the prompt open with the error).
+- Empty input on an optional key CLEARS it from the project file so
+  the layer below shows through; optional choices (per-stage effort)
+  unset by cycling past their last value.
+- Every change writes the PROJECT config with your comments and
+  formatting preserved, then live-applies (theme included). Writes are
+  transactional: if the reloaded config were invalid, the file is
+  restored byte-for-byte.
+- Command seams (`claude_cmd`, …), `[keys]`, `[commands]`, and the
+  sub-tool tables (`[mutants]`, `[secrets]`, …) stay file-only on
+  purpose.
+- Worktrees share one `.ritual/`: sibling instances pick a change up
+  on their next launch. `--theme`/`--ascii` win for the session; the
+  written value takes over on the next flagless launch.
+
 ## Config
 
 Layered: defaults ← `~/.config/ritual/config.toml` ←
