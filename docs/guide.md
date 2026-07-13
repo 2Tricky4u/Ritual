@@ -47,9 +47,9 @@ suggestions.
 ## Tabs
 
 - **1 live**: agent stream; greeter when idle
-- **2 findings**: j/k select · enter details · f fix · d dismiss ·
-  F claude-fix (plan) · u revert · v resolved · `/` filter ·
-  e editor · o nvim · Q quickfix
+- **2 findings**: j/k select · enter details · f fix · d dismiss(+reason) ·
+  F queue/apply claude answers · m queue manual · u revert batch ·
+  v resolved · `/` filter · e editor · o nvim · Q quickfix/manual pass
 - **3 history** shows past runs: cost, tokens, duration · `/` filter
 - **4 plan**: rendered plan.md (falls back to spec)
 - **5 guide**: this page
@@ -106,26 +106,40 @@ the one document you targeted (enforced at the permission layer).
    The selected finding shows its **snippet**: the 1-3 verbatim source
    lines the reviewer anchored it to. `⟨enter⟩` opens the **detail
    overlay**: full scenario, snippet, sources, verdict, and the actions.
-3. `Q` sends all locations to nvim's quickfix; `o` opens the selected
-   one in your **running** nvim (auto-discovers the server socket);
-   `e` uses $EDITOR. Plan-review findings anchor to their plan step:
-   `o`/`e` jump into plan.md at the referenced step.
-4. **Plan findings can fix themselves**: `⟨F⟩` spawns one headless
-   claude run that reads the whole plan, spec, and invariants but edits
-   ONLY the section the finding's step maps into. The scoping is
-   enforced mechanically — after the run, a line-diff gate verifies
-   every change stayed inside that section and **auto-reverts leaks**
-   from the undo stack. A confined fix auto-marks the finding fixed
-   (`⟨u⟩` reverts it and reopens the finding); a run that decides the
-   correct fix needs broader changes makes no edit and says so. Runs
-   are capped by `budget_finding_fix_usd` and appear as `plan-fix` in
-   `ritual costs`.
-5. Fix code findings, re-run `C`, then **close the loop**: `⟨f⟩` marks
+3. `o` opens the selected finding in your **running** nvim
+   (auto-discovers the server socket); `e` uses $EDITOR. Plan-review
+   findings anchor to their plan step: `o`/`e` jump into plan.md at the
+   referenced step. If a later edit moves the plan under a finding, it
+   gets an **`⚓` anchor-lost** marker instead of silently mis-anchoring.
+4. **Answer every finding first, then correct the plan ONCE.** Fixing
+   findings one at a time mutates the plan under the remaining ones —
+   anchors rot and n runs cost n×. Triage instead: `⟨F⟩` queues a plan
+   finding for claude (**⚑A**, toggle), `⟨m⟩` queues any finding as
+   yours to fix (**⚑M**), `⟨d⟩` dismisses — with an optional one-line
+   **reason** (Enter on empty = plain dismiss) that feeds the review
+   memory. The statusline counts your queue (`⚑N`).
+5. **Apply**: `⟨F⟩` on a queued finding (or `:` → "findings: apply
+   answers") confirms and spawns **one** headless run answering ALL
+   queued findings against a single plan snapshot: it reads the whole
+   plan, spec, and invariants, edits ONLY the queued findings' sections,
+   and must end with a per-finding `ANSWERS:` verdict block. The union
+   of those sections is enforced **mechanically** — a leaked edit
+   auto-reverts wholesale, queue intact. Per finding: `FIXED`
+   auto-marks; `DECLINED <reason>` returns it to triage with the reason
+   shown (an unchanged plan defeats any FIXED claim). `⟨u⟩` reverts the
+   whole applied batch atomically — plan restored, its fixed findings
+   reopened AND requeued. One run = one `plan-fix` row in `ritual
+   costs`, capped by `budget_finding_fix_usd` (per run, not per
+   finding).
+6. **The manual pass**: with a ⚑M queue, `Q` sends ONLY those findings
+   to nvim's quickfix; work through them and `⟨f⟩` each as done. (`Q`
+   with no manual queue sends every locatable finding, as before.)
+7. Fix code findings, re-run `C`, then **close the loop**: `⟨f⟩` marks
    the selected finding fixed, `⟨d⟩` dismisses it (either toggles back
    on re-press), writing into the findings JSON. Resolved findings
    recede from the list; `⟨v⟩` shows/hides them (`ritual findings
    --all` on the CLI).
-6. On a GitHub project, `ritual pr-comment` posts the open findings to
+8. On a GitHub project, `ritual pr-comment` posts the open findings to
    the branch's PR (redacted; `--inline` adds file:line review comments).
 
 The exit-code contract follows the lifecycle: a confirmed critical
@@ -305,7 +319,7 @@ transparency = true           # terminal bg shows through
 redaction = true
 budget_daily_usd = 15.0
 budget_doc_chat_usd = 0.50    # per spec/plan chat message
-budget_finding_fix_usd = 1.0  # per F claude plan fix
+budget_finding_fix_usd = 1.0  # per F-apply batch run (not per finding)
 check_timeout_secs = 600
 offline = false               # block runs (metered/plane mode)
 nvim_server = ""              # empty = auto-discover

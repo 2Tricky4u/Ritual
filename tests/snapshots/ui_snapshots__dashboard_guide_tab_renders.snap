@@ -4,7 +4,7 @@ expression: render(&app)
 ---
 "                            │   live    findings    history    plan   guide             "
 "  PIPELINE ──────────────── │─────────────────────────────────────────────────────────────"
-"  ○ spec                    │ 󰲣 Why this shape                                     5/226  "
+"  ○ spec                    │ 󰲣 Why this shape                                     5/228  "
 "  ○ plan                    │                                                             "
 "  ○ plan-review             │ Research verdict behind the workflow: external feedback     "
 "  ○ tests-red               │ (tests, execution, checks) is the quality engine, not model "
