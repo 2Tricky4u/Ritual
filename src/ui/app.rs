@@ -186,6 +186,8 @@ pub struct App {
     pub plan_scroll: usize,
     pub guide_scroll: usize,
     pub chat: Option<ChatState>,
+    /// The `S` settings editor overlay (None = closed).
+    pub settings: Option<SettingsState>,
 
     findings_before: Vec<String>,
     run_task: Option<JoinHandle<()>>,
@@ -207,6 +209,10 @@ pub struct App {
     /// Open plan findings whose step no longer locates (path, pos): shown as
     /// ⚓ instead of silently mis-anchoring. Rebuilt on every artifact reload.
     anchor_lost: std::collections::HashSet<(std::path::PathBuf, usize)>,
+    /// CLI --theme/--ascii, stashed so a settings write can re-run the full
+    /// layered Config::load with the flags still winning.
+    theme_flag: Option<String>,
+    ascii_flag: bool,
 }
 
 /// Command palette state: typed filter + selection over matching entries.
@@ -214,6 +220,25 @@ pub struct App {
 pub struct PaletteState {
     pub input: String,
     pub selected: usize,
+}
+
+/// The `S` settings editor: a cursor over `settings::CATALOG` plus an
+/// optional inline edit line. Writes are transactional (see apply_setting).
+#[derive(Debug, Clone, Default)]
+pub struct SettingsState {
+    pub selected: usize,
+    pub edit: Option<SettingsEdit>,
+    /// Per-catalog-row source tags (default/user/project/flag), refreshed on
+    /// open and after every write — cheap to cache, wasteful per frame.
+    pub sources: Vec<&'static str>,
+}
+
+/// Inline edit line for a numeric/text setting (Enter on a non-toggle row).
+#[derive(Debug, Clone, Default)]
+pub struct SettingsEdit {
+    pub input: String,
+    /// Validation error shown under the input; the prompt stays open.
+    pub error: Option<String>,
 }
 
 /// One entry in the chat transcript.
@@ -328,6 +353,7 @@ impl App {
             plan_scroll: 0,
             guide_scroll: 0,
             chat: None,
+            settings: None,
             findings_before: Vec::new(),
             run_task: None,
             current_run_id: None,
@@ -342,6 +368,8 @@ impl App {
             fix_ctx: None,
             last_fix: None,
             anchor_lost: std::collections::HashSet::new(),
+            theme_flag: None,
+            ascii_flag: false,
         };
         app.recompute_anchors();
         Ok(app)
@@ -623,6 +651,10 @@ impl App {
             self.show_help = false;
             return;
         }
+        if self.settings.is_some() {
+            self.settings_input(key.code);
+            return;
+        }
         if self.palette.is_some() {
             self.palette_input(key.code, tx);
             return;
@@ -817,6 +849,7 @@ impl App {
             Action::FindingsApply => self.findings_apply_from_palette(tx),
             Action::TriageAll => self.open_triage_confirm(),
             Action::DocUndo => self.doc_undo(),
+            Action::Settings => self.toggle_settings(),
             Action::ToggleResolved => {
                 if self.tab == Tab::Findings {
                     self.show_resolved = !self.show_resolved;
@@ -2082,6 +2115,164 @@ impl App {
 
     /// `d`: open the one-line reason prompt for the selected finding.
     /// Already-dismissed findings toggle straight back to pending (no prompt).
+    /// `S`: open/close the settings editor overlay (any tab, like help).
+    fn toggle_settings(&mut self) {
+        self.settings = match self.settings {
+            Some(_) => None,
+            None => Some(SettingsState {
+                selected: 0,
+                edit: None,
+                sources: self.compute_setting_sources(),
+            }),
+        };
+    }
+
+    /// Per-catalog-row source tags. "flag" marks the two keys a CLI flag
+    /// shadows this session (the write still lands and wins next launch).
+    fn compute_setting_sources(&self) -> Vec<&'static str> {
+        crate::settings::CATALOG
+            .iter()
+            .map(|d| self.setting_source_tag(d.key))
+            .collect()
+    }
+
+    fn setting_source_tag(&self, key: &str) -> &'static str {
+        if (key == "theme" && self.theme_flag.is_some()) || (key == "icons" && self.ascii_flag) {
+            return "flag";
+        }
+        let user = dirs::config_dir().map(|d| d.join("ritual/config.toml"));
+        let project = self.dirs.project_root.join(".ritual/config.toml");
+        crate::settings::source_of(user.as_deref(), &project, key).tag()
+    }
+
+    /// Keys while the settings overlay is up; it consumes everything.
+    fn settings_input(&mut self, code: KeyCode) {
+        let last = crate::settings::CATALOG.len().saturating_sub(1);
+        match code {
+            KeyCode::Esc | KeyCode::Char('S') => self.settings = None,
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(s) = self.settings.as_mut() {
+                    s.selected = (s.selected + 1).min(last);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(s) = self.settings.as_mut() {
+                    s.selected = s.selected.saturating_sub(1);
+                }
+            }
+            KeyCode::Char('g') => {
+                if let Some(s) = self.settings.as_mut() {
+                    s.selected = 0;
+                }
+            }
+            KeyCode::Char('G') => {
+                if let Some(s) = self.settings.as_mut() {
+                    s.selected = last;
+                }
+            }
+            KeyCode::Enter => self.settings_activate(),
+            _ => {}
+        }
+    }
+
+    /// Enter on a settings row: toggles/cycles write immediately; numeric and
+    /// text kinds open the inline edit prompt (P3).
+    fn settings_activate(&mut self) {
+        use crate::settings::{SettingKind, SettingValue};
+        let Some(idx) = self.settings.as_ref().map(|s| s.selected) else {
+            return;
+        };
+        let Some(def) = crate::settings::CATALOG.get(idx) else {
+            return;
+        };
+        let current = (def.get)(&self.cfg);
+        match def.kind {
+            SettingKind::Bool => {
+                let now = current.as_deref() == Some("true");
+                self.apply_setting(idx, Some(SettingValue::Bool(!now)));
+            }
+            SettingKind::Enum(variants) => {
+                let pos = current
+                    .as_deref()
+                    .and_then(|cur| variants.iter().position(|v| *v == cur));
+                let next = variants[pos.map_or(0, |p| (p + 1) % variants.len())];
+                self.apply_setting(idx, Some(SettingValue::Str(next.to_string())));
+            }
+            SettingKind::OptEnum(variants) => {
+                // variants… → unset → first again.
+                let pos = current
+                    .as_deref()
+                    .and_then(|cur| variants.iter().position(|v| *v == cur));
+                match pos {
+                    Some(p) if p + 1 < variants.len() => {
+                        self.apply_setting(idx, Some(SettingValue::Str(variants[p + 1].into())));
+                    }
+                    Some(_) => self.apply_setting(idx, None),
+                    None => self.apply_setting(idx, Some(SettingValue::Str(variants[0].into()))),
+                }
+            }
+            _ => {
+                self.status_msg = Some("text editing lands with the edit prompt".into());
+            }
+        }
+    }
+
+    /// One settings write, transactionally: write the project config, re-run
+    /// the full layered Config::load with the stashed CLI flags, swap it in —
+    /// or restore the previous bytes. The file on disk always passes
+    /// Config::load.
+    fn apply_setting(&mut self, idx: usize, value: Option<crate::settings::SettingValue>) {
+        let Some(def) = crate::settings::CATALOG.get(idx) else {
+            return;
+        };
+        let path = self.dirs.project_root.join(".ritual/config.toml");
+        let prev = std::fs::read_to_string(&path).ok(); // None = file absent
+        if let Err(e) = crate::settings::write_setting(&path, def.key, value.as_ref()) {
+            self.status_msg = Some(format!("could not write config: {e:#}"));
+            return;
+        }
+        match Config::load(
+            &self.dirs.project_root,
+            self.theme_flag.as_deref(),
+            self.ascii_flag,
+        ) {
+            Ok(cfg) => {
+                self.cfg = cfg;
+                if let Some(s) = self.settings.as_mut() {
+                    s.sources = Vec::new(); // rebuilt below, after the borrow ends
+                }
+                let sources = self.compute_setting_sources();
+                let mut msg = match &value {
+                    Some(v) => format!("set {} = {v} (project)", def.key),
+                    None => {
+                        let effective = (def.get)(&self.cfg).unwrap_or_else(|| "unset".into());
+                        let source = sources.get(idx).copied().unwrap_or("default");
+                        format!("cleared {} (project) → now {effective} ({source})", def.key)
+                    }
+                };
+                if (def.key == "theme" && self.theme_flag.is_some())
+                    || (def.key == "icons" && self.ascii_flag)
+                {
+                    msg.push_str(" — a CLI flag overrides this session");
+                }
+                if let Some(s) = self.settings.as_mut() {
+                    s.sources = sources;
+                }
+                self.status_msg = Some(msg);
+            }
+            Err(e) => {
+                let restore = match prev {
+                    Some(text) => std::fs::write(&path, text),
+                    None => std::fs::remove_file(&path),
+                };
+                self.status_msg = Some(match restore {
+                    Ok(()) => format!("config rejected, reverted: {e:#}"),
+                    Err(re) => format!("config rejected AND revert failed ({re}): {e:#}"),
+                });
+            }
+        }
+    }
+
     fn open_dismiss_prompt(&mut self) {
         if self.tab != Tab::Findings {
             self.status_msg = Some("dismiss works on the findings tab (2)".into());
@@ -3142,12 +3333,19 @@ impl InputTask {
 }
 
 /// The main TUI entry point.
-pub async fn run(cfg: Config, dirs: RitualDirs) -> Result<()> {
+pub async fn run(
+    cfg: Config,
+    dirs: RitualDirs,
+    theme_flag: Option<String>,
+    ascii_flag: bool,
+) -> Result<()> {
     anyhow::ensure!(dirs.exists(), "no .ritual/ here; run `ritual init` first");
     let mut term = Term::enter()?;
     let (tx, mut rx) = mpsc::channel::<AppMsg>(512);
 
     let mut app = App::new(cfg, dirs).context("loading project state")?;
+    app.theme_flag = theme_flag;
+    app.ascii_flag = ascii_flag;
     crate::agents_status::spawn_probe(&app.cfg, tx.clone());
 
     // Finalize stages whose runs completed while nobody was watching, then
@@ -3515,6 +3713,121 @@ mod tests {
         app.dispatch(Action::FindingDismiss, &tx);
         assert!(app.dismiss_prompt.is_none());
         assert!(seeded_json(&app).contains(r#""action": "pending""#));
+    }
+
+    fn catalog_idx(key: &str) -> usize {
+        crate::settings::CATALOG
+            .iter()
+            .position(|d| d.key == key)
+            .expect(key)
+    }
+
+    fn press(app: &mut App, tx: &mpsc::Sender<AppMsg>, code: KeyCode) {
+        app.on_input(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), tx);
+    }
+
+    #[test]
+    fn settings_overlay_opens_navigates_and_closes() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.dispatch(Action::Settings, &tx);
+        assert!(app.settings.is_some(), "S opens the settings overlay");
+        // j/k clamp at both ends.
+        press(&mut app, &tx, KeyCode::Char('k'));
+        assert_eq!(app.settings.as_ref().unwrap().selected, 0);
+        for _ in 0..500 {
+            press(&mut app, &tx, KeyCode::Char('j'));
+        }
+        assert_eq!(
+            app.settings.as_ref().unwrap().selected,
+            crate::settings::CATALOG.len() - 1
+        );
+        press(&mut app, &tx, KeyCode::Esc);
+        assert!(app.settings.is_none(), "esc closes");
+        // S toggles: open again via dispatch, S-as-toggle closes.
+        app.dispatch(Action::Settings, &tx);
+        app.dispatch(Action::Settings, &tx);
+        assert!(app.settings.is_none());
+    }
+
+    #[test]
+    fn settings_bool_enter_writes_project_config_and_live_applies() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.dispatch(Action::Settings, &tx);
+        let idx = catalog_idx("notifications");
+        app.settings.as_mut().unwrap().selected = idx;
+        press(&mut app, &tx, KeyCode::Enter);
+        let path = app.dirs.project_root.join(".ritual/config.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("notifications = false"), "{text}");
+        assert!(!app.cfg.notifications, "cfg swapped live");
+        assert!(app.status_msg.as_deref().unwrap().contains("(project)"));
+        assert_eq!(
+            app.settings.as_ref().unwrap().sources[idx],
+            "project",
+            "source tag refreshed after the write"
+        );
+    }
+
+    #[test]
+    fn settings_enum_cycle_rethemes_live_and_wraps() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.dispatch(Action::Settings, &tx);
+        app.settings.as_mut().unwrap().selected = catalog_idx("theme");
+        press(&mut app, &tx, KeyCode::Enter);
+        assert_eq!(app.cfg.theme_name, "tokyonight", "live re-theme");
+        let path = app.dirs.project_root.join(".ritual/config.toml");
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("theme = \"tokyonight\"")
+        );
+        press(&mut app, &tx, KeyCode::Enter);
+        assert_eq!(app.cfg.theme_name, "eldritch", "cycle wraps");
+    }
+
+    #[test]
+    fn settings_optenum_cycles_through_variants_to_unset() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.dispatch(Action::Settings, &tx);
+        app.settings.as_mut().unwrap().selected = catalog_idx("effort.plan");
+        press(&mut app, &tx, KeyCode::Enter);
+        assert_eq!(app.cfg.effort.get("plan").map(String::as_str), Some("low"));
+        let path = app.dirs.project_root.join(".ritual/config.toml");
+        assert!(std::fs::read_to_string(&path).unwrap().contains("[effort]"));
+        // low → medium → high → xhigh → unset.
+        for _ in 0..4 {
+            press(&mut app, &tx, KeyCode::Enter);
+        }
+        assert!(
+            !app.cfg.effort.contains_key("plan"),
+            "cycling past the last variant clears the key"
+        );
+        assert!(
+            !std::fs::read_to_string(&path).unwrap().contains("plan ="),
+            "key removed from the project file"
+        );
+    }
+
+    #[test]
+    fn settings_apply_reverts_file_when_reload_fails() {
+        let (_t, mut app, tx, _rx) = test_app();
+        let path = app.dirs.project_root.join(".ritual/config.toml");
+        std::fs::write(&path, "# keep me\nbase_ref = \"develop\"\n").unwrap();
+        app.dispatch(Action::Settings, &tx);
+        let before = std::fs::read_to_string(&path).unwrap();
+        // Bypass validate() to hit the transaction's revert path: the write
+        // lands, Config::load rejects the unknown theme, bytes come back.
+        app.apply_setting(
+            catalog_idx("theme"),
+            Some(crate::settings::SettingValue::Str("no-such-theme".into())),
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "file restored byte-exact"
+        );
+        assert_eq!(app.cfg.theme_name, "eldritch", "cfg unchanged");
+        assert!(app.status_msg.as_deref().unwrap().contains("reverted"));
     }
 
     #[test]

@@ -45,6 +45,7 @@ pub enum Action {
     TriageAll,
     DocUndo,
     ToggleResolved,
+    Settings,
     RunStage(StageId),
     /// Re-run a failed stage with `[retry] models[i]` (palette-only, dynamic).
     RetryStage(StageId, usize),
@@ -120,6 +121,7 @@ pub const ACTIONS: &[(&str, Action, &str)] = &[
         Action::ToggleResolved,
         "findings: show/hide resolved",
     ),
+    ("settings", Action::Settings, "settings: edit config"),
 ];
 
 pub fn action_by_name(name: &str) -> Option<Action> {
@@ -234,6 +236,7 @@ impl Default for Keymap {
             ("t", "triage-all"),
             ("u", "doc-undo"),
             ("v", "toggle-resolved"),
+            ("S", "settings"),
         ];
         let map = defaults
             .iter()
@@ -356,6 +359,10 @@ mod tests {
         assert_eq!(
             km.resolve(KeyCode::Char('t'), KeyModifiers::NONE),
             Some(Action::TriageAll)
+        );
+        assert_eq!(
+            km.resolve(KeyCode::Char('S'), KeyModifiers::SHIFT),
+            Some(Action::Settings)
         );
         // findings-apply is palette-only: no default chord.
         assert!(!km.map.values().any(|a| *a == Action::FindingsApply));

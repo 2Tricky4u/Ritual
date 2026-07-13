@@ -240,6 +240,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.triage_confirm.is_some() {
         draw_triage_confirm(f, app);
     }
+    if app.settings.is_some() {
+        draw_settings(f, app);
+    }
     if app.show_help {
         draw_help(f, t);
     }
@@ -1708,6 +1711,96 @@ fn draw_help(f: &mut Frame, t: &Theme) {
             ]));
         }
         lines.push(Line::default());
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The `S` settings editor: grouped catalog rows with effective values and
+/// dim source tags. Toggles/cycles apply on Enter; numeric/text rows open an
+/// inline edit line at the bottom of the panel.
+fn draw_settings(f: &mut Frame, app: &App) {
+    let t = &app.cfg.theme;
+    let Some(s) = &app.settings else { return };
+    let catalog = crate::settings::CATALOG;
+
+    // Display rows: a group header line wherever the group changes; remember
+    // which display row each catalog entry lands on for the scroll window.
+    let mut rows: Vec<(Option<usize>, &'static str)> = Vec::new();
+    let mut last_group = "";
+    for (i, def) in catalog.iter().enumerate() {
+        if def.group != last_group {
+            rows.push((None, def.group));
+            last_group = def.group;
+        }
+        rows.push((Some(i), def.group));
+    }
+
+    let want_h = rows.len() as u16 + 3; // top pad + rows + borders
+    let area = centered_rect(
+        f.area(),
+        66.min(f.area().width.saturating_sub(2)).max(1),
+        want_h.min(f.area().height.saturating_sub(2)).max(1),
+    );
+    let inner = float_panel(f, t, area, "settings — project config");
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let sel_row = rows
+        .iter()
+        .position(|(ci, _)| *ci == Some(s.selected))
+        .unwrap_or(0);
+    let visible = (inner.height as usize).saturating_sub(1); // minus top pad
+    let first = sel_row.saturating_sub(visible.saturating_sub(1));
+
+    let mut lines = vec![Line::default()];
+    for (ci, group) in rows.iter().skip(first).take(visible) {
+        match ci {
+            None => {
+                lines.push(Line::from(Span::styled(
+                    format!(" {group}"),
+                    Style::default()
+                        .fg(t.grey_fg())
+                        .add_modifier(Modifier::BOLD),
+                )));
+            }
+            Some(i) => {
+                let def = &catalog[*i];
+                let value = (def.get)(&app.cfg);
+                let tag = s.sources.get(*i).copied().unwrap_or("default");
+                let selected = *i == s.selected;
+                let bg = if selected {
+                    t.bg_selection()
+                } else {
+                    t.bg_float()
+                };
+                let label_style = if selected {
+                    Style::default()
+                        .fg(t.on_accent())
+                        .bg(bg)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.muted())
+                };
+                let value_style = if value.is_some() {
+                    Style::default().fg(t.fg()).bg(bg)
+                } else {
+                    Style::default().fg(t.comment()).bg(bg)
+                };
+                let left = vec![Span::styled(format!("  {}", def.label), label_style)];
+                let chip = vec![
+                    Span::styled(value.unwrap_or_else(|| "—".into()), value_style),
+                    Span::styled(
+                        format!(" ({tag}) "),
+                        Style::default()
+                            .fg(t.comment())
+                            .bg(bg)
+                            .add_modifier(Modifier::DIM),
+                    ),
+                ];
+                lines.push(fill_row_chip(left, chip, inner.width, bg));
+            }
+        }
     }
     f.render_widget(Paragraph::new(lines), inner);
 }

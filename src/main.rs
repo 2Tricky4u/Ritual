@@ -17,7 +17,7 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
-            rt.block_on(ui::app::run(cfg, dirs))?;
+            rt.block_on(ui::app::run(cfg, dirs, cli.theme.clone(), cli.ascii))?;
         }
         Some(Command::Init { force, skills }) => {
             let report = scaffold::init(&dirs.project_root, force)?;
