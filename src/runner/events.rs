@@ -30,6 +30,9 @@ pub enum AgentEvent {
     Completed {
         ok: bool,
         result_text: Option<String>,
+        /// Machine failure class on error (claude result `subtype`, e.g.
+        /// "error_max_budget_usd"; codex `error.kind`). None on success.
+        error_subtype: Option<String>,
         total_cost_usd: Option<f64>,
         usage: Option<Usage>,
         num_turns: Option<u32>,

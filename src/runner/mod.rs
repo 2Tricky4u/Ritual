@@ -427,6 +427,7 @@ fn harvest(meta: &mut RunMeta, ev: &AgentEvent) {
         AgentEvent::Completed {
             ok,
             result_text,
+            error_subtype,
             total_cost_usd,
             usage,
             num_turns,
@@ -444,6 +445,7 @@ fn harvest(meta: &mut RunMeta, ev: &AgentEvent) {
                         .clone()
                         .unwrap_or_else(|| "agent reported failure".into()),
                 );
+                meta.error_subtype = error_subtype.clone();
             }
         }
         _ => {}

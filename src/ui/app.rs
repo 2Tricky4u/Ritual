@@ -50,9 +50,9 @@ pub enum AppMsg {
     ChatAgent(Box<AgentEvent>),
     /// A chat edit finished.
     ChatExited(Box<Result<RunOutcome>>),
-    /// A claude plan fix finished; the second field is the run's final
-    /// assistant text (the ANSWERS block source), captured off the tail.
-    FixExited(Box<Result<RunOutcome>>, Option<String>),
+    /// A claude plan fix finished; the tail carries the run's final
+    /// assistant text (the ANSWERS block source) plus last-words context.
+    FixExited(Box<Result<RunOutcome>>, FixTail),
     CheckDone {
         ok: bool,
         tail: String,
@@ -60,6 +60,15 @@ pub enum AppMsg {
     AgentsStatus(Box<crate::agents_status::AgentsStatus>),
     FileChanged,
     Tick,
+}
+
+/// What the fix tail saw: the final result text (where the ANSWERS block
+/// lives) and the last assistant prose (context when a failure has no
+/// recorded reason at all).
+#[derive(Debug, Default)]
+pub struct FixTail {
+    pub result_text: Option<String>,
+    pub last_text: Option<String>,
 }
 
 /// Deferred request to hand the terminal to a child process.
@@ -537,9 +546,7 @@ impl App {
                 }
             }
             AppMsg::ChatExited(outcome) => self.on_chat_exited(*outcome, tx),
-            AppMsg::FixExited(outcome, result_text) => {
-                self.on_fix_exited(*outcome, result_text, tx)
-            }
+            AppMsg::FixExited(outcome, tail) => self.on_fix_exited(*outcome, tail, tx),
             AppMsg::CheckDone { ok, tail } => {
                 self.check = if ok {
                     CheckState::Green
@@ -1778,12 +1785,20 @@ impl App {
                             _ => "failed",
                         }
                     ),
-                    &format!(
-                        "{}: {} new findings, ${:.2}",
-                        self.branch,
-                        new_findings.len(),
-                        out.meta.total_cost_usd.unwrap_or(0.0)
-                    ),
+                    &if status == StageStatus::Failed {
+                        format!(
+                            "{}: {}",
+                            self.branch,
+                            crate::history::decode_failure(&out.meta)
+                        )
+                    } else {
+                        format!(
+                            "{}: {} new findings, ${:.2}",
+                            self.branch,
+                            new_findings.len(),
+                            out.meta.total_cost_usd.unwrap_or(0.0)
+                        )
+                    },
                 );
                 self.status_msg = Some(match status {
                     StageStatus::Done => format!(
@@ -1804,7 +1819,7 @@ impl App {
                     _ => format!(
                         "{} failed: {}",
                         stage.label(),
-                        out.meta.error.as_deref().unwrap_or("see live tab")
+                        crate::history::decode_failure(&out.meta)
                     ),
                 });
                 self.set_stage(stage, status, Some(out.meta.run_id.clone()));
@@ -2612,18 +2627,27 @@ impl App {
         self.fix_task = Some(tokio::spawn(async move {
             let (etx, mut erx) = mpsc::channel::<AgentEvent>(256);
             let watch = tokio::spawn(async move {
-                let mut last: Option<String> = None;
+                let mut tail = FixTail::default();
                 while let Some(ev) = erx.recv().await {
-                    if let AgentEvent::Completed { result_text, .. } = ev {
-                        last = result_text; // last Completed wins
+                    match ev {
+                        AgentEvent::Completed { result_text, .. } => {
+                            tail.result_text = result_text; // last Completed wins
+                        }
+                        AgentEvent::Text { text } if !text.trim().is_empty() => {
+                            // Char-safe ~200-char tail: the agent's last words.
+                            let t = text.trim();
+                            let skip = t.chars().count().saturating_sub(200);
+                            tail.last_text = Some(t.chars().skip(skip).collect());
+                        }
+                        _ => {}
                     }
                 }
-                last
+                tail
             });
             let outcome = runner::tail_run(&dirs, agent, &run_id, etx).await;
-            let result_text = watch.await.unwrap_or(None);
+            let tail = watch.await.unwrap_or_default();
             let _ = tx_done
-                .send(AppMsg::FixExited(Box::new(outcome), result_text))
+                .send(AppMsg::FixExited(Box::new(outcome), tail))
                 .await;
         }));
     }
@@ -2635,11 +2659,11 @@ impl App {
     fn on_fix_exited(
         &mut self,
         outcome: Result<RunOutcome>,
-        result_text: Option<String>,
+        tail: FixTail,
         tx: &mpsc::Sender<AppMsg>,
     ) {
         self.fix_task = None;
-        self.current_fix_run_id = None;
+        let run_id = self.current_fix_run_id.take().unwrap_or_default();
         let Some(ctx) = self.fix_ctx.take() else {
             return;
         };
@@ -2656,20 +2680,29 @@ impl App {
             }
             Err(e) => self.status_msg = Some(format!("plan-fix failed: {e:#}")),
             Ok(o) if !o.meta.ok => {
+                let mut reason = crate::history::decode_failure(&o.meta);
+                // Nothing recorded at all? The agent's last words are the
+                // only context there is.
+                if reason.starts_with("agent reported failure")
+                    && let Some(last) = tail.last_text.as_deref()
+                {
+                    reason = format!("{reason} · last: \"{last}\"");
+                }
                 if changed {
                     let _ = crate::undo::undo(&self.dirs, &ctx.slug, plan_label, &ctx.plan_path);
                     self.reload_artifacts();
-                    self.status_msg = Some("plan-fix failed mid-edit; reverted".into());
+                    self.status_msg =
+                        Some(format!("plan-fix failed mid-edit; reverted — {reason}"));
                 } else {
                     self.status_msg = Some(format!(
-                        "plan-fix failed{}",
-                        o.meta
-                            .error
-                            .as_deref()
-                            .map(|e| format!(": {e}"))
-                            .unwrap_or_default()
+                        "plan-fix failed: {reason} · ritual attach {run_id}"
                     ));
                 }
+                crate::notify::notify(
+                    self.cfg.notifications,
+                    "ritual: plan-fix failed",
+                    &format!("{}: {reason}", ctx.branch),
+                );
             }
             Ok(o) => {
                 let cost = o.meta.total_cost_usd.unwrap_or(0.0);
@@ -2694,7 +2727,8 @@ impl App {
                     }
                     Some((added, removed)) => {
                         self.reload_artifacts();
-                        let verdicts = result_text
+                        let verdicts = tail
+                            .result_text
                             .as_deref()
                             .map(crate::answers::parse_answers)
                             .unwrap_or_default();
@@ -3500,7 +3534,10 @@ mod tests {
         .unwrap();
         app.on_fix_exited(
             fix_outcome(true, 0.08),
-            Some("ANSWERS:\n#1: FIXED\n#2: DECLINED needs a spec change".into()),
+            FixTail {
+                result_text: Some("ANSWERS:\n#1: FIXED\n#2: DECLINED needs a spec change".into()),
+                ..Default::default()
+            },
             &tx,
         );
         let json = seeded_json(&app);
@@ -3527,7 +3564,10 @@ mod tests {
         std::fs::write(&plan_path, FIX_PLAN.replace("# Plan", "# Plan v2")).unwrap();
         app.on_fix_exited(
             fix_outcome(true, 0.08),
-            Some("ANSWERS:\n#1: FIXED\n#2: FIXED".into()),
+            FixTail {
+                result_text: Some("ANSWERS:\n#1: FIXED\n#2: FIXED".into()),
+                ..Default::default()
+            },
             &tx,
         );
         // Mechanically reverted; the whole queue survives; nothing revertable.
@@ -3549,7 +3589,7 @@ mod tests {
         let plan_path = ctx.plan_path.clone();
         app.fix_ctx = Some(ctx);
         std::fs::write(&plan_path, FIX_PLAN.replace("2. second", "2. improved")).unwrap();
-        app.on_fix_exited(fix_outcome(true, 0.05), None, &tx);
+        app.on_fix_exited(fix_outcome(true, 0.05), FixTail::default(), &tx);
         let json = seeded_json(&app);
         assert!(!json.contains(r#""action": "fixed""#), "{json}");
         assert_eq!(seeded_json(&app).matches("run gave no verdict").count(), 2);
@@ -3568,7 +3608,10 @@ mod tests {
         // No edit at all, but the model CLAIMS it fixed #1.
         app.on_fix_exited(
             fix_outcome(true, 0.03),
-            Some("ANSWERS:\n#1: FIXED\n#2: DECLINED overlaps".into()),
+            FixTail {
+                result_text: Some("ANSWERS:\n#1: FIXED\n#2: DECLINED overlaps".into()),
+                ..Default::default()
+            },
             &tx,
         );
         let json = seeded_json(&app);
@@ -3593,7 +3636,10 @@ mod tests {
         std::fs::write(&plan_path, FIX_PLAN.replace("2. second", "2. improved")).unwrap();
         app.on_fix_exited(
             fix_outcome(true, 0.05),
-            Some("ANSWERS:\n#1: FIXED\n#2: FIXED".into()),
+            FixTail {
+                result_text: Some("ANSWERS:\n#1: FIXED\n#2: FIXED".into()),
+                ..Default::default()
+            },
             &tx,
         );
         let json = seeded_json(&app);
@@ -3613,7 +3659,10 @@ mod tests {
         std::fs::write(&plan_path, FIX_PLAN.replace("2. second", "2. improved")).unwrap();
         app.on_fix_exited(
             fix_outcome(true, 0.05),
-            Some("ANSWERS:\n#1: FIXED\n#2: DECLINED later".into()),
+            FixTail {
+                result_text: Some("ANSWERS:\n#1: FIXED\n#2: DECLINED later".into()),
+                ..Default::default()
+            },
             &tx,
         );
         assert!(app.fix_revertable());
@@ -3640,6 +3689,63 @@ mod tests {
     }
 
     #[test]
+    fn fix_failure_status_names_the_reason_and_run_id() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_fixable(&mut app);
+        let slug = app.slug.clone();
+        let (_cmd, ctx) = app.prepare_findings_apply(&slug).unwrap();
+        app.fix_ctx = Some(ctx);
+        app.current_fix_run_id = Some("20260713T115537337Z-64f67-0-plan-fix".into());
+        // A budget-killed run with denials — today's real failure shape.
+        let outcome = Ok(RunOutcome {
+            meta: RunMeta {
+                ok: false,
+                stage: "plan-fix".into(),
+                error: Some("agent reported failure".into()),
+                error_subtype: Some("error_max_budget_usd".into()),
+                num_turns: Some(8),
+                total_cost_usd: Some(1.26),
+                permission_denials: vec![
+                    serde_json::json!(
+                        {"tool_name":"Edit","tool_input":{"file_path":"/x/plan.md"}}
+                    );
+                    3
+                ],
+                ..Default::default()
+            },
+            archive: std::path::PathBuf::new(),
+        });
+        app.on_fix_exited(outcome, FixTail::default(), &tx);
+        let msg = app.status_msg.clone().unwrap_or_default();
+        assert!(
+            msg.contains("budget cap hit after 8 turns ($1.26 spent)"),
+            "{msg}"
+        );
+        assert!(msg.contains("raise budget_finding_fix_usd"), "{msg}");
+        assert!(msg.contains("3 Edit(s) denied"), "{msg}");
+        assert!(
+            msg.contains("ritual attach 20260713T115537337Z-64f67-0-plan-fix"),
+            "{msg}"
+        );
+        // Queue survives an outright failure.
+        assert_eq!(app.queued_auto().len(), 2);
+
+        // When NOTHING is recorded, the agent's last words are the context.
+        let (_cmd, ctx) = app.prepare_findings_apply(&slug).unwrap();
+        app.fix_ctx = Some(ctx);
+        app.on_fix_exited(
+            fix_outcome(false, 0.01),
+            FixTail {
+                result_text: None,
+                last_text: Some("Let me check the invariants file".into()),
+            },
+            &tx,
+        );
+        let msg = app.status_msg.clone().unwrap_or_default();
+        assert!(msg.contains("Let me check the invariants file"), "{msg}");
+    }
+
+    #[test]
     fn failed_run_mid_edit_reverts_batch() {
         let (_t, mut app, tx, _rx) = test_app();
         seed_fixable(&mut app);
@@ -3648,7 +3754,7 @@ mod tests {
         let plan_path = ctx.plan_path.clone();
         app.fix_ctx = Some(ctx);
         std::fs::write(&plan_path, "half-written garbage\n").unwrap();
-        app.on_fix_exited(fix_outcome(false, 0.01), None, &tx);
+        app.on_fix_exited(fix_outcome(false, 0.01), FixTail::default(), &tx);
         assert_eq!(std::fs::read_to_string(&plan_path).unwrap(), FIX_PLAN);
         assert!(
             app.status_msg

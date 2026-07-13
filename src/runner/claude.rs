@@ -127,12 +127,16 @@ fn parse_result(value: &Value) -> Vec<AgentEvent> {
         cache_read_input_tokens: u64_field(u, "cache_read_input_tokens"),
         cache_creation_input_tokens: u64_field(u, "cache_creation_input_tokens"),
     });
+    let is_error = value
+        .get("is_error")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     vec![AgentEvent::Completed {
-        ok: !value
-            .get("is_error")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
+        ok: !is_error,
         result_text: str_field(value, "result"),
+        // The failure class ("error_max_budget_usd", …) lives in `subtype`;
+        // only meaningful on error — success subtypes are just "success".
+        error_subtype: is_error.then(|| str_field(value, "subtype")).flatten(),
         total_cost_usd: value.get("total_cost_usd").and_then(Value::as_f64),
         usage,
         num_turns: value
@@ -277,6 +281,12 @@ mod tests {
         assert!(events.iter().any(|e| matches!(
             e,
             AgentEvent::ToolResult { is_error: true, summary } if summary.contains("exit 101")
+        )));
+        // The failed result carries its machine failure class.
+        assert!(events.iter().any(|e| matches!(
+            e,
+            AgentEvent::Completed { ok: false, error_subtype: Some(s), .. }
+                if s == "error_max_budget_usd"
         )));
         // A rejected rate limit parses fully; one with no info yields Nones.
         assert!(events.iter().any(|e| matches!(

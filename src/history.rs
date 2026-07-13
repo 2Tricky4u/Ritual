@@ -46,6 +46,10 @@ pub struct RunMeta {
     pub permission_denials: Vec<serde_json::Value>,
     #[serde(default)]
     pub error: Option<String>,
+    /// Machine failure class ("error_max_budget_usd", codex error.kind, …);
+    /// skip-if-absent so pre-v0.8 metas re-serialize byte-identical (chain).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_subtype: Option<String>,
     /// Reproducibility bundle (git commit, tool versions, skill hashes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repro: Option<crate::provenance::ReproBundle>,
@@ -74,6 +78,89 @@ pub struct RateLimitInfo {
     pub kind: Option<String>,
     #[serde(default)]
     pub status: Option<String>,
+}
+
+/// One human line for a failed run — the best reason the meta actually
+/// records, instead of the bare "agent reported failure". Headline priority:
+/// the budget subtype (names the exact knob to raise), permission denials
+/// (the tool lock said no — and to what), the raw error text, the exit code.
+/// Deliberately short: it rides the one-line statusline; the archive
+/// (`ritual attach <id>`) has the rest.
+pub fn decode_failure(meta: &RunMeta) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    match meta.error_subtype.as_deref() {
+        Some("error_max_budget_usd") => {
+            let turns = meta
+                .num_turns
+                .map(|n| format!(" after {n} turns"))
+                .unwrap_or_default();
+            let spent = meta
+                .total_cost_usd
+                .map(|c| format!(" (${c:.2} spent)"))
+                .unwrap_or_default();
+            parts.push(format!(
+                "budget cap hit{turns}{spent} — raise {}",
+                budget_knob(&meta.stage)
+            ));
+        }
+        Some(other) => parts.push(other.to_string()),
+        None => {}
+    }
+    if !meta.permission_denials.is_empty() {
+        let n = meta.permission_denials.len();
+        let first = &meta.permission_denials[0];
+        // Live captures use tool_name/tool_input.file_path; older fixtures
+        // used tool/path. Read both shapes.
+        let tool = first
+            .get("tool_name")
+            .or_else(|| first.get("tool"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("tool call");
+        let path = first
+            .pointer("/tool_input/file_path")
+            .or_else(|| first.get("path"))
+            .and_then(|v| v.as_str())
+            .map(|p| {
+                let name = std::path::Path::new(p)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| p.to_string());
+                format!(" ({name})")
+            })
+            .unwrap_or_default();
+        parts.push(format!("{n} {tool}(s) denied by the tool lock{path}"));
+    }
+    if let Some(e) = meta.error.as_deref()
+        && e != "agent reported failure"
+        && !e.trim().is_empty()
+    {
+        let short: String = e.chars().take(60).collect();
+        parts.push(if short.len() < e.len() {
+            format!("{short}…")
+        } else {
+            short
+        });
+    }
+    if parts.is_empty()
+        && let Some(code) = meta.exit_code
+    {
+        parts.push(format!("exit {code}"));
+    }
+    if parts.is_empty() {
+        parts.push("agent reported failure (no details recorded)".into());
+    }
+    parts.join(" · ")
+}
+
+/// The per-run budget knob a stage's `--max-budget-usd` came from.
+fn budget_knob(stage: &str) -> &'static str {
+    match stage {
+        "plan-fix" => "budget_finding_fix_usd",
+        "plan-review" => "budget_plan_review_usd",
+        "dual-review" => "budget_dual_review_usd",
+        s if s.ends_with("-chat") => "budget_doc_chat_usd",
+        _ => "the stage budget cap",
+    }
 }
 
 /// All run metas, newest first.
@@ -230,6 +317,87 @@ pub fn by_stage(metas: &[RunMeta], window: CostWindow) -> Vec<StageCostSummary> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn meta(stage: &str) -> RunMeta {
+        RunMeta {
+            stage: stage.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn decode_failure_matrix() {
+        // Budget subtype names the exact knob for the stage.
+        let mut m = meta("plan-fix");
+        m.error_subtype = Some("error_max_budget_usd".into());
+        m.num_turns = Some(8);
+        m.total_cost_usd = Some(1.26);
+        let d = decode_failure(&m);
+        assert!(
+            d.contains("budget cap hit after 8 turns ($1.26 spent)"),
+            "{d}"
+        );
+        assert!(d.contains("raise budget_finding_fix_usd"), "{d}");
+
+        // Stage -> knob routing.
+        let mut m2 = meta("dual-review");
+        m2.error_subtype = Some("error_max_budget_usd".into());
+        assert!(decode_failure(&m2).contains("budget_dual_review_usd"));
+        let mut m3 = meta("spec-chat");
+        m3.error_subtype = Some("error_max_budget_usd".into());
+        assert!(decode_failure(&m3).contains("budget_doc_chat_usd"));
+
+        // Denials: live shape (tool_name + tool_input.file_path).
+        let mut m = meta("plan-fix");
+        m.permission_denials = vec![
+            serde_json::json!(
+                {"tool_name":"Edit","tool_input":{"file_path":"/x/y/plan.md"}}
+            );
+            3
+        ];
+        let d = decode_failure(&m);
+        assert!(
+            d.contains("3 Edit(s) denied by the tool lock (plan.md)"),
+            "{d}"
+        );
+
+        // Denials: fixture shape (tool + path).
+        let mut m = meta("plan-fix");
+        m.permission_denials = vec![serde_json::json!({"tool":"Write","path":"/etc/passwd"})];
+        assert!(decode_failure(&m).contains("1 Write(s) denied by the tool lock (passwd)"));
+
+        // Budget + denials compose, budget first.
+        let mut m = meta("plan-fix");
+        m.error_subtype = Some("error_max_budget_usd".into());
+        m.permission_denials =
+            vec![serde_json::json!({"tool_name":"Edit","tool_input":{"file_path":"p.md"}})];
+        let d = decode_failure(&m);
+        assert!(
+            d.find("budget cap").unwrap() < d.find("denied").unwrap(),
+            "{d}"
+        );
+
+        // Real error text passes through (truncated char-safe); the bare
+        // harvest fallback does not.
+        let mut m = meta("plan-review");
+        m.error = Some("model overloaded, try again later".into());
+        assert!(decode_failure(&m).contains("model overloaded"));
+        let mut m = meta("plan-review");
+        m.error = Some("agent reported failure".into());
+        m.exit_code = Some(1);
+        assert_eq!(decode_failure(&m), "exit 1");
+
+        // Unknown subtype passes through verbatim.
+        let mut m = meta("plan-fix");
+        m.error_subtype = Some("error_during_execution".into());
+        assert!(decode_failure(&m).contains("error_during_execution"));
+
+        // Nothing recorded at all.
+        assert_eq!(
+            decode_failure(&meta("plan-fix")),
+            "agent reported failure (no details recorded)"
+        );
+    }
 
     #[test]
     fn loads_and_sorts_newest_first() {

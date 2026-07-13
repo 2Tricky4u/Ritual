@@ -56,6 +56,7 @@ fn setup_chat_app(tmp: &tempfile::TempDir) -> App {
                 AgentEvent::Completed {
                     ok: true,
                     result_text: None,
+                    error_subtype: None,
                     total_cost_usd: Some(0.03),
                     usage: None,
                     num_turns: Some(2),

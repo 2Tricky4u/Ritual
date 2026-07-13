@@ -40,6 +40,7 @@ fn parse_value(value: Value) -> Vec<AgentEvent> {
             vec![AgentEvent::Completed {
                 ok: true,
                 result_text: None,
+                error_subtype: None,
                 total_cost_usd: None,
                 usage,
                 num_turns: None,
@@ -53,6 +54,10 @@ fn parse_value(value: Value) -> Vec<AgentEvent> {
                 .get("error")
                 .map(|e| summarize(e, 200))
                 .or_else(|| str_field(&value, "message")),
+            error_subtype: value
+                .pointer("/error/kind")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             total_cost_usd: None,
             usage: None,
             num_turns: None,
@@ -159,12 +164,14 @@ mod tests {
             parse_line(r#"{"type":"turn.failed","error":{"message":"boom","kind":"sandbox"}}"#);
         assert!(matches!(
             &evs[0],
-            AgentEvent::Completed { ok: false, result_text: Some(t), .. } if t.contains("boom")
+            AgentEvent::Completed { ok: false, result_text: Some(t), error_subtype: Some(k), .. }
+                if t.contains("boom") && k == "sandbox"
         ));
         let evs = parse_line(r#"{"type":"error","message":"rate limited"}"#);
         assert!(matches!(
             &evs[0],
-            AgentEvent::Completed { ok: false, result_text: Some(t), .. } if t == "rate limited"
+            AgentEvent::Completed { ok: false, result_text: Some(t), error_subtype: None, .. }
+                if t == "rate limited"
         ));
 
         // item.started / item.updated are swallowed (no duplicate lines).
