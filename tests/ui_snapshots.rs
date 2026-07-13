@@ -399,6 +399,7 @@ fn dashboard_implement_hint() {
             cwd: tmp.path().to_path_buf(),
         },
         resuming: true,
+        copied: true,
     });
     insta::assert_snapshot!(render_at(&app, 90, 24));
 }
@@ -600,6 +601,7 @@ fn rendering_survives_hostile_sizes_in_every_state() {
                         cwd: t.path().to_path_buf(),
                     },
                     resuming: true,
+                    copied: false,
                 });
                 (t, a)
             }),

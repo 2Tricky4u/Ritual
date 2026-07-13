@@ -1876,34 +1876,50 @@ fn draw_implement_hint(f: &mut Frame, app: &App) {
     } else {
         "Pick the tests-red session from the list that opens."
     };
+    let copy_line = if hint.copied {
+        Span::styled(
+            "  ✓ prompt copied to your clipboard — paste it once it opens:",
+            Style::default().fg(t.ok()),
+        )
+    } else {
+        Span::styled(
+            "  Claude won't start on its own — copy this and paste it in:",
+            Style::default().fg(t.muted()),
+        )
+    };
+    let mut keys = vec![
+        Span::styled(
+            "  [enter]",
+            Style::default().fg(t.accent()).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" open the session    ", Style::default().fg(t.muted())),
+    ];
+    if !hint.copied {
+        keys.push(Span::styled(
+            "[c]",
+            Style::default().fg(t.accent()).add_modifier(Modifier::BOLD),
+        ));
+        keys.push(Span::styled(" copy    ", Style::default().fg(t.muted())));
+    }
+    keys.push(Span::styled(
+        "[esc]",
+        Style::default().fg(t.accent()).add_modifier(Modifier::BOLD),
+    ));
+    keys.push(Span::styled(" cancel", Style::default().fg(t.muted())));
     let lines = vec![
         Line::default(),
         Line::from(Span::styled(
             format!("  {lead}"),
             Style::default().fg(t.muted()),
         )),
-        Line::from(Span::styled(
-            "  Claude won't start on its own — copy this and paste it in:",
-            Style::default().fg(t.muted()),
-        )),
+        Line::from(copy_line),
         Line::default(),
         Line::from(Span::styled(
             crate::stages::IMPLEMENT_PROMPT,
             Style::default().fg(t.highlight()),
         )),
         Line::default(),
-        Line::from(vec![
-            Span::styled(
-                "  [enter]",
-                Style::default().fg(t.accent()).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" open the session    ", Style::default().fg(t.muted())),
-            Span::styled(
-                "[esc]",
-                Style::default().fg(t.accent()).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" cancel", Style::default().fg(t.muted())),
-        ]),
+        Line::from(keys),
     ];
     f.render_widget(
         Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),

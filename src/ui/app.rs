@@ -234,6 +234,8 @@ pub struct ImplementHint {
     pub req: AttachedRequest,
     /// true = resuming the pinned tests-red session; false = the resume picker.
     pub resuming: bool,
+    /// Whether the implement prompt was copied to the system clipboard.
+    pub copied: bool,
 }
 
 /// The `S` settings editor: a cursor over `settings::CATALOG` plus an
@@ -1047,9 +1049,14 @@ impl App {
                 // opening message for, so show the copy-paste prompt first;
                 // `enter` in the overlay commits the handover.
                 if stage == StageId::Implement {
+                    // Copy the prompt straight to the clipboard so the user
+                    // doesn't have to mouse-select it out of the float (which
+                    // grabs the sidebar behind it too).
+                    let copied = crate::clipboard::copy(stages::IMPLEMENT_PROMPT);
                     self.implement_hint = Some(ImplementHint {
                         req,
                         resuming: session.is_some(),
+                        copied,
                     });
                 } else {
                     self.pending_attached = Some(req);
@@ -2163,13 +2170,25 @@ impl App {
     /// `d`: open the one-line reason prompt for the selected finding.
     /// Already-dismissed findings toggle straight back to pending (no prompt).
     /// Keys while the implement launch overlay is up: `enter` commits the
-    /// handover to `claude --resume`; anything else cancels (nothing launched).
+    /// handover to `claude --resume`; `c` re-copies the prompt; `esc`/other
+    /// cancels (nothing launched).
     fn implement_hint_input(&mut self, code: KeyCode) {
         match code {
             KeyCode::Enter => {
                 if let Some(hint) = self.implement_hint.take() {
                     self.pending_attached = Some(hint.req);
                 }
+            }
+            KeyCode::Char('c') => {
+                let ok = crate::clipboard::copy(stages::IMPLEMENT_PROMPT);
+                if let Some(h) = self.implement_hint.as_mut() {
+                    h.copied = ok;
+                }
+                self.status_msg = Some(if ok {
+                    "implement prompt copied to clipboard".into()
+                } else {
+                    "couldn't reach a clipboard — select the prompt manually".into()
+                });
             }
             _ => {
                 self.implement_hint = None;

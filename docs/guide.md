@@ -509,10 +509,11 @@ wrote the failing tests now makes them pass. This is pinned by id — a
 Claude session you have open in another terminal can't hijack the handoff
 (the old `--continue` grabbed "the most recent conversation in the
 directory"). Because an interactive `claude --resume` can't be handed an
-opening message, ritual first shows a small overlay with a ready-to-paste
-instruction: copy it, press `⟨enter⟩` to open the session, and paste to
-start. If no session is pinned yet, the overlay leads into the `--resume`
-picker so you choose the right one. As Claude edits, the global PostToolUse
+opening message, ritual **copies a ready-to-paste implement instruction to
+your clipboard** and shows a short overlay: press `⟨enter⟩` to open the
+session and paste to start (`⟨c⟩` re-copies; `⟨esc⟩` cancels). If no session
+is pinned yet, the overlay leads into the `--resume` picker so you choose the
+right one. As Claude edits, the global PostToolUse
 hook auto-runs `check.sh` and feeds failures back; the check segment in the
 statusline goes green/red, and the stage completes when `check.sh` passes.
 `⟨a⟩` takeover also reattaches to these pinned sessions now.
