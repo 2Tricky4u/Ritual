@@ -3,6 +3,7 @@
 <!-- PROJECT SHIELDS -->
 <div align="center">
 
+[![CI][ci-shield]][ci-url]
 [![Version][version-shield]][roadmap-url]
 [![License][license-shield]][license-url]
 [![Tests][tests-shield]][tests-url]
@@ -368,6 +369,8 @@ conditions.
 </div>
 
 <!-- MARKDOWN LINKS & IMAGES -->
+[ci-shield]: https://github.com/2Tricky4u/Ritual/actions/workflows/ci.yml/badge.svg
+[ci-url]: https://github.com/2Tricky4u/Ritual/actions/workflows/ci.yml
 [version-shield]: https://img.shields.io/badge/version-0.9.0-9d7cd8?style=for-the-badge
 [license-shield]: https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-a9b665?style=for-the-badge
 [license-url]: #license

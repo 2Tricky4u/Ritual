@@ -1,0 +1,38 @@
+name: CI (zero-token)
+
+# The entire suite runs with NO API keys. Unit/CLI/snapshot tests are pure,
+# and the live lifecycle driver uses the RITUAL_CLAUDE_CMD fake-agent seam —
+# CI never calls Claude or Codex, so this workflow needs no secrets.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # .cargo/config.toml redirects the target dir to /var/tmp; point it back at
+  # the workspace so Swatinem/rust-cache can cache ./target.
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  check:
+    name: fmt + clippy + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain (stable + rustfmt + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: ./check.sh — fmt --check + clippy -D warnings + cargo test
+        run: ./check.sh
