@@ -220,10 +220,24 @@ pub fn set_action_with_reason(
         finding.action = "pending".to_string(); // toggle off
         finding.reason = None;
     } else {
+        // Resolving over a prose action (plan-review writes its debate
+        // resolutions THERE) must not destroy the record: with no explicit
+        // reason given, the prose migrates into `reason`. An explicit
+        // reason always wins.
+        let inherited = (is_prose_action(&finding.action)
+            && reason.is_none()
+            && matches!(action, "fixed" | "dismissed"))
+        .then(|| finding.action.clone());
         finding.action = action.to_string();
-        finding.reason = reason.map(str::to_string);
+        finding.reason = reason.map(str::to_string).or(inherited);
     }
     rewrite(lf)
+}
+
+/// True when an `action` value is free text (a recorded resolution) rather
+/// than one of the lifecycle states. Plan-review's debate writes prose here.
+pub fn is_prose_action(action: &str) -> bool {
+    !matches!(action, "" | "pending" | "fixed" | "dismissed")
 }
 
 /// Set (or clear) a finding's triage answer and reason: plain assignment,
@@ -458,6 +472,57 @@ mod tests {
         assert!(!loaded[0].file.findings[0].resolved());
         // Out-of-range stays an error.
         assert!(set_answer(&mut loaded, 0, 9, None, None).is_err());
+    }
+
+    #[test]
+    fn prose_action_migrates_to_reason_on_resolve() {
+        // Today's incident, as a regression test: 31 plan-review findings
+        // carried their debate resolutions IN `action`; pressing f replaced
+        // them all with the word "fixed".
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("20260713T000009Z-plan-review.json");
+        std::fs::write(
+            &path,
+            r#"{"stage":"plan-review","findings":[
+                {"title":"t","plan_step":"Step 5",
+                 "action":"Resolved by reordering: dump through the running DB, then snapshot."}]}"#,
+        )
+        .unwrap();
+        let mut loaded = load_all(tmp.path()).unwrap();
+        set_action(&mut loaded, 0, 0, "fixed").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#""action": "fixed""#));
+        assert!(
+            text.contains("Resolved by reordering"),
+            "prose lost: {text}"
+        );
+        assert_eq!(
+            loaded[0].file.findings[0].reason.as_deref(),
+            Some("Resolved by reordering: dump through the running DB, then snapshot.")
+        );
+
+        // An explicit reason beats the inherited prose.
+        set_action(&mut loaded, 0, 0, "fixed").unwrap(); // toggle back (clears)
+        loaded[0].file.findings[0].action = "Another prose resolution left by a review.".into();
+        set_action_with_reason(&mut loaded, 0, 0, "dismissed", Some("typed reason")).unwrap();
+        assert_eq!(
+            loaded[0].file.findings[0].reason.as_deref(),
+            Some("typed reason")
+        );
+
+        // Plain lifecycle transitions never invent a reason.
+        set_action_with_reason(&mut loaded, 0, 0, "dismissed", None).unwrap(); // toggle -> pending
+        set_action(&mut loaded, 0, 0, "fixed").unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("reason"));
+    }
+
+    #[test]
+    fn is_prose_action_classifier() {
+        assert!(is_prose_action("Resolved by narrowing the scope."));
+        assert!(!is_prose_action(""));
+        assert!(!is_prose_action("pending"));
+        assert!(!is_prose_action("fixed"));
+        assert!(!is_prose_action("dismissed"));
     }
 
     #[test]
