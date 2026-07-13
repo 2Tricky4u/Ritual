@@ -4,6 +4,7 @@
 <div align="center">
 
 [![Version][version-shield]][roadmap-url]
+[![License][license-shield]][license-url]
 [![Tests][tests-shield]][tests-url]
 [![Live driver][e2e-shield]][e2e-url]
 [![Tamper-evident][chain-shield]][guide-url]
@@ -334,6 +335,21 @@ See the full [ROADMAP.md][roadmap-url] for the design rationale behind each item
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
+<!-- LICENSE -->
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option. This is the conventional Rust
+dual-license: it maximizes compatibility (MIT's simplicity, Apache-2.0's
+explicit patent grant) so anyone can use `ritual` in any project.
+
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in the work by you, as defined in the Apache-2.0
+license, shall be dual licensed as above, without any additional terms or
+conditions.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
 <!-- ACKNOWLEDGMENTS -->
 ## Acknowledgments
 
@@ -353,6 +369,8 @@ See the full [ROADMAP.md][roadmap-url] for the design rationale behind each item
 
 <!-- MARKDOWN LINKS & IMAGES -->
 [version-shield]: https://img.shields.io/badge/version-0.9.0-9d7cd8?style=for-the-badge
+[license-shield]: https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-a9b665?style=for-the-badge
+[license-url]: #license
 [tests-shield]: https://img.shields.io/badge/cargo_tests-379_passing-73daca?style=for-the-badge
 [e2e-shield]: https://img.shields.io/badge/live_driver-80%2F80-7aa2f7?style=for-the-badge
 [chain-shield]: https://img.shields.io/badge/audit-tamper--evident-e0af68?style=for-the-badge

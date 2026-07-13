@@ -2,6 +2,13 @@
 name = "ritual"
 version = "0.9.0"
 edition = "2024"
+description = "A fast, eldritch-themed TUI that drives a multi-LLM coding workflow: Claude Code implements, OpenAI Codex adversarially reviews plans, designs tests, and second-reviews diffs — every loop grounded in your project's ./check.sh."
+authors = ["Xavier Ogay"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/2Tricky4u/Ritual"
+readme = "README.md"
+keywords = ["tui", "llm", "claude", "codex", "ratatui"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 ansi-to-tui = "8.0.1"
