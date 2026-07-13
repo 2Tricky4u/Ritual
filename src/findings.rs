@@ -240,6 +240,52 @@ pub fn is_prose_action(action: &str) -> bool {
     !matches!(action, "" | "pending" | "fixed" | "dismissed")
 }
 
+/// What one-touch triage would do with a finding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Recommendation {
+    /// Queue for the claude batch fix (⚑A): confirmed plan finding.
+    QueueAuto,
+    /// Queue for the human (⚑M): confirmed code finding.
+    QueueManual,
+    /// Mark fixed, prose resolution preserved as reason: the review already
+    /// applied this fix to the plan and recorded what it did in `action`.
+    Archive,
+    /// Dismiss with the given reason: the review itself retracted it.
+    Dismiss(String),
+    /// No safe default — the human decides (shown, never auto-applied).
+    NeedsYou,
+}
+
+/// The deterministic recommended disposition for a finding, or None when it
+/// is already handled (resolved, triaged, or declined by a batch run — a
+/// declined finding must NOT be auto-requeued, that would loop).
+pub fn recommend(f: &Finding) -> Option<Recommendation> {
+    if f.resolved() || f.answer.is_some() {
+        return None;
+    }
+    if f.reason.is_some() {
+        return None; // declined by a batch run: explicitly the human's call
+    }
+    if is_prose_action(&f.action) {
+        return Some(Recommendation::Archive);
+    }
+    let verdict = f.verdict.to_ascii_lowercase();
+    if matches!(verdict.as_str(), "withdrawn" | "refuted") {
+        return Some(Recommendation::Dismiss(
+            "withdrawn/refuted by review".into(),
+        ));
+    }
+    if verdict == "confirmed" {
+        if f.file.is_none() && f.plan_step.is_some() {
+            return Some(Recommendation::QueueAuto);
+        }
+        if f.file.is_some() {
+            return Some(Recommendation::QueueManual);
+        }
+    }
+    Some(Recommendation::NeedsYou)
+}
+
 /// Set (or clear) a finding's triage answer and reason: plain assignment,
 /// no toggle — toggle policy lives with the caller. Same atomic rewrite.
 pub fn set_answer(
@@ -514,6 +560,75 @@ mod tests {
         set_action_with_reason(&mut loaded, 0, 0, "dismissed", None).unwrap(); // toggle -> pending
         set_action(&mut loaded, 0, 0, "fixed").unwrap();
         assert!(!std::fs::read_to_string(&path).unwrap().contains("reason"));
+    }
+
+    #[test]
+    fn recommend_matrix() {
+        let mk = |json: &str| -> Finding { serde_json::from_str(json).unwrap() };
+        use Recommendation::*;
+        // Confirmed plan finding -> claude queue.
+        assert_eq!(
+            recommend(&mk(
+                r#"{"title":"t","plan_step":"Step 2","verdict":"confirmed"}"#
+            )),
+            Some(QueueAuto)
+        );
+        // Case-insensitive verdicts.
+        assert_eq!(
+            recommend(&mk(
+                r#"{"title":"t","plan_step":"Step 2","verdict":"Confirmed"}"#
+            )),
+            Some(QueueAuto)
+        );
+        // Confirmed code finding -> manual queue.
+        assert_eq!(
+            recommend(&mk(
+                r#"{"title":"t","file":"src/a.rs","line":3,"verdict":"confirmed"}"#
+            )),
+            Some(QueueManual)
+        );
+        // Prose action beats confirmed: it's already a recorded resolution.
+        assert_eq!(
+            recommend(&mk(
+                r#"{"title":"t","plan_step":"Step 2","verdict":"confirmed",
+                    "action":"Resolved by narrowing the scope."}"#
+            )),
+            Some(Archive)
+        );
+        // Withdrawn/refuted -> dismiss with reason.
+        assert!(matches!(
+            recommend(&mk(r#"{"title":"t","verdict":"Withdrawn"}"#)),
+            Some(Dismiss(_))
+        ));
+        // Unconfirmed / no location -> the human decides.
+        assert_eq!(
+            recommend(&mk(r#"{"title":"t","verdict":"unconfirmed"}"#)),
+            Some(NeedsYou)
+        );
+        assert_eq!(
+            recommend(&mk(r#"{"title":"t","verdict":"confirmed"}"#)),
+            Some(NeedsYou),
+            "confirmed with no location has no safe default"
+        );
+        // Already handled: resolved, triaged, or batch-declined.
+        assert_eq!(
+            recommend(&mk(
+                r#"{"title":"t","verdict":"confirmed","action":"fixed"}"#
+            )),
+            None
+        );
+        assert_eq!(
+            recommend(&mk(
+                r#"{"title":"t","plan_step":"s","verdict":"confirmed","answer":"auto"}"#
+            )),
+            None
+        );
+        // Declined by a batch run must NOT re-queue (no decline loop).
+        assert_eq!(
+            recommend(&mk(r#"{"title":"t","plan_step":"s","verdict":"confirmed",
+                    "reason":"needs a spec change"}"#)),
+            None
+        );
     }
 
     #[test]
