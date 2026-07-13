@@ -346,9 +346,261 @@ pub fn validate(kind: &SettingKind, input: &str) -> Result<Option<SettingValue>,
     }
 }
 
+/// Set or clear one dotted key in the project config, preserving every
+/// comment and the file's formatting. `None` removes the leaf; an emptied
+/// table header is left in place (user comments may hang off it). The write
+/// is atomic: temp file in the same directory + rename.
+pub fn write_setting(
+    config_path: &Path,
+    key: &str,
+    value: Option<&SettingValue>,
+) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+
+    let text = match std::fs::read_to_string(config_path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(e).with_context(|| format!("reading {}", config_path.display()));
+        }
+    };
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .with_context(|| format!("parsing {}", config_path.display()))?;
+
+    let mut parts = key.split('.').collect::<Vec<_>>();
+    let leaf = parts
+        .pop()
+        .filter(|l| !l.is_empty())
+        .context("empty setting key")?;
+    let mut tbl = doc.as_table_mut();
+    for part in parts {
+        // entry().or_insert(table()) — never assign a fresh table over an
+        // existing one (that would clobber sibling keys and their comments);
+        // toml_edit::table() makes a NEW section render as a [header] table.
+        tbl = tbl
+            .entry(part)
+            .or_insert(toml_edit::table())
+            .as_table_mut()
+            .with_context(|| format!("config key '{part}' exists but is not a table"))?;
+    }
+    match value {
+        Some(v) => {
+            let mut val = match v {
+                SettingValue::F64(x) => toml_edit::Value::from(*x),
+                SettingValue::U64(x) => toml_edit::Value::from(
+                    i64::try_from(*x).context("value too large for TOML integer")?,
+                ),
+                SettingValue::Bool(x) => toml_edit::Value::from(*x),
+                SettingValue::Str(x) => toml_edit::Value::from(x.as_str()),
+            };
+            if let Some(old) = tbl.get(leaf).and_then(|i| i.as_value()) {
+                // Keep the line's whitespace and any trailing inline comment.
+                *val.decor_mut() = old.decor().clone();
+            }
+            tbl[leaf] = toml_edit::Item::Value(val);
+        }
+        None => {
+            // toml_edit stores the comment block above a key as that key's
+            // decor prefix — a plain remove() silently deletes user comments.
+            // Capture the block and re-attach it to the next item in the
+            // table (or the document tail when the key was last).
+            if let Some(orphan) = remove_preserving_comments(tbl, leaf) {
+                let mut trailing = doc.trailing().as_str().unwrap_or_default().to_string();
+                trailing.push_str(&orphan);
+                doc.set_trailing(trailing);
+            }
+        }
+    }
+
+    write_atomic(config_path, &doc.to_string())
+}
+
+/// Remove `leaf` from `tbl`, moving its preceding comment block onto the next
+/// item so it survives. Returns the block when there is no next item (the
+/// caller appends it to the document tail).
+fn remove_preserving_comments(tbl: &mut toml_edit::Table, leaf: &str) -> Option<String> {
+    let keys: Vec<String> = tbl.iter().map(|(k, _)| k.to_string()).collect();
+    let idx = keys.iter().position(|k| k == leaf)?;
+    let prefix = tbl
+        .key(leaf)
+        .and_then(|k| k.leaf_decor().prefix())
+        .and_then(|p| p.as_str())
+        .unwrap_or_default()
+        .to_string();
+    tbl.remove(leaf);
+    if !prefix.contains('#') {
+        return None; // pure whitespace — nothing worth rescuing
+    }
+    if let Some(next) = keys.get(idx + 1) {
+        // Header tables keep their comment block in the table decor; plain
+        // keys keep it in the key decor.
+        if let Some(toml_edit::Item::Table(t)) = tbl.get_mut(next) {
+            let existing = t
+                .decor()
+                .prefix()
+                .and_then(|p| p.as_str())
+                .unwrap_or_default()
+                .to_string();
+            t.decor_mut().set_prefix(format!("{prefix}{existing}"));
+            return None;
+        }
+        if let Some(mut key) = tbl.key_mut(next) {
+            let decor = key.leaf_decor_mut();
+            let existing = decor
+                .prefix()
+                .and_then(|p| p.as_str())
+                .unwrap_or_default()
+                .to_string();
+            decor.set_prefix(format!("{prefix}{existing}"));
+            return None;
+        }
+    }
+    Some(prefix)
+}
+
+/// Temp file + same-dir rename; the config file is never half-written.
+fn write_atomic(config_path: &Path, contents: &str) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+
+    let parent = config_path
+        .parent()
+        .context("config path has no parent directory")?;
+    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("temp file in {}", parent.display()))?;
+    {
+        use std::io::Write as _;
+        tmp.write_all(contents.as_bytes())?;
+        tmp.flush()?;
+    }
+    tmp.persist(config_path)
+        .with_context(|| format!("replacing {}", config_path.display()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Byte-identical stand-in for the real homeserver project config.
+    const HOMESERVER_FIXTURE: &str = "\
+# ritual config for this project (homeserver + siblings share this root).
+# Layered: defaults <- ~/.config/ritual/config.toml <- this file <- env.
+
+# The F-apply batch fix reads the whole plan + spec and answers every queued
+# finding in ONE run — the $1 default was killing real batches mid-work
+# (two runs died at $1.13 and $1.26). Cap the RUN, not each finding.
+budget_finding_fix_usd = 3.0
+";
+
+    #[test]
+    fn write_changes_one_line_and_keeps_every_comment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, HOMESERVER_FIXTURE).unwrap();
+
+        write_setting(
+            &path,
+            "budget_finding_fix_usd",
+            Some(&SettingValue::F64(4.5)),
+        )
+        .unwrap();
+
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(out.lines().count(), HOMESERVER_FIXTURE.lines().count());
+        let changed: Vec<(&str, &str)> = HOMESERVER_FIXTURE
+            .lines()
+            .zip(out.lines())
+            .filter(|(a, b)| a != b)
+            .collect();
+        assert_eq!(
+            changed,
+            vec![(
+                "budget_finding_fix_usd = 3.0",
+                "budget_finding_fix_usd = 4.5"
+            )],
+            "exactly the value line changes, comments byte-identical"
+        );
+        let parsed: Result<crate::config::FileConfig, _> = toml::from_str(&out);
+        assert!(parsed.is_ok(), "{:?}", parsed.err());
+    }
+
+    #[test]
+    fn new_models_key_lands_as_a_header_table() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, HOMESERVER_FIXTURE).unwrap();
+
+        write_setting(
+            &path,
+            "models.plan",
+            Some(&SettingValue::Str("opus".into())),
+        )
+        .unwrap();
+
+        let out = std::fs::read_to_string(&path).unwrap();
+        for line in HOMESERVER_FIXTURE.lines() {
+            assert!(out.contains(line), "lost line: {line}");
+        }
+        let header = out.find("[models]").expect("proper [models] header table");
+        assert!(
+            out[header..].contains("plan = \"opus\""),
+            "plan key under the header:\n{out}"
+        );
+        assert!(toml::from_str::<crate::config::FileConfig>(&out).is_ok());
+    }
+
+    #[test]
+    fn clearing_keys_keeps_comments_and_headers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, HOMESERVER_FIXTURE).unwrap();
+        write_setting(
+            &path,
+            "models.plan",
+            Some(&SettingValue::Str("opus".into())),
+        )
+        .unwrap();
+
+        write_setting(&path, "budget_finding_fix_usd", None).unwrap();
+        write_setting(&path, "models.plan", None).unwrap();
+
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(!out.contains("budget_finding_fix_usd"));
+        assert!(!out.contains("plan ="));
+        for line in HOMESERVER_FIXTURE.lines().filter(|l| l.starts_with('#')) {
+            assert!(out.contains(line), "lost comment: {line}");
+        }
+        assert!(toml::from_str::<crate::config::FileConfig>(&out).is_ok());
+    }
+
+    #[test]
+    fn absent_file_creates_dir_and_loads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(".ritual/config.toml");
+
+        write_setting(&path, "notifications", Some(&SettingValue::Bool(false))).unwrap();
+
+        assert!(path.exists());
+        let cfg = Config::load(tmp.path(), None, false).unwrap();
+        assert!(!cfg.notifications);
+    }
+
+    #[test]
+    fn inline_comment_survives_a_value_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "check_timeout_secs = 600 # hard cap\n").unwrap();
+
+        write_setting(&path, "check_timeout_secs", Some(&SettingValue::U64(900))).unwrap();
+
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            out, "check_timeout_secs = 900 # hard cap\n",
+            "U64 renders as a TOML integer and the inline comment stays"
+        );
+    }
 
     fn get(key: &str, cfg: &Config) -> Option<String> {
         (CATALOG.iter().find(|d| d.key == key).expect(key).get)(cfg)
