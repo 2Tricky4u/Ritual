@@ -33,6 +33,42 @@ pub fn sections(text: &str) -> Vec<(String, Range<usize>)> {
     out
 }
 
+/// Mechanical scope gate for a section-scoped edit: did the change stay
+/// inside `range` (a `sections()` line range on `before`)? Confinement is
+/// judged positionally — the lines before `range.start` and the lines from
+/// `range.end` on must survive verbatim (same order, same count) at the top
+/// and bottom of `after`; everything between is the section's new body.
+///
+/// Returns `None` when the edit leaked outside the section (or `after` is too
+/// short to still contain the untouched prefix + suffix), else
+/// `Some((added, removed))`: the line-multiset delta of the section body.
+/// Note: a line inserted between the section's last line and the next `##`
+/// heading counts as inside (that is textually where the section's body ends).
+pub fn edits_confined(before: &str, after: &str, range: &Range<usize>) -> Option<(usize, usize)> {
+    let b: Vec<&str> = before.lines().collect();
+    let a: Vec<&str> = after.lines().collect();
+    let start = range.start.min(b.len());
+    let end = range.end.min(b.len()).max(start);
+    let suffix_len = b.len() - end;
+    if a.len() < start + suffix_len {
+        return None; // shrunk past the section: prefix + suffix can't both survive
+    }
+    if a[..start] != b[..start] || a[a.len() - suffix_len..] != b[end..] {
+        return None;
+    }
+    // Line-multiset delta of the section body (how many lines appeared/vanished).
+    let mut counts: std::collections::HashMap<&str, i64> = std::collections::HashMap::new();
+    for l in &a[start..a.len() - suffix_len] {
+        *counts.entry(l).or_default() += 1;
+    }
+    for l in &b[start..end] {
+        *counts.entry(l).or_default() -= 1;
+    }
+    let added = counts.values().filter(|v| **v > 0).sum::<i64>() as usize;
+    let removed = -counts.values().filter(|v| **v < 0).sum::<i64>() as usize;
+    Some((added, removed))
+}
+
 /// The ATX heading level (1-6) and trimmed title text, or None. Requires the
 /// mandatory space after the `#`s (so `###` alone or `#tag` is not a heading).
 fn heading(line: &str) -> Option<(usize, String)> {
@@ -94,6 +130,90 @@ mod tests {
     use super::*;
 
     const SPEC_TEMPLATE: &str = include_str!("../templates/spec-template.md");
+
+    /// lines: 0 "# Plan", 1 "", 2 "## A", 3 "a1", 4 "a2", 5 "", 6 "## B", 7 "b1"
+    /// sections: A = 2..6, B = 6..8 (matches `sections()`, asserted below).
+    const GATE_DOC: &str = "# Plan\n\n## A\na1\na2\n\n## B\nb1\n";
+
+    #[test]
+    fn edits_confined_accepts_changes_inside_the_section() {
+        let secs = sections(GATE_DOC);
+        assert_eq!(secs[0], ("A".into(), 2..6));
+        assert_eq!(secs[1], ("B".into(), 6..8));
+        let a = &secs[0].1;
+
+        // Replace one body line -> confined, +1/-1.
+        let after = "# Plan\n\n## A\na1 fixed\na2\n\n## B\nb1\n";
+        assert_eq!(edits_confined(GATE_DOC, after, a), Some((1, 1)));
+        // Section grows.
+        let after = "# Plan\n\n## A\na1\na1b\na2\n\n## B\nb1\n";
+        assert_eq!(edits_confined(GATE_DOC, after, a), Some((1, 0)));
+        // Section shrinks.
+        let after = "# Plan\n\n## A\na1\n\n## B\nb1\n";
+        assert_eq!(edits_confined(GATE_DOC, after, a), Some((0, 1)));
+        // The section's own heading line (range.start) is inside.
+        let after = "# Plan\n\n## A (renamed)\na1\na2\n\n## B\nb1\n";
+        assert_eq!(edits_confined(GATE_DOC, after, a), Some((1, 1)));
+        // A line landing just before the next heading is part of this section.
+        let after = "# Plan\n\n## A\na1\na2\n\nextra\n## B\nb1\n";
+        assert_eq!(edits_confined(GATE_DOC, after, a), Some((1, 0)));
+        // No line-level change (e.g. trailing-newline strip) -> confined 0/0.
+        assert_eq!(
+            edits_confined(GATE_DOC, GATE_DOC.trim_end_matches('\n'), a),
+            Some((0, 0))
+        );
+    }
+
+    #[test]
+    fn edits_confined_rejects_anything_outside_the_section() {
+        let range = 2..6; // section A
+        // Edit before the section (title line).
+        let after = "# Plan v2\n\n## A\na1\na2\n\n## B\nb1\n";
+        assert_eq!(edits_confined(GATE_DOC, after, &range), None);
+        // Edit on the line just above the heading (range.start - 1).
+        let after = "# Plan\nsneak\n## A\na1\na2\n\n## B\nb1\n";
+        assert_eq!(edits_confined(GATE_DOC, after, &range), None);
+        // Edit at range.end (the next section's heading).
+        let after = "# Plan\n\n## A\na1\na2\n\n## B (renamed)\nb1\n";
+        assert_eq!(edits_confined(GATE_DOC, after, &range), None);
+        // Edit after the section (next section's body).
+        let after = "# Plan\n\n## A\na1\na2\n\n## B\nb1 changed\n";
+        assert_eq!(edits_confined(GATE_DOC, after, &range), None);
+        // Line inserted past the next heading.
+        let after = "# Plan\n\n## A\na1\na2\n\n## B\nsneak\nb1\n";
+        assert_eq!(edits_confined(GATE_DOC, after, &range), None);
+        // Delete inside + re-insert the identical line outside still leaks.
+        let after = "# Plan\n\n## A\na2\n\n## B\nb1\na1\n";
+        assert_eq!(edits_confined(GATE_DOC, after, &range), None);
+        // Whole-file rewrite.
+        assert_eq!(edits_confined(GATE_DOC, "totally new\n", &range), None);
+        // Truncated below prefix+suffix length.
+        assert_eq!(edits_confined(GATE_DOC, "# Plan\n", &range), None);
+    }
+
+    #[test]
+    fn edits_confined_last_section_and_degenerate_ranges() {
+        // Last section (range.end == line count, empty suffix): free tail.
+        let b = 6..8;
+        let after = "# Plan\n\n## A\na1\na2\n\n## B\nb1 fixed\nb2\nb3\n";
+        assert_eq!(edits_confined(GATE_DOC, after, &b), Some((3, 1)));
+        // ...but its prefix is still guarded.
+        let after = "# Plan\n\n## A\nleak\na2\n\n## B\nb1\n";
+        assert_eq!(edits_confined(GATE_DOC, after, &b), None);
+        // Heading-only section gains a body.
+        let doc = "## Empty\n## Next\nn1\n";
+        let secs = sections(doc);
+        assert_eq!(secs[0].1, 0..1);
+        let after = "## Empty\nfilled\n## Next\nn1\n";
+        assert_eq!(edits_confined(doc, after, &secs[0].1), Some((1, 0)));
+        // Whole-doc range: everything is inside.
+        assert_eq!(
+            edits_confined(GATE_DOC, "anything\nat all\n", &(0..8)),
+            Some((2, 8))
+        );
+        // Out-of-bounds range clamps instead of panicking.
+        assert_eq!(edits_confined("a\n", "a\n", &(5..9)), Some((0, 0)));
+    }
 
     #[test]
     fn template_yields_the_four_h2_sections() {
