@@ -31,8 +31,13 @@ pub struct FileConfig {
     pub notifications: Option<bool>,
     /// `[models]` table: stage label -> model override ("plan-review = \"opus\"").
     pub models: Option<HashMap<String, String>>,
-    /// Fallback model(s) for headless claude runs, comma-separated. Retryable
-    /// API errors (overload) switch instead of failing the run.
+    /// `[effort]` table: stage label -> reasoning effort ("plan = \"xhigh\"").
+    /// Passed through to `claude --effort <level>`; unset stages use the
+    /// session default. Only the CLI-driven stages honor it (not local `spec`).
+    pub effort: Option<HashMap<String, String>>,
+    /// Fallback model(s) for headless claude runs and the interactive `plan`
+    /// stage, comma-separated. Retryable API errors (overload) switch instead
+    /// of failing the run — the Opus safety net under a pinned planning model.
     pub fallback_model: Option<String>,
     /// Hard ceiling on any check.sh invocation (hung boards, wedged builds).
     pub check_timeout_secs: Option<u64>,
@@ -134,6 +139,7 @@ pub struct Config {
     pub budget_daily_usd: Option<f64>,
     pub notifications: bool,
     pub models: HashMap<String, String>,
+    pub effort: HashMap<String, String>,
     pub fallback_model: Option<String>,
     pub check_timeout_secs: u64,
     pub offline: bool,
@@ -169,6 +175,7 @@ impl Default for Config {
             budget_daily_usd: None,
             notifications: true,
             models: HashMap::new(),
+            effort: HashMap::new(),
             fallback_model: None,
             check_timeout_secs: 600,
             offline: false,
@@ -258,6 +265,9 @@ impl Config {
             }
             if let Some(models) = fc.models {
                 cfg.models.extend(models);
+            }
+            if let Some(effort) = fc.effort {
+                cfg.effort.extend(effort); // later layers win per-stage
             }
             if let Some(f) = fc.fallback_model {
                 cfg.fallback_model = Some(f);
@@ -446,6 +456,9 @@ check-full = "F"
 [models]
 plan-review = "opus"
 
+[effort]
+plan = "xhigh"
+
 [retry]
 models = ["claude-opus-4-8", "claude-sonnet-5"]
 
@@ -478,6 +491,7 @@ alpha = "echo a"
         let cfg = Config::load(tmp.path(), None, false).unwrap();
         assert_eq!(cfg.fallback_model.as_deref(), Some("claude-sonnet-5"));
         assert_eq!(cfg.models["plan-review"], "opus");
+        assert_eq!(cfg.effort["plan"], "xhigh");
         assert_eq!(cfg.retry_models, vec!["claude-opus-4-8", "claude-sonnet-5"]);
         assert_eq!(cfg.mutants_timeout_secs, 120);
         assert!(cfg.mutants_enabled);

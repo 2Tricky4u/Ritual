@@ -312,12 +312,21 @@ pub fn build(
         cmd.argv.push("--model".into());
         cmd.argv.push(model);
     }
-    // Overload resilience: headless claude runs retry on a fallback model
-    // instead of dying to a 529 hours into a review (interactive runs can
-    // negotiate with the user; codex has no such flag).
+    // Per-stage reasoning effort ([effort] table -> claude --effort <level>).
+    // Local stages (spec) have no CLI to carry the flag.
+    if let Some(effort) = cfg.effort.get(stage.label())
+        && !cmd.argv.is_empty()
+    {
+        cmd.argv.push("--effort".into());
+        cmd.argv.push(effort.clone());
+    }
+    // Overload resilience: retry on a fallback model instead of dying to a 529
+    // mid-run. Headless reviews always opt in (no human to negotiate); the
+    // interactive `plan` stage opts in too, so a pinned planning model (e.g.
+    // Fable 5) has an Opus safety net. Other interactive stages and codex don't.
     if let Some(fb) = &cfg.fallback_model
-        && cmd.mode == Mode::Headless
         && cmd.agent == AgentKind::Claude
+        && (cmd.mode == Mode::Headless || stage == StageId::Plan)
     {
         cmd.argv.push("--fallback-model".into());
         cmd.argv.push(fb.clone());
@@ -396,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_model_reaches_headless_claude_only() {
+    fn fallback_model_reaches_headless_and_interactive_plan() {
         let (_tmp, mut cfg, dirs) = setup();
         std::fs::create_dir_all(dirs.feature_dir("s")).unwrap();
         std::fs::write(dirs.plan_file("s"), "# plan").unwrap();
@@ -414,8 +423,20 @@ mod tests {
             .expect("headless claude gains the flag");
         assert_eq!(cmd.argv[i + 1], "claude-sonnet-5");
 
-        // Interactive stages negotiate with the user; no fallback flag.
+        // The interactive `plan` stage opts in: a pinned planning model needs
+        // its Opus safety net too.
+        let cmd = build(StageId::Plan, &cfg, &dirs, "s", None, None).unwrap();
+        let i = cmd
+            .argv
+            .iter()
+            .position(|a| a == "--fallback-model")
+            .expect("interactive plan gains the flag");
+        assert_eq!(cmd.argv[i + 1], "claude-sonnet-5");
+
+        // Other interactive stages negotiate with the user; no fallback flag.
         let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None, None).unwrap();
+        assert!(!cmd.argv.contains(&"--fallback-model".to_string()));
+        let cmd = build(StageId::Implement, &cfg, &dirs, "s", None, None).unwrap();
         assert!(!cmd.argv.contains(&"--fallback-model".to_string()));
 
         // Doc-chat is headless claude too.
@@ -430,6 +451,32 @@ mod tests {
             None,
         );
         assert!(cmd.argv.contains(&"--fallback-model".to_string()));
+    }
+
+    #[test]
+    fn effort_routes_to_cli_stages_and_skips_local_spec() {
+        let (_tmp, mut cfg, dirs) = setup();
+        std::fs::create_dir_all(dirs.feature_dir("s")).unwrap();
+        std::fs::write(dirs.plan_file("s"), "# plan").unwrap();
+        cfg.effort.insert("plan".into(), "xhigh".into());
+
+        // Pinned stage carries `--effort xhigh`.
+        let cmd = build(StageId::Plan, &cfg, &dirs, "s", None, None).unwrap();
+        let i = cmd
+            .argv
+            .iter()
+            .position(|a| a == "--effort")
+            .expect("plan gains --effort");
+        assert_eq!(cmd.argv[i + 1], "xhigh");
+
+        // A stage with no [effort] entry stays at the session default.
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None).unwrap();
+        assert!(!cmd.argv.contains(&"--effort".to_string()));
+
+        // Local `spec` has no CLI (empty argv) — never gains the flag even if set.
+        cfg.effort.insert("spec".into(), "xhigh".into());
+        let cmd = build(StageId::Spec, &cfg, &dirs, "s", None, None).unwrap();
+        assert!(cmd.argv.is_empty());
     }
 
     #[test]
