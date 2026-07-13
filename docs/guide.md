@@ -504,16 +504,18 @@ owns (`--session-id`), stored under the feature, so the handoff below is
 deterministic.
 
 **7. Implement.** Palette → `run implement`: ritual **resumes the exact
-tests-red session** (`--resume <that id>`) and auto-sends an implement
-instruction, so the same conversation that wrote the failing tests now
-makes them pass. This is pinned by id — a Claude session you have open in
-another terminal can't hijack the handoff (the old `--continue` grabbed
-"the most recent conversation in the directory"). If no session is pinned
-yet, implement opens the `--resume` picker so you choose, rather than
-guessing. As it edits, the global PostToolUse hook auto-runs `check.sh`
-and feeds failures back; the check segment in the statusline goes
-green/red, and the stage completes when `check.sh` passes. `⟨a⟩` takeover
-also reattaches to these pinned sessions now.
+tests-red session** (`--resume <that id>`), so the same conversation that
+wrote the failing tests now makes them pass. This is pinned by id — a
+Claude session you have open in another terminal can't hijack the handoff
+(the old `--continue` grabbed "the most recent conversation in the
+directory"). Because an interactive `claude --resume` can't be handed an
+opening message, ritual first shows a small overlay with a ready-to-paste
+instruction: copy it, press `⟨enter⟩` to open the session, and paste to
+start. If no session is pinned yet, the overlay leads into the `--resume`
+picker so you choose the right one. As Claude edits, the global PostToolUse
+hook auto-runs `check.sh` and feeds failures back; the check segment in the
+statusline goes green/red, and the stage completes when `check.sh` passes.
+`⟨a⟩` takeover also reattaches to these pinned sessions now.
 
 **8. Final review.** Palette → `run dual-review`: both models review
 the actual diff independently, findings merged into tab `⟨2⟩` again.

@@ -240,6 +240,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.triage_confirm.is_some() {
         draw_triage_confirm(f, app);
     }
+    if app.implement_hint.is_some() {
+        draw_implement_hint(f, app);
+    }
     if app.settings.is_some() {
         draw_settings(f, app);
     }
@@ -1849,6 +1852,63 @@ fn setting_hint(def: &crate::settings::SettingDef) -> String {
         Enum(vs) => format!("{} — {}", def.doc, vs.join("/")),
         OptEnum(vs) => format!("{} — {}, empty = unset", def.doc, vs.join("/")),
     }
+}
+
+/// The `implement` launch overlay: an interactive `claude --resume` can't be
+/// handed an opening message, so surface the suggested prompt for the user to
+/// copy/paste once the session opens. `enter` commits the handover.
+fn draw_implement_hint(f: &mut Frame, app: &App) {
+    let t = &app.cfg.theme;
+    let Some(hint) = &app.implement_hint else {
+        return;
+    };
+    let area = centered_rect(
+        f.area(),
+        66.min(f.area().width.saturating_sub(2)).max(1),
+        13.min(f.area().height.saturating_sub(2)).max(1),
+    );
+    let inner = float_panel(f, t, area, "implement — resume + paste to start");
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let lead = if hint.resuming {
+        "The tests-red session reopens with its full context."
+    } else {
+        "Pick the tests-red session from the list that opens."
+    };
+    let lines = vec![
+        Line::default(),
+        Line::from(Span::styled(
+            format!("  {lead}"),
+            Style::default().fg(t.muted()),
+        )),
+        Line::from(Span::styled(
+            "  Claude won't start on its own — copy this and paste it in:",
+            Style::default().fg(t.muted()),
+        )),
+        Line::default(),
+        Line::from(Span::styled(
+            crate::stages::IMPLEMENT_PROMPT,
+            Style::default().fg(t.highlight()),
+        )),
+        Line::default(),
+        Line::from(vec![
+            Span::styled(
+                "  [enter]",
+                Style::default().fg(t.accent()).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" open the session    ", Style::default().fg(t.muted())),
+            Span::styled(
+                "[esc]",
+                Style::default().fg(t.accent()).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" cancel", Style::default().fg(t.muted())),
+        ]),
+    ];
+    f.render_widget(
+        Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
+        inner,
+    );
 }
 
 /// The `t` triage confirm: what one `y` stages — dispositions only, the

@@ -302,8 +302,9 @@ pub fn findings_batch_fix_command(
 /// Build the exact command for a stage. `arg` is the optional user argument
 /// (plan path for plan-review, base ref for dual-review). `model_override`
 /// (retry-with-model, `run --model`) beats the `[models]` routing table.
-/// Kickoff instruction auto-sent when `implement` resumes the tests-red
-/// session, so it starts working instead of reopening an idle conversation.
+/// Suggested first message for `implement`, shown in the launch overlay for
+/// the user to copy/paste — an interactive `claude --resume` can't be handed a
+/// prompt, so ritual surfaces it instead of auto-sending it.
 pub const IMPLEMENT_PROMPT: &str = "Implement the code to make the failing tests from the tests-red step pass. Follow the plan and run ./check.sh before finishing.";
 
 pub fn build(
@@ -404,16 +405,15 @@ pub fn build(
             }
         }
         StageId::Implement => {
-            // `--resume [value]` takes an OPTIONAL value that is either a
-            // session id OR a picker search term. So the kickoff prompt can
-            // only ride as the trailing positional when a real session id
-            // precedes it; with no id, a bare `--resume` opens the picker —
-            // appending the prompt there would make it the picker's SEARCH
-            // TERM, not a message. Never `--continue`.
+            // Resume the exact tests-red conversation (by id, or the picker
+            // when unpinned) and let the user drive: an interactive
+            // `claude --resume` IGNORES any positional prompt (that only works
+            // with `--print`), and a token after a bare `--resume` would be
+            // taken as the picker's search term. So never a prompt here, and
+            // never `--continue`.
             let mut tail: Vec<String> = vec!["--resume".into()];
             if let Some(sid) = session {
                 tail.push(sid.to_string());
-                tail.push(IMPLEMENT_PROMPT.into());
             }
             StageCommand {
                 mode: Mode::Interactive,
@@ -889,9 +889,10 @@ mod tests {
         let bare = build(StageId::TestsRed, &cfg, &dirs, "s", None, None, None).unwrap();
         assert!(!bare.argv.iter().any(|a| a == "--session-id"));
 
-        // implement resumes that exact session, then auto-sends the kickoff.
+        // implement resumes that exact session (no prompt — the CLI ignores a
+        // positional on interactive resume; ritual surfaces it for paste).
         let cmd = build(StageId::Implement, &cfg, &dirs, "s", None, None, Some(sid)).unwrap();
-        assert_eq!(cmd.argv, vec!["claude", "--resume", sid, IMPLEMENT_PROMPT]);
+        assert_eq!(cmd.argv, vec!["claude", "--resume", sid]);
     }
 
     #[test]

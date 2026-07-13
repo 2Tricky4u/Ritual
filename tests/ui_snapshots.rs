@@ -385,6 +385,25 @@ fn settings_idx(key: &str) -> usize {
 }
 
 #[test]
+fn dashboard_implement_hint() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_app(&tmp);
+    app.implement_hint = Some(ritual::ui::app::ImplementHint {
+        req: ritual::ui::app::AttachedRequest {
+            stage: None,
+            argv: vec![
+                "claude".into(),
+                "--resume".into(),
+                "11111111-1111-4111-8111-111111111111".into(),
+            ],
+            cwd: tmp.path().to_path_buf(),
+        },
+        resuming: true,
+    });
+    insta::assert_snapshot!(render_at(&app, 90, 24));
+}
+
+#[test]
 fn dashboard_settings_overlay() {
     let tmp = tempfile::tempdir().unwrap();
     let app = setup_settings_app(&tmp);
@@ -566,6 +585,22 @@ fn rendering_survives_hostile_sizes_in_every_state() {
             Box::new(|| {
                 let t = tempfile::tempdir().unwrap();
                 let a = setup_settings_app(&t);
+                (t, a)
+            }),
+        ),
+        (
+            "implement-hint",
+            Box::new(|| {
+                let t = tempfile::tempdir().unwrap();
+                let mut a = setup_app(&t);
+                a.implement_hint = Some(ritual::ui::app::ImplementHint {
+                    req: ritual::ui::app::AttachedRequest {
+                        stage: None,
+                        argv: vec!["claude".into(), "--resume".into(), "uuid".into()],
+                        cwd: t.path().to_path_buf(),
+                    },
+                    resuming: true,
+                });
                 (t, a)
             }),
         ),

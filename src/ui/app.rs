@@ -72,6 +72,7 @@ pub struct FixTail {
 }
 
 /// Deferred request to hand the terminal to a child process.
+#[derive(Debug, Clone)]
 pub struct AttachedRequest {
     pub stage: Option<StageId>,
     pub argv: Vec<String>,
@@ -188,6 +189,8 @@ pub struct App {
     pub chat: Option<ChatState>,
     /// The `S` settings editor overlay (None = closed).
     pub settings: Option<SettingsState>,
+    /// The `implement` copy-paste-prompt overlay shown before the handover.
+    pub implement_hint: Option<ImplementHint>,
 
     findings_before: Vec<String>,
     run_task: Option<JoinHandle<()>>,
@@ -220,6 +223,17 @@ pub struct App {
 pub struct PaletteState {
     pub input: String,
     pub selected: usize,
+}
+
+/// The `implement` launch prompt-overlay. An interactive `claude --resume`
+/// can't be handed an opening message, so before the handover ritual shows the
+/// suggested instruction for the user to copy and paste into the resumed
+/// session. `enter` opens the session; `esc` cancels.
+#[derive(Debug, Clone)]
+pub struct ImplementHint {
+    pub req: AttachedRequest,
+    /// true = resuming the pinned tests-red session; false = the resume picker.
+    pub resuming: bool,
 }
 
 /// The `S` settings editor: a cursor over `settings::CATALOG` plus an
@@ -354,6 +368,7 @@ impl App {
             guide_scroll: 0,
             chat: None,
             settings: None,
+            implement_hint: None,
             findings_before: Vec::new(),
             run_task: None,
             current_run_id: None,
@@ -645,6 +660,10 @@ impl App {
         }
         if self.triage_confirm.is_some() {
             self.triage_confirm_input(key.code);
+            return;
+        }
+        if self.implement_hint.is_some() {
+            self.implement_hint_input(key.code);
             return;
         }
         if self.show_help {
@@ -960,14 +979,7 @@ impl App {
         // falls back to the `--resume` picker when none is pinned.
         let session: Option<String> = match stage {
             StageId::TestsRed => Some(crate::export::fresh_session_id()),
-            StageId::Implement => {
-                let sid = self.state.stage_session_id(&self.slug, StageId::TestsRed);
-                self.status_msg = Some(match &sid {
-                    Some(_) => "resuming the tests-red session".into(),
-                    None => "no pinned tests-red session — pick it from the resume list".into(),
-                });
-                sid
-            }
+            StageId::Implement => self.state.stage_session_id(&self.slug, StageId::TestsRed),
             _ => None,
         };
         let cmd = match stages::build(
@@ -1026,11 +1038,22 @@ impl App {
                     );
                     let _ = self.state.save(&self.dirs);
                 }
-                self.pending_attached = Some(AttachedRequest {
+                let req = AttachedRequest {
                     stage: Some(stage),
                     argv: cmd.argv,
                     cwd: run_cwd,
-                });
+                };
+                // implement resumes a conversation the CLI can't be handed an
+                // opening message for, so show the copy-paste prompt first;
+                // `enter` in the overlay commits the handover.
+                if stage == StageId::Implement {
+                    self.implement_hint = Some(ImplementHint {
+                        req,
+                        resuming: session.is_some(),
+                    });
+                } else {
+                    self.pending_attached = Some(req);
+                }
             }
             Mode::Headless => self.spawn_headless(stage, cmd, run_cwd, tx),
         }
@@ -2139,6 +2162,22 @@ impl App {
 
     /// `d`: open the one-line reason prompt for the selected finding.
     /// Already-dismissed findings toggle straight back to pending (no prompt).
+    /// Keys while the implement launch overlay is up: `enter` commits the
+    /// handover to `claude --resume`; anything else cancels (nothing launched).
+    fn implement_hint_input(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Enter => {
+                if let Some(hint) = self.implement_hint.take() {
+                    self.pending_attached = Some(hint.req);
+                }
+            }
+            _ => {
+                self.implement_hint = None;
+                self.status_msg = Some("implement cancelled".into());
+            }
+        }
+    }
+
     /// `S`: open/close the settings editor overlay (any tab, like help).
     fn toggle_settings(&mut self) {
         self.settings = match self.settings {
@@ -5704,27 +5743,50 @@ mod tests {
             "persisted to state so implement can find it"
         );
 
-        // implement resumes THAT exact session and auto-sends the kickoff.
+        // implement opens the copy-paste overlay first, staging a resume of
+        // THAT exact session; enter commits the handover.
         app.dispatch(Action::RunStage(StageId::Implement), &tx);
-        let req = app.pending_attached.take().expect("implement queued");
-        assert_eq!(req.argv[0], "claude");
-        assert_eq!(req.argv[1], "--resume");
-        assert_eq!(req.argv[2], sid);
-        assert_eq!(req.argv[3], crate::stages::IMPLEMENT_PROMPT);
-        assert_eq!(req.argv.len(), 4);
-        assert!(!req.argv.iter().any(|a| a == "--continue"));
+        assert!(
+            app.pending_attached.is_none(),
+            "overlay first, not a direct launch"
+        );
+        let hint = app.implement_hint.clone().expect("implement hint shown");
+        assert!(hint.resuming);
+        assert_eq!(
+            hint.req.argv,
+            vec!["claude".to_string(), "--resume".into(), sid.clone()]
+        );
+        assert!(!hint.req.argv.iter().any(|a| a == "--continue"));
+        // enter commits the resume.
+        press(&mut app, &tx, KeyCode::Enter);
+        assert!(app.implement_hint.is_none());
+        let req = app
+            .pending_attached
+            .take()
+            .expect("resume queued after enter");
+        assert_eq!(req.argv, vec!["claude".to_string(), "--resume".into(), sid]);
     }
 
     #[test]
     fn implement_without_pinned_session_opens_the_picker() {
         let (_t, mut app, tx, _rx) = test_app();
         app.dispatch(Action::RunStage(StageId::Implement), &tx);
-        let req = app.pending_attached.take().expect("implement queued");
-        // Picker form: bare `claude --resume` (no positional — it would be
-        // consumed as the picker's search term), never --continue.
-        assert_eq!(req.argv, vec!["claude", "--resume"]);
-        assert!(!req.argv.iter().any(|a| a == "--continue"));
-        assert!(app.status_msg.as_deref().unwrap().contains("pick it"));
+        let hint = app.implement_hint.clone().expect("implement hint shown");
+        assert!(!hint.resuming, "no pin → picker fallback");
+        // Picker form: bare `claude --resume` (a positional would be consumed
+        // as the picker's search term), never --continue.
+        assert_eq!(hint.req.argv, vec!["claude", "--resume"]);
+        assert!(!hint.req.argv.iter().any(|a| a == "--continue"));
+    }
+
+    #[test]
+    fn implement_hint_cancels_without_launching() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.dispatch(Action::RunStage(StageId::Implement), &tx);
+        assert!(app.implement_hint.is_some());
+        press(&mut app, &tx, KeyCode::Esc);
+        assert!(app.implement_hint.is_none());
+        assert!(app.pending_attached.is_none(), "esc launches nothing");
     }
 
     #[test]
