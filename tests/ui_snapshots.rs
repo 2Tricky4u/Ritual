@@ -381,6 +381,22 @@ fn rendering_survives_hostile_sizes_in_every_state() {
             }),
         ),
         (
+            "apply-confirm",
+            Box::new(|| {
+                let t = tempfile::tempdir().unwrap();
+                let mut a = setup_app(&t);
+                a.tab = Tab::Findings;
+                a.apply_confirm = Some(ritual::ui::app::ApplyConfirm {
+                    slug: "detached".into(),
+                    count: 3,
+                    skipped_other_features: 1,
+                    anchor_lost: 1,
+                    unqueue: None,
+                });
+                (t, a)
+            }),
+        ),
+        (
             "dismiss-prompt",
             Box::new(|| {
                 let t = tempfile::tempdir().unwrap();

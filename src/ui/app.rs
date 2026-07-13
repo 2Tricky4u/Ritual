@@ -69,30 +69,51 @@ pub struct AttachedRequest {
     pub cwd: std::path::PathBuf,
 }
 
-/// Everything `on_fix_exited` needs to gate + write back a claude plan fix.
-/// The findings file is tracked by PATH, not index: `reload_artifacts`
-/// invalidates indices, and the fix run can't touch findings JSON (its tool
-/// lock only allows the plan file), so path+pos stay stable.
+/// One queued finding inside a batch fix. Tracked by findings-file PATH, not
+/// index: `reload_artifacts` invalidates indices, and the fix run can't touch
+/// findings JSON (its tool lock only allows the plan file), so path+pos stay
+/// stable across the run.
 #[derive(Debug)]
-struct FixCtx {
+struct FixItem {
     findings_path: std::path::PathBuf,
     pos: usize,
-    title: String,
-    slug: String,
-    /// Branch the findings file came from (meta records, notifications).
-    branch: String,
-    plan_path: std::path::PathBuf,
-    /// `None` = the step couldn't be located: whole-doc scope, gate skipped.
+    /// 1-based number in the batch prompt (the ANSWERS block key).
+    number: u32,
+    /// `None` = the step couldn't be located: this item contributes a
+    /// whole-doc range, degrading the union gate.
     section: Option<String>,
     range: std::ops::Range<usize>,
 }
 
-/// The last applied fix, so `u` can revert it (and reopen its finding).
-struct LastFix {
+/// Everything `on_fix_exited` needs to gate + write back a batch plan fix.
+#[derive(Debug)]
+struct BatchFixCtx {
+    slug: String,
+    /// Branch the batch belongs to (meta records, notifications).
+    branch: String,
+    plan_path: std::path::PathBuf,
+    items: Vec<FixItem>,
+}
+
+/// The last APPLIED batch, so `u` can revert it: the one undo snapshot plus
+/// which findings it marked fixed (declined ones are already back in triage).
+struct LastBatch {
     slug: String,
     plan_path: std::path::PathBuf,
-    findings_path: std::path::PathBuf,
-    pos: usize,
+    fixed: Vec<(std::path::PathBuf, usize)>,
+}
+
+/// The F-apply confirm modal: what a `y` would spawn.
+pub struct ApplyConfirm {
+    pub slug: String,
+    pub count: usize,
+    /// Queued findings on OTHER features (skipped by this apply).
+    pub skipped_other_features: usize,
+    /// Items whose plan step no longer locates (whole-plan scope, gate off).
+    pub anchor_lost: usize,
+    /// The finding F was pressed on (`u` in the modal unqueues just it);
+    /// None when opened from the palette.
+    pub unqueue: Option<(std::path::PathBuf, usize)>,
 }
 
 /// The `d` dismiss prompt: identity captured at open (by PATH — a background
@@ -122,6 +143,8 @@ pub struct App {
     pub finding_detail: bool,
     /// `d`'s one-line reason prompt (None = closed).
     pub dismiss_prompt: Option<DismissPrompt>,
+    /// The F-apply confirm modal (None = closed).
+    pub apply_confirm: Option<ApplyConfirm>,
     /// Show findings already marked fixed/dismissed (toggled with `v`).
     pub show_resolved: bool,
     /// `/` filter over the findings/history lists (empty = inactive).
@@ -155,10 +178,10 @@ pub struct App {
     current_fix_run_id: Option<String>,
     /// Plan content snapshot from just before the fix run (scope gate + revert).
     fix_doc_before: String,
-    /// The in-flight claude plan fix, if any (one at a time).
-    fix_ctx: Option<FixCtx>,
-    /// The last APPLIED fix, revertable with `u` until a newer doc edit lands.
-    last_fix: Option<LastFix>,
+    /// The in-flight batch plan fix, if any (one at a time).
+    fix_ctx: Option<BatchFixCtx>,
+    /// The last APPLIED batch, revertable with `u` until a newer doc edit lands.
+    last_fix: Option<LastBatch>,
 }
 
 /// Command palette state: typed filter + selection over matching entries.
@@ -262,6 +285,7 @@ impl App {
             selected_finding: 0,
             finding_detail: false,
             dismiss_prompt: None,
+            apply_confirm: None,
             show_resolved: false,
             filter: String::new(),
             filter_editing: false,
@@ -301,10 +325,9 @@ impl App {
 
     /// Statusline / overlay label for the in-flight fix, e.g. `fix §Steps`.
     pub fn fix_label(&self) -> Option<String> {
-        self.fix_ctx.as_ref().map(|c| match &c.section {
-            Some(name) => format!("fix §{}", first_words(name, 18)),
-            None => "fix plan".into(),
-        })
+        self.fix_ctx
+            .as_ref()
+            .map(|c| format!("fix ⚑{}", c.items.len()))
     }
 
     /// True once a fix has been applied and `u` would revert it.
@@ -523,6 +546,10 @@ impl App {
         }
         if self.dismiss_prompt.is_some() {
             self.dismiss_input(key.code);
+            return;
+        }
+        if self.apply_confirm.is_some() {
+            self.apply_confirm_input(key.code, tx);
             return;
         }
         if self.show_help {
@@ -2120,14 +2147,9 @@ impl App {
             return;
         }
         if af.finding.answer.as_deref() == Some("auto") {
-            // P6 turns this arm into the apply-confirm modal.
-            let _ =
-                crate::findings::set_answer(&mut self.findings, af.file_idx, af.pos, None, None);
-            self.status_msg = Some(format!(
-                "{}: unqueued ({} still queued)",
-                af.finding.title,
-                self.queued_auto().len()
-            ));
+            // F on a queued finding = time to apply (or unqueue just this one).
+            let unqueue = Some((self.findings[af.file_idx].path.clone(), af.pos));
+            self.open_apply_confirm(unqueue);
             return;
         }
         match crate::findings::set_answer(
@@ -2147,15 +2169,77 @@ impl App {
         }
     }
 
-    /// Palette "findings: apply answers" (the modal lands with the batch run).
+    /// Palette "findings: apply answers": same modal, nothing to unqueue.
     fn findings_apply_from_palette(&mut self, tx: &mpsc::Sender<AppMsg>) {
         let _ = tx;
-        let n = self.queued_auto().len();
-        self.status_msg = Some(if n == 0 {
-            "no queued answers — F queues a plan finding for claude".into()
-        } else {
-            format!("{n} queued — press F on a queued finding to apply")
+        self.open_apply_confirm(None);
+    }
+
+    /// Open the apply-confirm modal for the feature in view: how many queued
+    /// answers a `y` would send, what gets skipped, and how degraded the
+    /// gate would be.
+    fn open_apply_confirm(&mut self, unqueue: Option<(std::path::PathBuf, usize)>) {
+        let queued = self.queued_auto();
+        let (mine, other): (Vec<_>, Vec<_>) = queued
+            .into_iter()
+            .partition(|af| self.finding_slug(af.file_idx) == self.slug);
+        if mine.is_empty() {
+            self.status_msg = Some(if other.is_empty() {
+                "no queued answers — F queues a plan finding for claude".into()
+            } else {
+                format!(
+                    "{} queued on other features; switch with [ ] to apply them",
+                    other.len()
+                )
+            });
+            return;
+        }
+        // Anchor health against the CURRENT plan: unlocatable steps degrade
+        // the gate to whole-doc for the whole batch — say so up front.
+        let plan_text =
+            std::fs::read_to_string(self.dirs.plan_file(&self.slug)).unwrap_or_default();
+        let anchor_lost = mine
+            .iter()
+            .filter(|af| {
+                af.finding
+                    .plan_step
+                    .as_deref()
+                    .and_then(|s| locate_plan_step(&plan_text, s))
+                    .is_none()
+            })
+            .count();
+        self.apply_confirm = Some(ApplyConfirm {
+            slug: self.slug.clone(),
+            count: mine.len(),
+            skipped_other_features: other.len(),
+            anchor_lost,
+            unqueue,
         });
+    }
+
+    /// Keys while the apply-confirm modal is open: `y` fires the batch run,
+    /// `u` unqueues the finding F was pressed on, anything else closes.
+    fn apply_confirm_input(&mut self, code: KeyCode, tx: &mpsc::Sender<AppMsg>) {
+        let Some(confirm) = self.apply_confirm.take() else {
+            return;
+        };
+        match code {
+            KeyCode::Char('y') => self.spawn_findings_apply(&confirm.slug, tx),
+            KeyCode::Char('u') => {
+                let Some((path, pos)) = confirm.unqueue else {
+                    self.status_msg = Some("nothing selected to unqueue".into());
+                    return;
+                };
+                if let Some(i) = self.findings.iter().position(|lf| lf.path == path) {
+                    let _ = crate::findings::set_answer(&mut self.findings, i, pos, None, None);
+                    self.status_msg = Some(format!(
+                        "unqueued ({} still queued)",
+                        self.queued_auto().len()
+                    ));
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Keep the selection valid after resolving/toggling changes the list.
@@ -2280,22 +2364,15 @@ impl App {
         });
     }
 
-    /// Everything that must hold before a claude plan fix may spawn, plus the
-    /// built command and write-back context. Pure of side effects except the
-    /// undo push + `fix_doc_before` snapshot (the last two steps, after every
-    /// guard has passed).
-    #[allow(dead_code)] // superseded by the batch apply; deleted with it next commit
-    fn prepare_finding_fix(&mut self) -> Result<(stages::StageCommand, FixCtx), String> {
-        let Some(af) = self.selected_finding_af() else {
-            return Err("no finding selected".into());
-        };
-        let f = &af.finding;
-        if f.file.is_some() {
-            return Err("claude fix targets plan findings only (v1); use o/e for code".into());
-        }
-        let Some(step) = f.plan_step.clone() else {
-            return Err("finding has no plan step to fix".into());
-        };
+    /// Everything that must hold before the batch apply may spawn, plus the
+    /// built command and write-back context. Side-effect-free until the last
+    /// two steps (undo push + `fix_doc_before` snapshot), after every guard.
+    /// ONE plan snapshot: every anchor resolves against the same text, so no
+    /// fix can rot the next finding's anchor.
+    fn prepare_findings_apply(
+        &mut self,
+        slug: &str,
+    ) -> Result<(stages::StageCommand, BatchFixCtx), String> {
         if self.fix_running() {
             return Err("a plan fix is already running".into());
         }
@@ -2307,81 +2384,111 @@ impl App {
                 "daily budget reached (${spent:.2}/${budget:.2}); raise budget_daily_usd to override"
             ));
         }
-        let slug = self.finding_slug(af.file_idx);
-        let plan_path = self.dirs.plan_file(&slug);
+        let queued = self.queued_auto();
+        let mine: Vec<_> = queued
+            .iter()
+            .filter(|af| self.finding_slug(af.file_idx) == slug)
+            .filter(|af| af.finding.file.is_none() && af.finding.plan_step.is_some())
+            .collect();
+        if mine.is_empty() {
+            return Err("no queued answers on this feature".into());
+        }
+        let plan_path = self.dirs.plan_file(slug);
         let Ok(text) = std::fs::read_to_string(&plan_path) else {
-            return Err(
-                "plan-review finding, but no plan.md on disk; run the plan stage first".into(),
-            );
+            return Err("no plan.md on disk; run the plan stage first".into());
         };
-        // Step -> line -> containing `##` section. Unlocatable steps fall back
-        // to whole-doc scope: the gate is skipped, only undo protects.
-        let (section, range) = match locate_plan_step(&text, &step).and_then(|line| {
-            crate::spec::sections(&text)
-                .into_iter()
-                .find(|(_, r)| r.contains(&((line - 1) as usize)))
-        }) {
-            Some((name, range)) => (Some(name), range),
-            None => (None, 0..text.lines().count()),
-        };
-        let scope = match &section {
-            Some(name) => stages::Scope::Section(name.clone()),
-            None => stages::Scope::Whole,
-        };
-        let brief = stages::FindingBrief {
-            title: &f.title,
-            severity: f.severity.label(),
-            scenario: &f.scenario,
-            plan_step: &step,
-            snippet: f.snippet.as_deref(),
-        };
-        let spec_path = self.dirs.spec_file(&slug);
+        let all_sections = crate::spec::sections(&text);
+        // Items + briefs share the 1-based numbering the ANSWERS block keys on.
+        let mut items: Vec<FixItem> = Vec::new();
+        let mut briefs: Vec<(u32, stages::FindingBrief)> = Vec::new();
+        for (i, af) in mine.iter().enumerate() {
+            let f = &af.finding;
+            let step = f.plan_step.as_deref().unwrap_or_default();
+            // Step -> line -> containing `##` section. Unlocatable steps fall
+            // back to a whole-doc range, degrading the union gate (the apply
+            // confirm surfaced that count before we got here).
+            let (section, range) = match locate_plan_step(&text, step).and_then(|line| {
+                all_sections
+                    .iter()
+                    .find(|(_, r)| r.contains(&((line - 1) as usize)))
+                    .cloned()
+            }) {
+                Some((name, range)) => (Some(name), range),
+                None => (None, 0..text.lines().count()),
+            };
+            let number = (i + 1) as u32;
+            items.push(FixItem {
+                findings_path: self.findings[af.file_idx].path.clone(),
+                pos: af.pos,
+                number,
+                section,
+                range,
+            });
+            briefs.push((
+                number,
+                stages::FindingBrief {
+                    title: &f.title,
+                    severity: f.severity.label(),
+                    scenario: &f.scenario,
+                    plan_step: step,
+                    snippet: f.snippet.as_deref(),
+                },
+            ));
+        }
+        // Prompt-level scope: the deduped section names — unless any anchor
+        // was lost, in which case the honest scope is the whole plan.
+        let mut section_names: Vec<&str> = Vec::new();
+        let mut any_lost = false;
+        for it in &items {
+            match &it.section {
+                Some(s) if !section_names.contains(&s.as_str()) => section_names.push(s),
+                Some(_) => {}
+                None => any_lost = true,
+            }
+        }
+        if any_lost {
+            section_names.clear();
+        }
+        let spec_path = self.dirs.spec_file(slug);
         let spec_path = spec_path.exists().then_some(spec_path);
         let invariants = stages::meaningful_invariants(&self.dirs);
-        let cmd = stages::finding_fix_command(
+        let cmd = stages::findings_batch_fix_command(
             &self.cfg,
             &plan_path,
-            &scope,
-            &brief,
+            &section_names,
+            &briefs,
             spec_path.as_deref(),
             invariants.as_deref(),
         );
-        let branch = self
-            .findings
-            .get(af.file_idx)
+        let branch = mine
+            .first()
+            .and_then(|af| self.findings.get(af.file_idx))
             .map(|lf| lf.file.branch.clone())
             .filter(|b| !b.is_empty())
             .unwrap_or_else(|| self.branch.clone());
         // Guards all passed: snapshot for the gate and persist the undo point.
-        let _ = std::fs::create_dir_all(self.dirs.feature_dir(&slug));
-        let _ = crate::undo::push(&self.dirs, &slug, stages::DocKind::Plan.label(), &text);
+        let _ = std::fs::create_dir_all(self.dirs.feature_dir(slug));
+        let _ = crate::undo::push(&self.dirs, slug, stages::DocKind::Plan.label(), &text);
         self.fix_doc_before = text;
-        let ctx = FixCtx {
-            findings_path: self.findings[af.file_idx].path.clone(),
-            pos: af.pos,
-            title: f.title.clone(),
-            slug,
-            branch,
-            plan_path,
-            section,
-            range,
-        };
-        Ok((cmd, ctx))
+        Ok((
+            cmd,
+            BatchFixCtx {
+                slug: slug.to_string(),
+                branch,
+                plan_path,
+                items,
+            },
+        ))
     }
 
-    /// `F`: spawn ONE headless claude run that fixes the selected plan-review
-    /// finding inside its plan section (apply + gate + auto-mark; `u` reverts).
-    #[allow(dead_code)] // superseded by the batch apply; deleted with it next commit
-    fn spawn_finding_fix(&mut self, tx: &mpsc::Sender<AppMsg>) {
-        if self.tab != Tab::Findings {
-            self.status_msg = Some("F fixes findings on the findings tab (2)".into());
-            return;
-        }
+    /// `y` in the apply confirm: spawn ONE headless claude run answering
+    /// every queued finding of this feature (gate + verdicts + `u` reverts).
+    fn spawn_findings_apply(&mut self, slug: &str, tx: &mpsc::Sender<AppMsg>) {
         let Some(run_cwd) = self.run_cwd() else {
             self.status_msg = Some(format!("branch '{}' has no checkout", self.branch));
             return;
         };
-        let (cmd, ctx) = match self.prepare_finding_fix() {
+        let (cmd, ctx) = match self.prepare_findings_apply(slug) {
             Ok(v) => v,
             Err(msg) => {
                 self.status_msg = Some(msg);
@@ -2402,7 +2509,7 @@ impl App {
             feature: title,
             branch: ctx.branch.clone(),
             redact: self.cfg.redaction,
-            repro: None, // small scoped edit; skip provenance like doc-chat
+            repro: None, // scoped doc edit; skip provenance like doc-chat
             cwd: run_cwd,
             wrapper: stages::wrapper_argv(&self.cfg, cmd.mode),
         };
@@ -2411,11 +2518,10 @@ impl App {
             self.status_msg = Some(format!("plan-fix failed to start: {e:#}"));
             return;
         }
-        let label = match &ctx.section {
-            Some(n) => format!("§{n}"),
-            None => "the whole plan (step not located — undo only)".into(),
-        };
-        self.status_msg = Some(format!("fixing {label} via claude…"));
+        self.status_msg = Some(format!(
+            "applying {} answer(s) via claude…",
+            ctx.items.len()
+        ));
         self.last_fix = None; // the new run owns the top of the undo stack
         self.fix_ctx = Some(ctx);
         self.attach_fix_tail(run_id, req.agent, tx);
@@ -2454,11 +2560,14 @@ impl App {
         }));
     }
 
-    /// A plan fix finished: enforce the scope gate, auto-mark or revert.
+    /// The batch fix finished: enforce the union gate, then honor the
+    /// per-finding ANSWERS verdicts — FIXED auto-marks, DECLINED returns the
+    /// finding to triage with the reason. A leak reverts EVERYTHING and the
+    /// whole queue survives.
     fn on_fix_exited(
         &mut self,
         outcome: Result<RunOutcome>,
-        _result_text: Option<String>,
+        result_text: Option<String>,
         tx: &mpsc::Sender<AppMsg>,
     ) {
         self.fix_task = None;
@@ -2470,10 +2579,7 @@ impl App {
         let plan_label = stages::DocKind::Plan.label();
         let content = std::fs::read_to_string(&ctx.plan_path).unwrap_or_default();
         let changed = content != self.fix_doc_before;
-        let label = match &ctx.section {
-            Some(n) => format!("§{n}"),
-            None => "plan".into(),
-        };
+        let n = ctx.items.len();
         match outcome {
             Err(e) if changed => {
                 let _ = crate::undo::undo(&self.dirs, &ctx.slug, plan_label, &ctx.plan_path);
@@ -2497,69 +2603,122 @@ impl App {
                     ));
                 }
             }
-            Ok(o) if !changed => {
-                let cost = o.meta.total_cost_usd.unwrap_or(0.0);
-                self.status_msg = Some(format!(
-                    "plan-fix declined — no edit made (may need a broader change) · ${cost:.3}"
-                ));
-            }
             Ok(o) => {
                 let cost = o.meta.total_cost_usd.unwrap_or(0.0);
-                // Whole-doc scope (section None) has an all-covering range, so
-                // the gate degenerates to always-confined there by design.
-                match crate::spec::edits_confined(&self.fix_doc_before, &content, &ctx.range) {
+                let ranges: Vec<std::ops::Range<usize>> =
+                    ctx.items.iter().map(|i| i.range.clone()).collect();
+                // Items with lost anchors carry whole-doc ranges, so the gate
+                // degenerates to always-confined for those batches by design
+                // (the apply confirm said so up front).
+                match crate::spec::edits_confined_multi(&self.fix_doc_before, &content, &ranges) {
                     None => {
                         let _ =
                             crate::undo::undo(&self.dirs, &ctx.slug, plan_label, &ctx.plan_path);
                         self.reload_artifacts();
                         self.status_msg = Some(format!(
-                            "reverted: fix leaked outside {label}; finding stays pending"
+                            "reverted: batch fix leaked outside the queued sections; {n} stay queued"
                         ));
                         crate::notify::notify(
                             self.cfg.notifications,
                             "ritual: plan-fix reverted",
-                            &format!("{}: {}", ctx.branch, ctx.title),
+                            &format!("{}: leaked edit rolled back", ctx.branch),
                         );
                     }
                     Some((added, removed)) => {
                         self.reload_artifacts();
-                        // Re-find the findings file by PATH: reload shifted the
-                        // indices, but the fix run can't have rewritten findings
-                        // JSON (its tool lock only allows the plan file).
-                        if let Some(i) = self
-                            .findings
-                            .iter()
-                            .position(|lf| lf.path == ctx.findings_path)
-                            && self.findings[i]
+                        let verdicts = result_text
+                            .as_deref()
+                            .map(crate::answers::parse_answers)
+                            .unwrap_or_default();
+                        let mut fixed_list: Vec<(std::path::PathBuf, usize)> = Vec::new();
+                        let mut declined = 0usize;
+                        for item in &ctx.items {
+                            // Re-find the findings file by PATH: reload shifted
+                            // indices, but the run can't rewrite findings JSON
+                            // (tool lock) and set_action/set_answer never
+                            // reorder, so path+pos stay stable.
+                            let Some(i) = self
+                                .findings
+                                .iter()
+                                .position(|lf| lf.path == item.findings_path)
+                            else {
+                                continue;
+                            };
+                            // A mid-run f/d by the user wins over any verdict.
+                            if self.findings[i]
                                 .file
                                 .findings
-                                .get(ctx.pos)
-                                .is_some_and(|f| f.action != "fixed")
-                        {
-                            // set_action toggles same-value back to pending, so
-                            // only apply when it isn't already fixed.
-                            let _ = crate::findings::set_action(
-                                &mut self.findings,
-                                i,
-                                ctx.pos,
-                                "fixed",
-                            );
+                                .get(item.pos)
+                                .is_none_or(|f| f.resolved())
+                            {
+                                continue;
+                            }
+                            // An unchanged plan can't have fixed anything, no
+                            // matter what the ANSWERS block claims.
+                            let verdict = match verdicts.get(&item.number) {
+                                Some(crate::answers::AnswerVerdict::Fixed) if changed => {
+                                    crate::answers::AnswerVerdict::Fixed
+                                }
+                                Some(crate::answers::AnswerVerdict::Fixed) => {
+                                    crate::answers::AnswerVerdict::Declined(
+                                        "claimed fixed but made no edit".into(),
+                                    )
+                                }
+                                Some(v) => v.clone(),
+                                None => crate::answers::AnswerVerdict::Declined(
+                                    "run gave no verdict".into(),
+                                ),
+                            };
+                            match verdict {
+                                crate::answers::AnswerVerdict::Fixed => {
+                                    let _ = crate::findings::set_action(
+                                        &mut self.findings,
+                                        i,
+                                        item.pos,
+                                        "fixed",
+                                    );
+                                    let _ = crate::findings::set_answer(
+                                        &mut self.findings,
+                                        i,
+                                        item.pos,
+                                        None,
+                                        None,
+                                    );
+                                    fixed_list.push((item.findings_path.clone(), item.pos));
+                                }
+                                crate::answers::AnswerVerdict::Declined(reason) => {
+                                    let _ = crate::findings::set_answer(
+                                        &mut self.findings,
+                                        i,
+                                        item.pos,
+                                        None,
+                                        Some(&reason),
+                                    );
+                                    declined += 1;
+                                }
+                            }
                         }
                         self.clamp_selected_finding();
-                        self.status_msg = Some(format!(
-                            "✓ {label} rewritten (+{added}/−{removed}) · ${cost:.3} · u reverts"
-                        ));
+                        let f = fixed_list.len();
+                        self.status_msg = Some(if changed {
+                            format!(
+                                "✓ plan rewritten (+{added}/−{removed}) · {f} fixed · {declined} declined · ${cost:.3} · u reverts"
+                            )
+                        } else {
+                            format!("plan unchanged · {declined} declined · ${cost:.3}")
+                        });
                         crate::notify::notify(
                             self.cfg.notifications,
                             "ritual: plan-fix done",
-                            &format!("{}: {}", ctx.branch, ctx.title),
+                            &format!("{}: {f} fixed · {declined} declined", ctx.branch),
                         );
-                        self.last_fix = Some(LastFix {
-                            slug: ctx.slug.clone(),
-                            plan_path: ctx.plan_path.clone(),
-                            findings_path: ctx.findings_path.clone(),
-                            pos: ctx.pos,
-                        });
+                        if !fixed_list.is_empty() || changed {
+                            self.last_fix = Some(LastBatch {
+                                slug: ctx.slug.clone(),
+                                plan_path: ctx.plan_path.clone(),
+                                fixed: fixed_list,
+                            });
+                        }
                     }
                 }
             }
@@ -2575,38 +2734,50 @@ impl App {
         }
     }
 
-    /// `u`: revert the last APPLIED claude plan fix and reopen its finding.
+    /// `u`: revert the last APPLIED batch — one undo restores the plan, its
+    /// FIXED findings reopen and requeue (⚑A) for another round.
     fn doc_undo(&mut self) {
         if self.fix_running() || self.chat_running() {
             self.status_msg = Some("busy: wait for the running edit to finish".into());
             return;
         }
-        let Some(lf) = self.last_fix.take() else {
-            self.status_msg = Some("no plan fix to revert (chat has Ctrl+Z)".into());
+        let Some(lb) = self.last_fix.take() else {
+            self.status_msg = Some("no applied batch to revert (chat has Ctrl+Z)".into());
             return;
         };
         match crate::undo::undo(
             &self.dirs,
-            &lf.slug,
+            &lb.slug,
             stages::DocKind::Plan.label(),
-            &lf.plan_path,
+            &lb.plan_path,
         ) {
             Ok(true) => {
                 self.reload_artifacts();
-                if let Some(i) = self
-                    .findings
-                    .iter()
-                    .position(|x| x.path == lf.findings_path)
-                    && self.findings[i]
-                        .file
-                        .findings
-                        .get(lf.pos)
-                        .is_some_and(|f| f.action == "fixed")
-                {
-                    // Same-value set_action toggles fixed -> pending.
-                    let _ = crate::findings::set_action(&mut self.findings, i, lf.pos, "fixed");
+                let mut reopened = 0usize;
+                for (path, pos) in &lb.fixed {
+                    if let Some(i) = self.findings.iter().position(|x| &x.path == path)
+                        && self.findings[i]
+                            .file
+                            .findings
+                            .get(*pos)
+                            .is_some_and(|f| f.action == "fixed")
+                    {
+                        // Same-value set_action toggles fixed -> pending; the
+                        // answer flag comes back so the queue survives intact.
+                        let _ = crate::findings::set_action(&mut self.findings, i, *pos, "fixed");
+                        let _ = crate::findings::set_answer(
+                            &mut self.findings,
+                            i,
+                            *pos,
+                            Some("auto"),
+                            None,
+                        );
+                        reopened += 1;
+                    }
                 }
-                self.status_msg = Some("plan fix reverted; finding pending again".into());
+                self.status_msg = Some(format!(
+                    "batch reverted; {reopened} finding(s) queued again"
+                ));
             }
             Ok(false) => self.status_msg = Some("nothing to undo".into()),
             Err(e) => self.status_msg = Some(format!("undo failed: {e:#}")),
@@ -2997,8 +3168,14 @@ mod tests {
         assert!(seeded_json(&app).contains(r#""answer": "auto""#));
         assert_eq!(app.queued_auto().len(), 1);
         assert!(app.status_msg.as_deref().unwrap().contains("⚑A queued"));
-        // Toggle back off (the apply confirm supersedes this next commit).
+        // F on a queued finding opens the apply confirm; `u` in it unqueues.
         app.dispatch(Action::FindingClaudeFix, &tx);
+        assert!(app.apply_confirm.is_some());
+        app.on_input(
+            Event::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert!(app.apply_confirm.is_none());
         assert!(!seeded_json(&app).contains("answer"));
         assert_eq!(app.queued_auto().len(), 0);
     }
@@ -3139,10 +3316,12 @@ mod tests {
         assert!(seeded_json(&app).contains(r#""action": "dismissed""#));
     }
 
-    /// Plan with two sections; "Step 2" maps into "## Steps" (lines 2..6).
-    const FIX_PLAN: &str = "# Plan\n\n## Steps\n1. first\n2. second\n\n## Risks\nr1\n";
+    /// Plan with two sections; "Step 2" maps into "## Steps" (lines 2..6),
+    /// "chain breakage" into "## Risks" (6..8).
+    const FIX_PLAN: &str =
+        "# Plan\n\n## Steps\n1. first\n2. second\n\n## Risks\nchain breakage risk\n";
 
-    /// Seed a plan + one plan-review finding pointing at Step 2; findings tab.
+    /// Seed a plan + two QUEUED plan-review findings (one per section).
     fn seed_fixable(app: &mut App) {
         let plan = app.dirs.plan_file(&app.slug);
         std::fs::create_dir_all(plan.parent().unwrap()).unwrap();
@@ -3151,7 +3330,9 @@ mod tests {
             app,
             r#"{"stage":"plan-review","findings":[
                 {"id":1,"title":"step 2 is wrong","plan_step":"Step 2 (x)","severity":"major",
-                 "scenario":"boom","verdict":"confirmed"}]}"#,
+                 "scenario":"boom","verdict":"confirmed","answer":"auto"},
+                {"id":2,"title":"risk is vague","plan_step":"chain breakage","severity":"minor",
+                 "scenario":"unbounded","verdict":"confirmed","answer":"auto"}]}"#,
         );
     }
 
@@ -3167,188 +3348,254 @@ mod tests {
     }
 
     #[test]
-    fn prepare_fix_refuses_code_findings_busy_states_and_missing_step() {
-        let (_t, mut app, _tx, _rx) = test_app();
-        seed_findings(
-            &mut app,
-            r#"{"stage":"dual-review","findings":[
-                {"id":1,"title":"code bug","file":"src/a.rs","line":3,"severity":"major","verdict":"confirmed"},
-                {"id":2,"title":"no location","severity":"minor","verdict":"confirmed"}]}"#,
-        );
-        // Code finding -> manual flow only.
-        let err = app.prepare_finding_fix().unwrap_err();
-        assert!(err.contains("plan findings only"), "{err}");
-        // No plan_step at all.
-        app.selected_finding = 1;
-        let err = app.prepare_finding_fix().unwrap_err();
-        assert!(err.contains("no plan step"), "{err}");
-
-        // Busy: a fix already running.
-        let (_t2, mut app2, _tx2, _rx2) = test_app();
-        seed_fixable(&mut app2);
-        let (_cmd, ctx) = app2.prepare_finding_fix().unwrap();
-        app2.fix_ctx = Some(ctx);
-        let err = app2.prepare_finding_fix().unwrap_err();
-        assert!(err.contains("already running"), "{err}");
-    }
-
-    #[test]
-    fn prepare_fix_resolves_section_and_pushes_undo() {
+    fn prepare_apply_collects_only_current_features_queued() {
         let (_t, mut app, _tx, _rx) = test_app();
         seed_fixable(&mut app);
-        let (cmd, ctx) = app.prepare_finding_fix().unwrap();
-        assert_eq!(ctx.section.as_deref(), Some("Steps"));
-        assert_eq!(ctx.range, 2..6);
-        assert_eq!(ctx.pos, 0);
-        assert_eq!(app.fix_doc_before, FIX_PLAN);
-        assert_eq!(crate::undo::depth(&app.dirs, &ctx.slug, "plan"), 1);
-        let prompt = cmd.argv.iter().find(|a| a.starts_with("/spec")).unwrap();
-        assert!(prompt.contains(r#"SCOPE: section "Steps""#));
-        assert!(prompt.contains("title: step 2 is wrong"));
-        let i = cmd
-            .argv
-            .iter()
-            .position(|a| a == "--max-budget-usd")
-            .unwrap();
-        assert_eq!(cmd.argv[i + 1], "1");
-    }
-
-    #[test]
-    fn prepare_fix_falls_back_to_whole_when_step_unlocatable() {
-        let (_t, mut app, _tx, _rx) = test_app();
-        seed_fixable(&mut app);
-        // Point the finding at a step that exists nowhere in the plan.
-        let path = app
-            .dirs
-            .findings_dir()
-            .join("20260713T000000Z-plan-review.json");
+        // A queued finding on ANOTHER feature must not ride this batch.
         std::fs::write(
-            &path,
-            r#"{"stage":"plan-review","findings":[
-                {"id":1,"title":"lost","plan_step":"Step 99 (nowhere)","severity":"major","verdict":"confirmed"}]}"#,
+            app.dirs
+                .findings_dir()
+                .join("20260713T000001Z-plan-review.json"),
+            r#"{"stage":"plan-review","branch":"other-feature","findings":[
+                {"id":9,"title":"elsewhere","plan_step":"Step 1","severity":"major",
+                 "verdict":"confirmed","answer":"auto"}]}"#,
         )
         .unwrap();
         app.reload_artifacts();
-        let (cmd, ctx) = app.prepare_finding_fix().unwrap();
-        assert_eq!(ctx.section, None);
-        assert_eq!(ctx.range, 0..FIX_PLAN.lines().count());
+        let slug = app.slug.clone();
+        let (cmd, ctx) = app.prepare_findings_apply(&slug).unwrap();
+        assert_eq!(ctx.items.len(), 2, "other-feature finding skipped");
+        assert_eq!(ctx.items[0].section.as_deref(), Some("Steps"));
+        assert_eq!(ctx.items[1].section.as_deref(), Some("Risks"));
         let prompt = cmd.argv.iter().find(|a| a.starts_with("/spec")).unwrap();
-        assert!(prompt.contains("SCOPE: whole"));
+        assert!(prompt.contains("FINDING #1:"));
+        assert!(prompt.contains("FINDING #2:"));
+        assert!(prompt.contains(r#"SCOPE: sections "Steps", "Risks""#));
+        assert!(!prompt.contains("elsewhere"));
+        assert_eq!(app.fix_doc_before, FIX_PLAN);
+        assert_eq!(crate::undo::depth(&app.dirs, &ctx.slug, "plan"), 1);
     }
 
     #[test]
-    fn on_fix_exited_confined_marks_fixed_and_notes_counts() {
+    fn apply_confirm_opens_counts_and_u_unqueues() {
         let (_t, mut app, tx, _rx) = test_app();
         seed_fixable(&mut app);
-        app.finding_detail = true;
-        let (_cmd, ctx) = app.prepare_finding_fix().unwrap();
+        // F on a queued finding opens the modal instead of unqueueing.
+        app.dispatch(Action::FindingClaudeFix, &tx);
+        let confirm = app.apply_confirm.as_ref().expect("modal open");
+        assert_eq!(confirm.count, 2);
+        assert_eq!(confirm.anchor_lost, 0);
+        assert!(confirm.unqueue.is_some());
+        // `u` unqueues just the cursor's finding and closes the modal.
+        app.on_input(
+            Event::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert!(app.apply_confirm.is_none());
+        assert_eq!(app.queued_auto().len(), 1);
+        // `y` routes into prepare: a zero daily budget stops it there
+        // (proving the wiring without spawning a real daemon).
+        app.cfg.budget_daily_usd = Some(0.0);
+        // Move the cursor onto the still-queued finding (the unqueued one
+        // would just get re-queued by F).
+        app.selected_finding = 1;
+        app.dispatch(Action::FindingClaudeFix, &tx); // reopen on the remaining ⚑A
+        assert!(app.apply_confirm.is_some());
+        app.on_input(
+            Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
+            &tx,
+        );
+        assert!(app.apply_confirm.is_none());
+        assert!(
+            app.status_msg
+                .as_deref()
+                .is_some_and(|m| m.contains("daily budget"))
+        );
+    }
+
+    #[test]
+    fn batch_confined_marks_fixed_and_declined_per_verdict() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_fixable(&mut app);
+        let slug = app.slug.clone();
+        let (_cmd, ctx) = app.prepare_findings_apply(&slug).unwrap();
         let plan_path = ctx.plan_path.clone();
         app.fix_ctx = Some(ctx);
-        // The "agent" edits inside the section.
+        app.finding_detail = true;
+        // The "agent" edits BOTH allowed sections.
         std::fs::write(
             &plan_path,
-            FIX_PLAN.replace("2. second", "2. second, fixed"),
+            FIX_PLAN
+                .replace("2. second", "2. second, hardened")
+                .replace("chain breakage risk", "chain breakage risk, mitigated"),
         )
         .unwrap();
-        app.on_fix_exited(fix_outcome(true, 0.05), None, &tx);
-        let msg = app.status_msg.clone().unwrap_or_default();
-        assert!(msg.contains("✓ §Steps rewritten (+1/−1)"), "{msg}");
-        assert!(msg.contains("u reverts"), "{msg}");
-        assert!(!app.finding_detail, "overlay closes with the verdict");
-        assert!(app.fix_revertable());
-        assert!(!app.fix_running());
-        // Write-through: the finding is fixed on disk.
-        let json = std::fs::read_to_string(
-            app.dirs
-                .findings_dir()
-                .join("20260713T000000Z-plan-review.json"),
-        )
-        .unwrap();
+        app.on_fix_exited(
+            fix_outcome(true, 0.08),
+            Some("ANSWERS:\n#1: FIXED\n#2: DECLINED needs a spec change".into()),
+            &tx,
+        );
+        let json = seeded_json(&app);
+        // #1 fixed, answer cleared; #2 back to triage with the reason.
         assert!(json.contains(r#""action": "fixed""#), "{json}");
+        assert!(!json.contains(r#""answer": "auto""#), "{json}");
+        assert!(json.contains("needs a spec change"), "{json}");
+        let msg = app.status_msg.clone().unwrap_or_default();
+        assert!(msg.contains("1 fixed · 1 declined"), "{msg}");
+        assert!(msg.contains("u reverts"), "{msg}");
+        assert!(app.fix_revertable());
+        assert!(!app.finding_detail, "overlay closes with the verdict");
     }
 
     #[test]
-    fn on_fix_exited_leak_reverts_and_keeps_pending() {
+    fn batch_leak_reverts_all_and_keeps_answers() {
         let (_t, mut app, tx, _rx) = test_app();
         seed_fixable(&mut app);
-        let (_cmd, ctx) = app.prepare_finding_fix().unwrap();
+        let slug = app.slug.clone();
+        let (_cmd, ctx) = app.prepare_findings_apply(&slug).unwrap();
         let plan_path = ctx.plan_path.clone();
         app.fix_ctx = Some(ctx);
-        // The "agent" edits OUTSIDE the section (Risks body).
-        std::fs::write(&plan_path, FIX_PLAN.replace("r1", "r1 sneaky")).unwrap();
-        app.on_fix_exited(fix_outcome(true, 0.05), None, &tx);
-        let msg = app.status_msg.clone().unwrap_or_default();
-        assert!(msg.contains("leaked outside §Steps"), "{msg}");
-        // Mechanically reverted; finding still pending; nothing revertable.
+        // The "agent" edits the locked title line between nothing — a leak.
+        std::fs::write(&plan_path, FIX_PLAN.replace("# Plan", "# Plan v2")).unwrap();
+        app.on_fix_exited(
+            fix_outcome(true, 0.08),
+            Some("ANSWERS:\n#1: FIXED\n#2: FIXED".into()),
+            &tx,
+        );
+        // Mechanically reverted; the whole queue survives; nothing revertable.
         assert_eq!(std::fs::read_to_string(&plan_path).unwrap(), FIX_PLAN);
+        assert_eq!(app.queued_auto().len(), 2);
         assert!(!app.fix_revertable());
-        let json = std::fs::read_to_string(
-            app.dirs
-                .findings_dir()
-                .join("20260713T000000Z-plan-review.json"),
-        )
-        .unwrap();
-        assert!(!json.contains(r#""action": "fixed""#), "{json}");
+        let msg = app.status_msg.clone().unwrap_or_default();
+        assert!(msg.contains("leaked"), "{msg}");
+        assert!(msg.contains("2 stay queued"), "{msg}");
+        assert!(!seeded_json(&app).contains(r#""action": "fixed""#));
     }
 
     #[test]
-    fn on_fix_exited_unchanged_is_declined_and_failure_reverts() {
+    fn missing_result_text_declines_everything() {
         let (_t, mut app, tx, _rx) = test_app();
         seed_fixable(&mut app);
-        let (_cmd, ctx) = app.prepare_finding_fix().unwrap();
-        let plan_path = ctx.plan_path.clone();
-        app.fix_ctx = Some(ctx);
-        // No edit at all -> declined, finding stays pending.
-        app.on_fix_exited(fix_outcome(true, 0.02), None, &tx);
-        let msg = app.status_msg.clone().unwrap_or_default();
-        assert!(msg.contains("declined"), "{msg}");
-        assert!(!app.fix_revertable());
-
-        // A failed run that DID edit gets rolled back.
-        let (_cmd, ctx) = app.prepare_finding_fix().unwrap();
-        app.fix_ctx = Some(ctx);
-        std::fs::write(&plan_path, "half-written garbage\n").unwrap();
-        app.on_fix_exited(fix_outcome(false, 0.01), None, &tx);
-        let msg = app.status_msg.clone().unwrap_or_default();
-        assert!(msg.contains("reverted"), "{msg}");
-        assert_eq!(std::fs::read_to_string(&plan_path).unwrap(), FIX_PLAN);
-    }
-
-    #[test]
-    fn doc_undo_restores_plan_and_reopens_finding() {
-        let (_t, mut app, tx, _rx) = test_app();
-        seed_fixable(&mut app);
-        let (_cmd, ctx) = app.prepare_finding_fix().unwrap();
+        let slug = app.slug.clone();
+        let (_cmd, ctx) = app.prepare_findings_apply(&slug).unwrap();
         let plan_path = ctx.plan_path.clone();
         app.fix_ctx = Some(ctx);
         std::fs::write(&plan_path, FIX_PLAN.replace("2. second", "2. improved")).unwrap();
         app.on_fix_exited(fix_outcome(true, 0.05), None, &tx);
+        let json = seeded_json(&app);
+        assert!(!json.contains(r#""action": "fixed""#), "{json}");
+        assert_eq!(seeded_json(&app).matches("run gave no verdict").count(), 2);
+        assert_eq!(app.queued_auto().len(), 0, "declined = back to unanswered");
+        let msg = app.status_msg.clone().unwrap_or_default();
+        assert!(msg.contains("0 fixed · 2 declined"), "{msg}");
+    }
+
+    #[test]
+    fn unchanged_plan_defeats_fixed_verdicts() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_fixable(&mut app);
+        let slug = app.slug.clone();
+        let (_cmd, ctx) = app.prepare_findings_apply(&slug).unwrap();
+        app.fix_ctx = Some(ctx);
+        // No edit at all, but the model CLAIMS it fixed #1.
+        app.on_fix_exited(
+            fix_outcome(true, 0.03),
+            Some("ANSWERS:\n#1: FIXED\n#2: DECLINED overlaps".into()),
+            &tx,
+        );
+        let json = seeded_json(&app);
+        assert!(!json.contains(r#""action": "fixed""#), "{json}");
+        assert!(json.contains("claimed fixed but made no edit"), "{json}");
+        let msg = app.status_msg.clone().unwrap_or_default();
+        assert!(msg.contains("plan unchanged"), "{msg}");
+        assert!(!app.fix_revertable(), "nothing to revert without an edit");
+    }
+
+    #[test]
+    fn verdict_does_not_clobber_mid_run_dismissal() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_fixable(&mut app);
+        let slug = app.slug.clone();
+        let (_cmd, ctx) = app.prepare_findings_apply(&slug).unwrap();
+        let plan_path = ctx.plan_path.clone();
+        app.fix_ctx = Some(ctx);
+        // While the run works, the user dismisses finding #2 by hand.
+        let pos2 = 1;
+        crate::findings::set_action(&mut app.findings, 0, pos2, "dismissed").unwrap();
+        std::fs::write(&plan_path, FIX_PLAN.replace("2. second", "2. improved")).unwrap();
+        app.on_fix_exited(
+            fix_outcome(true, 0.05),
+            Some("ANSWERS:\n#1: FIXED\n#2: FIXED".into()),
+            &tx,
+        );
+        let json = seeded_json(&app);
+        // The dismissal wins; only #1 got marked fixed.
+        assert!(json.contains(r#""action": "dismissed""#), "{json}");
+        assert_eq!(json.matches(r#""action": "fixed""#).count(), 1, "{json}");
+    }
+
+    #[test]
+    fn doc_undo_batch_restores_plan_reopens_fixed_and_requeues() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_fixable(&mut app);
+        let slug = app.slug.clone();
+        let (_cmd, ctx) = app.prepare_findings_apply(&slug).unwrap();
+        let plan_path = ctx.plan_path.clone();
+        app.fix_ctx = Some(ctx);
+        std::fs::write(&plan_path, FIX_PLAN.replace("2. second", "2. improved")).unwrap();
+        app.on_fix_exited(
+            fix_outcome(true, 0.05),
+            Some("ANSWERS:\n#1: FIXED\n#2: DECLINED later".into()),
+            &tx,
+        );
         assert!(app.fix_revertable());
 
         app.doc_undo();
         assert_eq!(std::fs::read_to_string(&plan_path).unwrap(), FIX_PLAN);
         assert!(!app.fix_revertable());
-        let json = std::fs::read_to_string(
-            app.dirs
-                .findings_dir()
-                .join("20260713T000000Z-plan-review.json"),
-        )
-        .unwrap();
-        assert!(json.contains(r#""action": "pending""#), "{json}");
+        let json = seeded_json(&app);
+        assert!(!json.contains(r#""action": "fixed""#), "{json}");
+        // The reverted finding is queued (⚑A) again for another round.
+        assert_eq!(app.queued_auto().len(), 1);
+        assert!(
+            app.status_msg
+                .as_deref()
+                .is_some_and(|m| m.contains("1 finding(s) queued again"))
+        );
         // Nothing left to revert.
         app.doc_undo();
         assert!(
             app.status_msg
                 .as_deref()
-                .is_some_and(|m| m.contains("no plan fix to revert"))
+                .is_some_and(|m| m.contains("no applied batch to revert"))
         );
+    }
+
+    #[test]
+    fn failed_run_mid_edit_reverts_batch() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_fixable(&mut app);
+        let slug = app.slug.clone();
+        let (_cmd, ctx) = app.prepare_findings_apply(&slug).unwrap();
+        let plan_path = ctx.plan_path.clone();
+        app.fix_ctx = Some(ctx);
+        std::fs::write(&plan_path, "half-written garbage\n").unwrap();
+        app.on_fix_exited(fix_outcome(false, 0.01), None, &tx);
+        assert_eq!(std::fs::read_to_string(&plan_path).unwrap(), FIX_PLAN);
+        assert!(
+            app.status_msg
+                .as_deref()
+                .is_some_and(|m| m.contains("reverted"))
+        );
+        assert_eq!(app.queued_auto().len(), 2, "queue survives a failed run");
     }
 
     #[test]
     fn chat_send_and_ctrl_z_are_held_while_fix_runs() {
         let (_t, mut app, tx, _rx) = test_app();
         seed_fixable(&mut app);
-        let (_cmd, ctx) = app.prepare_finding_fix().unwrap();
+        let slug = app.slug.clone();
+        let (_cmd, ctx) = app.prepare_findings_apply(&slug).unwrap();
         app.fix_ctx = Some(ctx);
         // Open a chat and try to send: the message queues instead of spawning.
         app.chat = Some(ChatState {

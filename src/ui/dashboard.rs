@@ -195,6 +195,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.dismiss_prompt.is_some() {
         draw_dismiss_prompt(f, app);
     }
+    if app.apply_confirm.is_some() {
+        draw_apply_confirm(f, app);
+    }
     if app.show_help {
         draw_help(f, t);
     }
@@ -1594,6 +1597,52 @@ fn draw_help(f: &mut Frame, t: &Theme) {
         lines.push(Line::default());
     }
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The F-apply confirm: what one `y` will send to claude, and how degraded
+/// the mechanical gate would be.
+fn draw_apply_confirm(f: &mut Frame, app: &App) {
+    let t = &app.cfg.theme;
+    let Some(c) = &app.apply_confirm else { return };
+    let area = centered_rect(
+        f.area(),
+        58.min(f.area().width.saturating_sub(2)).max(1),
+        5.min(f.area().height.saturating_sub(2)).max(1),
+    );
+    let inner = float_panel(f, t, area, "apply answers");
+    if inner.height == 0 {
+        return;
+    }
+    let mut lines = vec![Line::from(Span::styled(
+        format!("apply {} answer(s) via claude — ONE run?", c.count),
+        Style::default().fg(t.fg()).add_modifier(Modifier::BOLD),
+    ))];
+    if c.skipped_other_features > 0 || c.anchor_lost > 0 {
+        let mut notes = Vec::new();
+        if c.skipped_other_features > 0 {
+            notes.push(format!(
+                "{} on other features skipped",
+                c.skipped_other_features
+            ));
+        }
+        if c.anchor_lost > 0 {
+            notes.push(format!(
+                "{} anchor(s) lost → whole-plan scope, gate off",
+                c.anchor_lost
+            ));
+        }
+        lines.push(Line::from(Span::styled(
+            notes.join(" · "),
+            Style::default().fg(t.warn()),
+        )));
+    }
+    let mut keys: Vec<Span> = vec![keycap(t, "y"), Span::raw(" apply  ")];
+    keys.push(keycap(t, "u"));
+    keys.push(Span::raw(" unqueue this  "));
+    keys.push(keycap(t, "esc"));
+    keys.push(Span::raw(" cancel"));
+    lines.push(Line::from(keys));
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 /// `d`'s one-line reason input (enter = commit, empty ok; esc = cancel).

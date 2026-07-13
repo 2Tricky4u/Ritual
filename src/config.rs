@@ -21,8 +21,8 @@ pub struct FileConfig {
     pub budget_dual_review_usd: Option<f64>,
     /// Per-message ceiling for a spec/plan chat edit (one small Edit each).
     pub budget_doc_chat_usd: Option<f64>,
-    /// Per-run ceiling for a claude plan fix (`F` on a finding): reads the
-    /// whole plan + spec for consistency, edits one section.
+    /// Ceiling for ONE batch plan-fix run (F-apply answers all queued
+    /// findings in a single run — per run, not per finding).
     pub budget_finding_fix_usd: Option<f64>,
     /// `[keys]` table: action name -> chord ("check-full = \"F\"").
     pub keys: Option<HashMap<String, String>>,
