@@ -1,12 +1,16 @@
 # ritual roadmap
 
-> **Status (v0.9.0, 2026-07-13)**: v0.6–v0.9 shipped the findings-triage
+> **Status (v0.9.1, 2026-07-13)**: v0.6–v0.9 shipped the findings-triage
 > cycle — finding detail overlay, claude-scoped plan fix (`F`) with a
 > mechanical gate + revert, triage → one-run batch apply with per-finding
 > ANSWERS verdicts, recommendation chips + `t` one-touch triage, decoded
 > failure reasons — and the in-TUI settings editor (`S`: effective values +
 > source tags, comment-preserving project-config writes, transactional
-> live-apply). Per-release detail lives in the README Roadmap.
+> live-apply). v0.9.1 made the tests-red → implement handoff deterministic:
+> ritual pins the tests-red conversation with `--session-id` and implement
+> resumes it by id (dropping the fragile `--continue` that could attach to an
+> unrelated concurrent Claude session). Per-release detail lives in the README
+> Roadmap.
 >
 > **Status (v0.5.0, 2026-07-12): the evidence-backed quality batch shipped**:
 > mutation-kill gate (`mutants`), secrets gate (gitleaks, blocking), invariants
