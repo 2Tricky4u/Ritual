@@ -51,6 +51,15 @@ pub struct Finding {
     pub verdict: String,
     #[serde(default)]
     pub action: String,
+    /// Triage answer for a still-open finding: "auto" (queued for the claude
+    /// batch fix) or "manual" (the user will fix it). Never blocks CI —
+    /// answered findings stay unresolved until actually fixed/dismissed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
+    /// Free-text context: why a finding was dismissed, or why the batch fix
+    /// declined it. Feeds `ritual lessons`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -186,6 +195,19 @@ pub fn set_action(
     pos: usize,
     action: &str,
 ) -> Result<()> {
+    set_action_with_reason(loaded, file_idx, pos, action, None)
+}
+
+/// `set_action` plus a reason recorded in the SAME atomic write (dismissal
+/// rationale for `ritual lessons`). Toggling back to "pending" clears any
+/// stored reason.
+pub fn set_action_with_reason(
+    loaded: &mut [LoadedFindings],
+    file_idx: usize,
+    pos: usize,
+    action: &str,
+    reason: Option<&str>,
+) -> Result<()> {
     let lf = loaded
         .get_mut(file_idx)
         .ok_or_else(|| anyhow::anyhow!("no findings file at index {file_idx}"))?;
@@ -194,11 +216,40 @@ pub fn set_action(
         .findings
         .get_mut(pos)
         .ok_or_else(|| anyhow::anyhow!("no finding at position {pos}"))?;
-    finding.action = if finding.action == action {
-        "pending".to_string() // toggle off
+    if finding.action == action {
+        finding.action = "pending".to_string(); // toggle off
+        finding.reason = None;
     } else {
-        action.to_string()
-    };
+        finding.action = action.to_string();
+        finding.reason = reason.map(str::to_string);
+    }
+    rewrite(lf)
+}
+
+/// Set (or clear) a finding's triage answer and reason: plain assignment,
+/// no toggle — toggle policy lives with the caller. Same atomic rewrite.
+pub fn set_answer(
+    loaded: &mut [LoadedFindings],
+    file_idx: usize,
+    pos: usize,
+    answer: Option<&str>,
+    reason: Option<&str>,
+) -> Result<()> {
+    let lf = loaded
+        .get_mut(file_idx)
+        .ok_or_else(|| anyhow::anyhow!("no findings file at index {file_idx}"))?;
+    let finding = lf
+        .file
+        .findings
+        .get_mut(pos)
+        .ok_or_else(|| anyhow::anyhow!("no finding at position {pos}"))?;
+    finding.answer = answer.map(str::to_string);
+    finding.reason = reason.map(str::to_string);
+    rewrite(lf)
+}
+
+/// Persist a findings file: pretty JSON, tmp + rename (atomic on POSIX).
+fn rewrite(lf: &LoadedFindings) -> Result<()> {
     let tmp = lf.path.with_extension("json.tmp");
     std::fs::write(&tmp, serde_json::to_string_pretty(&lf.file)?)?;
     std::fs::rename(&tmp, &lf.path)?;
@@ -353,6 +404,82 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("let x = 1;"));
         assert_eq!(text.matches("snippet").count(), 1);
+    }
+
+    #[test]
+    fn answer_reason_roundtrip_and_absence_stays_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("20260713T000001Z-plan-review.json");
+        std::fs::write(
+            &path,
+            r#"{"stage":"plan-review",
+                "findings":[{"title":"queued","answer":"auto","reason":"why"},
+                            {"title":"bare"}]}"#,
+        )
+        .unwrap();
+        let mut loaded = load_all(tmp.path()).unwrap();
+        assert_eq!(loaded[0].file.findings[0].answer.as_deref(), Some("auto"));
+        assert_eq!(loaded[0].file.findings[0].reason.as_deref(), Some("why"));
+        assert_eq!(loaded[0].file.findings[1].answer, None);
+
+        // Rewrite keeps present values and does NOT invent nulls where absent.
+        set_action(&mut loaded, 0, 1, "fixed").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("answer").count(), 1, "{text}");
+        assert_eq!(text.matches("reason").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn set_answer_writes_and_clears_plainly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("20260713T000002Z-plan-review.json");
+        std::fs::write(
+            &path,
+            r#"{"stage":"plan-review","findings":[{"title":"t","plan_step":"Step 1"}]}"#,
+        )
+        .unwrap();
+        let mut loaded = load_all(tmp.path()).unwrap();
+        // Queue for the claude batch.
+        set_answer(&mut loaded, 0, 0, Some("auto"), None).unwrap();
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains(r#""answer": "auto""#)
+        );
+        // No toggle: same value sticks.
+        set_answer(&mut loaded, 0, 0, Some("auto"), None).unwrap();
+        assert_eq!(loaded[0].file.findings[0].answer.as_deref(), Some("auto"));
+        // Batch declined: answer cleared, reason recorded.
+        set_answer(&mut loaded, 0, 0, None, Some("needs spec change")).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("answer"), "{text}");
+        assert!(text.contains("needs spec change"));
+        // An answered finding is still unresolved (never blocks-as-resolved).
+        assert!(!loaded[0].file.findings[0].resolved());
+        // Out-of-range stays an error.
+        assert!(set_answer(&mut loaded, 0, 9, None, None).is_err());
+    }
+
+    #[test]
+    fn dismiss_with_reason_persists_and_toggle_clears() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("20260713T000003Z-plan-review.json");
+        std::fs::write(
+            &path,
+            r#"{"stage":"plan-review","findings":[{"title":"noise"}]}"#,
+        )
+        .unwrap();
+        let mut loaded = load_all(tmp.path()).unwrap();
+        set_action_with_reason(&mut loaded, 0, 0, "dismissed", Some("known limitation")).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#""action": "dismissed""#));
+        assert!(text.contains("known limitation"));
+        assert!(loaded[0].file.findings[0].resolved());
+        // Toggling back to pending clears the reason too.
+        set_action_with_reason(&mut loaded, 0, 0, "dismissed", None).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#""action": "pending""#));
+        assert!(!text.contains("known limitation"), "{text}");
     }
 
     #[test]

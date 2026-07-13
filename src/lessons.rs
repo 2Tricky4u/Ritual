@@ -28,11 +28,17 @@ pub fn generate(dirs: &RitualDirs) -> Result<Option<String>> {
                 _ => continue,
             };
             let loc = f.location();
-            let entry = if loc.is_empty() {
+            let mut entry = if loc.is_empty() {
                 f.title.clone()
             } else {
                 format!("{} ({loc})", f.title)
             };
+            // A recorded dismissal rationale is the sharpest lesson there is.
+            if f.action == "dismissed"
+                && let Some(reason) = f.reason.as_deref().filter(|r| !r.trim().is_empty())
+            {
+                entry.push_str(&format!(" — {}", reason.trim()));
+            }
             match bucket.iter_mut().find(|(e, _)| *e == entry) {
                 Some((_, n)) => *n += 1,
                 None => bucket.push((entry, 1)),
@@ -122,6 +128,29 @@ mod tests {
         assert!(md.contains("## Confirmed real-bug areas"));
         assert!(md.contains("- real race (src/b.rs:9)"));
         assert!(!md.contains("still open"), "pending is not a lesson");
+    }
+
+    #[test]
+    fn dismissal_reason_sharpens_the_noise_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        seed(
+            &dirs.findings_dir(),
+            "20260713T000000Z-plan-review.json",
+            r#"{"stage":"plan-review","findings":[
+                {"title":"style nit","plan_step":"Step 3","action":"dismissed",
+                 "reason":"style is out of scope for reviews"},
+                {"title":"fixed thing","file":"src/a.rs","line":4,"action":"fixed",
+                 "reason":"should not appear on fixed lines"}
+            ]}"#,
+        );
+        let md = generate(&dirs).unwrap().expect("has lessons");
+        assert!(
+            md.contains("- style nit (Step 3) — style is out of scope for reviews"),
+            "{md}"
+        );
+        // Reasons ride only the dismissed bucket.
+        assert!(!md.contains("should not appear"), "{md}");
     }
 
     #[test]
