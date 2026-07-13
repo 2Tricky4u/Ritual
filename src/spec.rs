@@ -69,6 +69,115 @@ pub fn edits_confined(before: &str, after: &str, range: &Range<usize>) -> Option
     Some((added, removed))
 }
 
+/// Multi-section scope gate: did the change stay inside the UNION of
+/// `ranges` (each a `sections()` line range on `before`)? The complement of
+/// the merged ranges is a sequence of LOCKED blocks that must survive
+/// verbatim, in order, disjoint: the first anchored at the top of `after`
+/// when the doc starts locked, the last anchored at the bottom when it ends
+/// locked, interior blocks matched greedily leftmost (complete for
+/// existence — the classic glob-matching argument, since the gaps between
+/// blocks are unconstrained).
+///
+/// `None` = the edit leaked outside every allowed region. `Some((added,
+/// removed))` = confined; the line-multiset delta of the allowed regions.
+/// Empty `ranges` = the whole document is locked (identity required).
+/// A single range behaves exactly like `edits_confined`.
+pub fn edits_confined_multi(
+    before: &str,
+    after: &str,
+    ranges: &[Range<usize>],
+) -> Option<(usize, usize)> {
+    let b: Vec<&str> = before.lines().collect();
+    let a: Vec<&str> = after.lines().collect();
+    let merged = merge_ranges(ranges, b.len());
+
+    // Locked blocks: the complement of the merged ranges, in order.
+    let mut locked: Vec<Range<usize>> = Vec::new();
+    let mut cursor = 0;
+    for r in &merged {
+        if cursor < r.start {
+            locked.push(cursor..r.start);
+        }
+        cursor = r.end;
+    }
+    if cursor < b.len() {
+        locked.push(cursor..b.len());
+    }
+    let starts_locked = merged.first().is_none_or(|r| r.start > 0);
+    let ends_locked = merged.last().is_none_or(|r| r.end < b.len());
+
+    // Match `a` against locked0 · gap · locked1 · … ; record the gaps (the
+    // allowed regions of `a`) for the counts.
+    let mut pos = 0usize;
+    let mut gaps: Vec<Range<usize>> = Vec::new();
+    let n = locked.len();
+    for (i, blk) in locked.iter().enumerate() {
+        let lines = &b[blk.clone()];
+        let at = if i == 0 && starts_locked {
+            (a.len() >= lines.len() && &a[..lines.len()] == lines).then_some(0)?
+        } else if i == n - 1 && ends_locked {
+            let start = a.len().checked_sub(lines.len())?;
+            (start >= pos && &a[start..] == lines).then_some(start)?
+        } else {
+            find_block(&a, lines, pos)?
+        };
+        if at > pos {
+            gaps.push(pos..at);
+        }
+        pos = at + lines.len();
+    }
+    if ends_locked {
+        if pos != a.len() {
+            return None; // text past the end-anchored block (single-block case)
+        }
+    } else if pos < a.len() {
+        gaps.push(pos..a.len());
+    }
+
+    // Line-multiset delta over allowed regions: after-gaps vs before-ranges.
+    let mut counts: std::collections::HashMap<&str, i64> = std::collections::HashMap::new();
+    for g in &gaps {
+        for l in &a[g.clone()] {
+            *counts.entry(l).or_default() += 1;
+        }
+    }
+    for r in &merged {
+        for l in &b[r.clone()] {
+            *counts.entry(l).or_default() -= 1;
+        }
+    }
+    let added = counts.values().filter(|v| **v > 0).sum::<i64>() as usize;
+    let removed = -counts.values().filter(|v| **v < 0).sum::<i64>() as usize;
+    Some((added, removed))
+}
+
+/// Clamp to `len`, drop empties, sort, merge overlapping AND adjacent ranges.
+fn merge_ranges(ranges: &[Range<usize>], len: usize) -> Vec<Range<usize>> {
+    let mut rs: Vec<Range<usize>> = ranges
+        .iter()
+        .map(|r| {
+            let s = r.start.min(len);
+            s..r.end.min(len).max(s)
+        })
+        .filter(|r| r.start < r.end)
+        .collect();
+    rs.sort_by_key(|r| r.start);
+    let mut merged: Vec<Range<usize>> = Vec::new();
+    for r in rs {
+        match merged.last_mut() {
+            Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+            _ => merged.push(r),
+        }
+    }
+    merged
+}
+
+/// Leftmost start index ≥ `from` where `blk` appears verbatim in `a`.
+fn find_block(a: &[&str], blk: &[&str], from: usize) -> Option<usize> {
+    let last_start = a.len().checked_sub(blk.len())?;
+    (from..=last_start).find(|&i| &a[i..i + blk.len()] == blk)
+}
+
 /// The ATX heading level (1-6) and trimmed title text, or None. Requires the
 /// mandatory space after the `#`s (so `###` alone or `#tag` is not a heading).
 fn heading(line: &str) -> Option<(usize, String)> {
@@ -189,6 +298,120 @@ mod tests {
         assert_eq!(edits_confined(GATE_DOC, "totally new\n", &range), None);
         // Truncated below prefix+suffix length.
         assert_eq!(edits_confined(GATE_DOC, "# Plan\n", &range), None);
+    }
+
+    /// lines: 0 "# Plan", 1 "", 2 "## A", 3 "a1", 4 "", 5 "## B", 6 "b1",
+    /// 7 "", 8 "## C", 9 "c1"  → sections: A=2..5, B=5..8, C=8..10.
+    const GATE_DOC3: &str = "# Plan\n\n## A\na1\n\n## B\nb1\n\n## C\nc1\n";
+
+    #[test]
+    fn multi_single_range_equals_edits_confined() {
+        // Every case the single-range tests exercise must agree.
+        let cases: &[(&str, Range<usize>)] = &[
+            ("# Plan\n\n## A\na1 fixed\na2\n\n## B\nb1\n", 2..6),
+            ("# Plan\n\n## A\na1\na1b\na2\n\n## B\nb1\n", 2..6),
+            ("# Plan\n\n## A\na1\n\n## B\nb1\n", 2..6),
+            ("# Plan\n\n## A (renamed)\na1\na2\n\n## B\nb1\n", 2..6),
+            ("# Plan\n\n## A\na1\na2\n\nextra\n## B\nb1\n", 2..6),
+            ("# Plan v2\n\n## A\na1\na2\n\n## B\nb1\n", 2..6),
+            ("# Plan\nsneak\n## A\na1\na2\n\n## B\nb1\n", 2..6),
+            ("# Plan\n\n## A\na1\na2\n\n## B (renamed)\nb1\n", 2..6),
+            ("# Plan\n\n## A\na1\na2\n\n## B\nb1 changed\n", 2..6),
+            ("# Plan\n\n## A\na2\n\n## B\nb1\na1\n", 2..6),
+            ("totally new\n", 2..6),
+            ("# Plan\n", 2..6),
+            ("# Plan\n\n## A\na1\na2\n\n## B\nb1 fixed\nb2\nb3\n", 6..8),
+            ("# Plan\n\n## A\nleak\na2\n\n## B\nb1\n", 6..8),
+            ("anything\nat all\n", 0..8),
+        ];
+        for (after, range) in cases {
+            assert_eq!(
+                edits_confined_multi(GATE_DOC, after, std::slice::from_ref(range)),
+                edits_confined(GATE_DOC, after, range),
+                "parity broke for range {range:?} on {after:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn multi_accepts_edits_in_both_sections_and_rejects_between() {
+        let ranges = vec![2..5, 8..10]; // A and C; B stays locked between them
+        // Edit both allowed sections at once.
+        let after = "# Plan\n\n## A\na1 fixed\n\n## B\nb1\n\n## C\nc1 fixed\n";
+        assert_eq!(
+            edits_confined_multi(GATE_DOC3, after, &ranges),
+            Some((2, 2))
+        );
+        // Edit the locked section between the ranges.
+        let after = "# Plan\n\n## A\na1\n\n## B\nb1 sneaky\n\n## C\nc1\n";
+        assert_eq!(edits_confined_multi(GATE_DOC3, after, &ranges), None);
+        // Edit the locked prefix.
+        let after = "# Plan v2\n\n## A\na1\n\n## B\nb1\n\n## C\nc1\n";
+        assert_eq!(edits_confined_multi(GATE_DOC3, after, &ranges), None);
+        // Last section is allowed: free tail growth.
+        let after = "# Plan\n\n## A\na1\n\n## B\nb1\n\n## C\nc1\nc2\nc3\n";
+        assert_eq!(
+            edits_confined_multi(GATE_DOC3, after, &ranges),
+            Some((2, 0))
+        );
+    }
+
+    #[test]
+    fn multi_merges_overlapping_adjacent_and_unordered() {
+        // A (2..6) and B (6..8) are adjacent: together they free 2..8, so an
+        // edit in B passes even when the ranges arrive reversed.
+        let after = "# Plan\n\n## A\na1\na2\n\n## B\nb1 fixed\n";
+        assert_eq!(
+            edits_confined_multi(GATE_DOC, after, &[6..8, 2..6]),
+            Some((1, 1))
+        );
+        // Overlapping ranges merge to the same span.
+        assert_eq!(
+            edits_confined_multi(GATE_DOC, after, &[2..7, 5..8]),
+            Some((1, 1))
+        );
+        // ...but the prefix stays locked.
+        let after = "# Plan v2\n\n## A\na1\na2\n\n## B\nb1\n";
+        assert_eq!(edits_confined_multi(GATE_DOC, after, &[6..8, 2..6]), None);
+    }
+
+    #[test]
+    fn multi_interior_locked_block_equal_to_inserted_text() {
+        // Insert a duplicate of the locked "## B" heading INSIDE allowed A:
+        // greedy matching must not bind the locked block to the duplicate.
+        let ranges = vec![2..5, 8..10];
+        let after = "# Plan\n\n## A\na1\n## B\n\n## B\nb1\n\n## C\nc1\n";
+        assert_eq!(
+            edits_confined_multi(GATE_DOC3, after, &ranges),
+            Some((1, 0))
+        );
+    }
+
+    #[test]
+    fn multi_degenerate_ranges() {
+        // Empty ranges: the whole document is locked -> identity required.
+        assert_eq!(edits_confined_multi(GATE_DOC, GATE_DOC, &[]), Some((0, 0)));
+        assert_eq!(edits_confined_multi(GATE_DOC, "# Plan\nx\n", &[]), None);
+        // Out-of-bounds ranges clamp to nothing -> identity required.
+        assert_eq!(
+            edits_confined_multi(GATE_DOC, GATE_DOC, std::slice::from_ref(&(50..99))),
+            Some((0, 0))
+        );
+        assert_eq!(
+            edits_confined_multi(GATE_DOC, "# Plan\nx\n", std::slice::from_ref(&(50..99))),
+            None
+        );
+        // An allowed section may be deleted entirely (empty gap).
+        let after = "# Plan\n\n## B\nb1\n\n## C\nc1\n";
+        assert_eq!(
+            edits_confined_multi(GATE_DOC3, after, std::slice::from_ref(&(2..5))),
+            Some((0, 3))
+        );
+        // Whole-doc range: everything allowed.
+        assert_eq!(
+            edits_confined_multi(GATE_DOC3, "anything\n", std::slice::from_ref(&(0..10))),
+            Some((1, 10))
+        );
     }
 
     #[test]
