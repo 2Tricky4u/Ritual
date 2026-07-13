@@ -286,7 +286,7 @@ blame = "git log --oneline -3 -- {{finding.file}}"
 
 All rebindable via `[keys]`:
 
-`enter` run stage / finding details · `s` chat: edit spec/plan · `:` palette · `j/k` move · `tab` `1-5` panes (`5` = in-app guide & tips) · `f/d/v` finding fix/dismiss(+reason)/show-resolved · `F` queue + apply claude answers (batch, gated) · `m` queue manual · `u` revert applied batch · `/` filter list · `[` `]` features · `a` takeover · `o` open in nvim · `Q` findings → quickfix · `c/C` check fast/full · `x` cancel · `e` editor · `r` refresh · `g/G` scroll/follow · `?` help · `q` quit. In chat: `Ctrl+Z` undo · `Alt+Z` redo · `Ctrl+X` cancel · `Alt+Enter` newline
+`enter` run stage / finding details · `s` chat: edit spec/plan · `:` palette · `j/k` move · `tab` `1-5` panes (`5` = in-app guide & tips) · `f/d/v` finding fix/dismiss(+reason)/show-resolved · `F` queue + apply claude answers (batch, gated) · `m` queue manual · `t` one-touch recommended triage · `u` revert applied batch · `/` filter list · `[` `]` features · `a` takeover · `o` open in nvim · `Q` findings → quickfix · `c/C` check fast/full · `x` cancel · `e` editor · `r` refresh · `g/G` scroll/follow · `?` help · `q` quit. In chat: `Ctrl+Z` undo · `Alt+Z` redo · `Ctrl+X` cancel · `Alt+Enter` newline
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -299,6 +299,7 @@ All rebindable via `[keys]`:
 - [x] **v0.5**: mutation + secrets gates, invariants constitution, review memory, findings snippets, `costs`, fallback + retry-with-model, sandbox wrapper, CodeRabbit third reviewer, OTel GenAI semconv + IETF audit-trail export, chat undo stack + reattach
 - [x] **v0.6**: finding detail overlay (enter), claude-scoped plan fix (`F`) with a mechanical section gate + one-key revert (`u`), plan-step routing for `o`/`Q`, `[effort]` routing
 - [x] **v0.7**: findings triage → batch-apply — answer every finding (⚑A claude / ⚑M manual / dismiss+reason), ONE run fixes them all against one plan snapshot with a union gate + per-finding ANSWERS verdicts, atomic batch revert, ⚓ anchor-lost markers, Q manual pass
+- [x] **v0.8**: decoded failure reasons (budget knob / tool-lock denials / `ritual attach` hint), right-aligned triage state chips + recommendation ghosts, `t` one-touch recommended triage, prose resolutions preserved as reasons, subdir-launch root canonicalization fix
 - [ ] **Deferred**: steerable runs (Agent SDK), `ritual mcp-server`, SQLite/fuzzy history, chat fork-at-turn, container worktrees, OTLP receiver + in-TUI span waterfall, tree-sitter repo map
 
 See the full [ROADMAP.md][roadmap-url] for the design rationale behind each item, and the non-goals.
@@ -350,7 +351,7 @@ See the full [ROADMAP.md][roadmap-url] for the design rationale behind each item
 </div>
 
 <!-- MARKDOWN LINKS & IMAGES -->
-[version-shield]: https://img.shields.io/badge/version-0.7.0-9d7cd8?style=for-the-badge
+[version-shield]: https://img.shields.io/badge/version-0.8.0-9d7cd8?style=for-the-badge
 [tests-shield]: https://img.shields.io/badge/cargo_tests-294_passing-73daca?style=for-the-badge
 [e2e-shield]: https://img.shields.io/badge/live_driver-80%2F80-7aa2f7?style=for-the-badge
 [chain-shield]: https://img.shields.io/badge/audit-tamper--evident-e0af68?style=for-the-badge

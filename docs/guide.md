@@ -48,8 +48,9 @@ suggestions.
 
 - **1 live**: agent stream; greeter when idle
 - **2 findings**: j/k select · enter details · f fix · d dismiss(+reason) ·
-  F queue/apply claude answers · m queue manual · u revert batch ·
-  v resolved · `/` filter · e editor · o nvim · Q quickfix/manual pass
+  F queue/apply claude answers · m queue manual · t auto-triage ·
+  u revert batch · v resolved · `/` filter · e editor · o nvim ·
+  Q quickfix/manual pass
 - **3 history** shows past runs: cost, tokens, duration · `/` filter
 - **4 plan**: rendered plan.md (falls back to spec)
 - **5 guide**: this page
@@ -118,6 +119,15 @@ the one document you targeted (enforced at the permission layer).
    yours to fix (**⚑M**), `⟨d⟩` dismisses — with an optional one-line
    **reason** (Enter on empty = plain dismiss) that feeds the review
    memory. The statusline counts your queue (`⚑N`).
+   **Every row wears its state on the right**: `⚑A queued` / `⚑M
+   manual` / `✗ declined` / `✓ fixed` / `∅ dismissed` — or, while
+   untriaged, a dim **ghost of the recommended decision** (`→⚑A` `→⚑M`
+   `→✓` archive `→∅` dismiss `→you`). One touch applies them all:
+   `⟨t⟩` shows the counts (archive = the review already fixed it and
+   recorded HOW — the prose moves into `reason`, never lost; withdrawn/
+   refuted → dismissed; confirmed plan/code → queued ⚑A/⚑M; "need you"
+   is never auto-applied) and `y` writes the dispositions. `t` never
+   touches the plan — that stays behind `F`-apply.
 5. **Apply**: `⟨F⟩` on a queued finding (or `:` → "findings: apply
    answers") confirms and spawns **one** headless run answering ALL
    queued findings against a single plan snapshot: it reads the whole
@@ -141,6 +151,11 @@ the one document you targeted (enforced at the permission layer).
    --all` on the CLI).
 8. On a GitHub project, `ritual pr-comment` posts the open findings to
    the branch's PR (redacted; `--inline` adds file:line review comments).
+
+A failed plan-fix **names its reason** in the statusline and the desktop
+notification: a budget kill says which knob to raise (e.g.
+`budget_finding_fix_usd`), tool-lock denials name the tool and file, and
+`ritual attach <run-id>` replays the full transcript for anything deeper.
 
 The exit-code contract follows the lifecycle: a confirmed critical
 blocks scripts/CI **until you mark it fixed or dismissed**. In CI:
