@@ -961,6 +961,7 @@ impl App {
             &self.slug,
             None,
             model_override.as_deref(),
+            None,
         ) {
             Ok(c) => c,
             Err(e) => {

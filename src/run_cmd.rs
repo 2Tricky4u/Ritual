@@ -43,7 +43,7 @@ pub fn execute(
         .map(|f| f.title.clone())
         .unwrap_or_default();
 
-    let cmd = stages::build(stage, cfg, dirs, &slug, arg, model)?;
+    let cmd = stages::build(stage, cfg, dirs, &slug, arg, model, None)?;
 
     if cmd.needs_codex && !cfg.offline && !stages::codex_ready(cfg) {
         anyhow::bail!(

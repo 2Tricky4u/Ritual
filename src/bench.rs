@@ -53,7 +53,7 @@ pub fn bench(
     let mut scores = Vec::new();
 
     for i in 1..=runs {
-        let cmd = stages::build(stage, cfg, dirs, &slug, None, None)?;
+        let cmd = stages::build(stage, cfg, dirs, &slug, None, None, None)?;
         anyhow::ensure!(
             cmd.mode == Mode::Headless,
             "bench only supports headless stages (plan-review, dual-review)"

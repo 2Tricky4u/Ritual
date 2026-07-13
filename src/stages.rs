@@ -302,6 +302,10 @@ pub fn findings_batch_fix_command(
 /// Build the exact command for a stage. `arg` is the optional user argument
 /// (plan path for plan-review, base ref for dual-review). `model_override`
 /// (retry-with-model, `run --model`) beats the `[models]` routing table.
+/// Kickoff instruction auto-sent when `implement` resumes the tests-red
+/// session, so it starts working instead of reopening an idle conversation.
+pub const IMPLEMENT_PROMPT: &str = "Implement the code to make the failing tests from the tests-red step pass. Follow the plan and run ./check.sh before finishing.";
+
 pub fn build(
     stage: StageId,
     cfg: &Config,
@@ -309,6 +313,11 @@ pub fn build(
     slug: &str,
     arg: Option<&str>,
     model_override: Option<&str>,
+    // The claude session to pin/resume. For `tests-red` this becomes
+    // `--session-id <sid>` (ritual owns the id); for `implement`, `--resume
+    // <sid>`. `None` on implement opens the `--resume` picker so the user
+    // chooses — never the fragile `--continue` ("most recent in cwd").
+    session: Option<&str>,
 ) -> Result<StageCommand> {
     let claude = cfg.claude_cmd.clone();
     let findings_env = (
@@ -378,21 +387,38 @@ pub fn build(
         }
         StageId::TestsRed => {
             let plan = dirs.plan_file(slug);
+            // Pin the conversation to a ritual-owned id so `implement` can
+            // resume this exact session later (flags precede the prompt).
+            let mut tail: Vec<String> = Vec::new();
+            if let Some(sid) = session {
+                tail.push("--session-id".into());
+                tail.push(sid.to_string());
+            }
+            tail.push(format!("/tdd {}", plan.display()));
             StageCommand {
                 mode: Mode::Interactive,
                 agent: AgentKind::Claude,
-                argv: [claude, vec![format!("/tdd {}", plan.display())]].concat(),
+                argv: [claude, tail].concat(),
                 env: vec![],
                 needs_codex: true,
             }
         }
-        StageId::Implement => StageCommand {
-            mode: Mode::Interactive,
-            agent: AgentKind::Claude,
-            argv: [claude, vec!["--continue".into()]].concat(),
-            env: vec![],
-            needs_codex: false,
-        },
+        StageId::Implement => {
+            // Resume the exact tests-red session when known; otherwise open the
+            // picker (never `--continue`). Either way, auto-send the kickoff.
+            let mut tail: Vec<String> = vec!["--resume".into()];
+            if let Some(sid) = session {
+                tail.push(sid.to_string());
+            }
+            tail.push(IMPLEMENT_PROMPT.into());
+            StageCommand {
+                mode: Mode::Interactive,
+                agent: AgentKind::Claude,
+                argv: [claude, tail].concat(),
+                env: vec![],
+                needs_codex: false,
+            }
+        }
         StageId::DualReview => {
             let base = arg
                 .map(str::to_string)
@@ -494,7 +520,7 @@ mod tests {
         let (_tmp, cfg, dirs) = setup();
         std::fs::create_dir_all(dirs.feature_dir("feat-x")).unwrap();
         std::fs::write(dirs.plan_file("feat-x"), "# plan").unwrap();
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "feat-x", None, None).unwrap();
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "feat-x", None, None, None).unwrap();
         assert_eq!(cmd.mode, Mode::Headless);
         assert!(cmd.needs_codex);
         assert!(cmd.argv.iter().any(|a| a.starts_with("/plan-review ")));
@@ -509,12 +535,12 @@ mod tests {
         std::fs::create_dir_all(dirs.feature_dir("s")).unwrap();
         std::fs::write(dirs.plan_file("s"), "# plan").unwrap();
 
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None).unwrap();
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None, None).unwrap();
         let tools = cmd.argv.iter().find(|a| a.contains("mcp__codex")).unwrap();
         assert!(!tools.contains("mcp__pal__consensus"), "dark by default");
 
         cfg.consensus_enabled = true;
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None).unwrap();
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None, None).unwrap();
         let tools = cmd.argv.iter().find(|a| a.contains("mcp__codex")).unwrap();
         assert!(tools.contains("mcp__pal__consensus"));
     }
@@ -522,7 +548,7 @@ mod tests {
     #[test]
     fn plan_review_requires_plan_file() {
         let (_tmp, cfg, dirs) = setup();
-        assert!(build(StageId::PlanReview, &cfg, &dirs, "feat-x", None, None).is_err());
+        assert!(build(StageId::PlanReview, &cfg, &dirs, "feat-x", None, None, None).is_err());
     }
 
     #[test]
@@ -532,11 +558,11 @@ mod tests {
         std::fs::write(dirs.plan_file("s"), "# plan").unwrap();
 
         // Off by default.
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None).unwrap();
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None, None).unwrap();
         assert!(!cmd.argv.contains(&"--fallback-model".to_string()));
 
         cfg.fallback_model = Some("claude-sonnet-5".into());
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None).unwrap();
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None, None).unwrap();
         let i = cmd
             .argv
             .iter()
@@ -546,7 +572,7 @@ mod tests {
 
         // The interactive `plan` stage opts in: a pinned planning model needs
         // its Opus safety net too.
-        let cmd = build(StageId::Plan, &cfg, &dirs, "s", None, None).unwrap();
+        let cmd = build(StageId::Plan, &cfg, &dirs, "s", None, None, None).unwrap();
         let i = cmd
             .argv
             .iter()
@@ -555,9 +581,9 @@ mod tests {
         assert_eq!(cmd.argv[i + 1], "claude-sonnet-5");
 
         // Other interactive stages negotiate with the user; no fallback flag.
-        let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None, None).unwrap();
+        let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None, None, None).unwrap();
         assert!(!cmd.argv.contains(&"--fallback-model".to_string()));
-        let cmd = build(StageId::Implement, &cfg, &dirs, "s", None, None).unwrap();
+        let cmd = build(StageId::Implement, &cfg, &dirs, "s", None, None, None).unwrap();
         assert!(!cmd.argv.contains(&"--fallback-model".to_string()));
 
         // Doc-chat is headless claude too.
@@ -582,7 +608,7 @@ mod tests {
         cfg.effort.insert("plan".into(), "xhigh".into());
 
         // Pinned stage carries `--effort xhigh`.
-        let cmd = build(StageId::Plan, &cfg, &dirs, "s", None, None).unwrap();
+        let cmd = build(StageId::Plan, &cfg, &dirs, "s", None, None, None).unwrap();
         let i = cmd
             .argv
             .iter()
@@ -591,21 +617,30 @@ mod tests {
         assert_eq!(cmd.argv[i + 1], "xhigh");
 
         // A stage with no [effort] entry stays at the session default.
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None).unwrap();
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None, None).unwrap();
         assert!(!cmd.argv.contains(&"--effort".to_string()));
 
         // Local `spec` has no CLI (empty argv) — never gains the flag even if set.
         cfg.effort.insert("spec".into(), "xhigh".into());
-        let cmd = build(StageId::Spec, &cfg, &dirs, "s", None, None).unwrap();
+        let cmd = build(StageId::Spec, &cfg, &dirs, "s", None, None, None).unwrap();
         assert!(cmd.argv.is_empty());
     }
 
     #[test]
     fn dual_review_uses_base_ref() {
         let (_tmp, cfg, dirs) = setup();
-        let cmd = build(StageId::DualReview, &cfg, &dirs, "s", None, None).unwrap();
+        let cmd = build(StageId::DualReview, &cfg, &dirs, "s", None, None, None).unwrap();
         assert!(cmd.argv.contains(&"/dual-review main".to_string()));
-        let cmd = build(StageId::DualReview, &cfg, &dirs, "s", Some("develop"), None).unwrap();
+        let cmd = build(
+            StageId::DualReview,
+            &cfg,
+            &dirs,
+            "s",
+            Some("develop"),
+            None,
+            None,
+        )
+        .unwrap();
         assert!(cmd.argv.contains(&"/dual-review develop".to_string()));
     }
 
@@ -767,7 +802,7 @@ mod tests {
     fn interactive_stages_have_no_stream_flags() {
         let (_tmp, cfg, dirs) = setup();
         for stage in [StageId::Plan, StageId::TestsRed, StageId::Implement] {
-            let cmd = build(stage, &cfg, &dirs, "s", None, None).unwrap();
+            let cmd = build(stage, &cfg, &dirs, "s", None, None, None).unwrap();
             assert_eq!(cmd.mode, Mode::Interactive);
             assert!(!cmd.argv.contains(&"stream-json".to_string()));
         }
@@ -788,6 +823,7 @@ mod tests {
             "s",
             None,
             Some("claude-fable-5"),
+            None,
         )
         .unwrap();
         // Exactly ONE --model, carrying the override; fallback still rides.
@@ -813,7 +849,7 @@ mod tests {
     #[test]
     fn plan_and_implement_argv_content() {
         let (_tmp, cfg, dirs) = setup();
-        let cmd = build(StageId::Plan, &cfg, &dirs, "s", None, None).unwrap();
+        let cmd = build(StageId::Plan, &cfg, &dirs, "s", None, None, None).unwrap();
         assert_eq!(cmd.argv[0], "claude");
         assert!(
             cmd.argv
@@ -824,8 +860,33 @@ mod tests {
         assert!(prompt.contains("spec.md"), "{prompt}");
         assert!(prompt.contains("plan.md"), "{prompt}");
 
-        let cmd = build(StageId::Implement, &cfg, &dirs, "s", None, None).unwrap();
-        assert_eq!(cmd.argv, vec!["claude", "--continue"]);
+        // No pinned session → resume picker (never --continue) + kickoff.
+        let cmd = build(StageId::Implement, &cfg, &dirs, "s", None, None, None).unwrap();
+        assert_eq!(cmd.argv, vec!["claude", "--resume", IMPLEMENT_PROMPT]);
+        assert!(!cmd.argv.iter().any(|a| a == "--continue"));
+    }
+
+    #[test]
+    fn session_pins_tests_red_and_resumes_in_implement() {
+        let (_tmp, cfg, dirs) = setup();
+        let sid = "abcdef00-1111-4222-8333-444455556666";
+
+        // tests-red pins the ritual-owned session id, then the /tdd prompt.
+        let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None, None, Some(sid)).unwrap();
+        let i = cmd
+            .argv
+            .iter()
+            .position(|a| a == "--session-id")
+            .expect("tests-red pins the session");
+        assert_eq!(cmd.argv[i + 1], sid);
+        assert!(cmd.argv.last().unwrap().starts_with("/tdd "));
+        // Without a session id, tests-red is unchanged.
+        let bare = build(StageId::TestsRed, &cfg, &dirs, "s", None, None, None).unwrap();
+        assert!(!bare.argv.iter().any(|a| a == "--session-id"));
+
+        // implement resumes that exact session, then auto-sends the kickoff.
+        let cmd = build(StageId::Implement, &cfg, &dirs, "s", None, None, Some(sid)).unwrap();
+        assert_eq!(cmd.argv, vec!["claude", "--resume", sid, IMPLEMENT_PROMPT]);
     }
 
     #[test]
@@ -840,7 +901,7 @@ mod tests {
             "# Invariants\n<!--\n- looks like a bullet\nfill this in\n-->\n",
         )
         .unwrap();
-        let cmd = build(StageId::DualReview, &cfg, &dirs, "s", None, None).unwrap();
+        let cmd = build(StageId::DualReview, &cfg, &dirs, "s", None, None, None).unwrap();
         assert!(
             !cmd.env.iter().any(|(k, _)| k == "RITUAL_INVARIANTS_FILE"),
             "template comments alone must not inject the constitution"
@@ -856,18 +917,18 @@ mod tests {
             |cmd: &StageCommand| cmd.env.iter().any(|(k, _)| k == "RITUAL_INVARIANTS_FILE");
 
         // Absent file -> no env.
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None).unwrap();
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None, None).unwrap();
         assert!(!has_env(&cmd));
 
         // Scaffold template (headings + comments only) -> still no env.
         std::fs::write(dirs.invariants_file(), crate::scaffold::INVARIANTS_TEMPLATE).unwrap();
-        let cmd = build(StageId::DualReview, &cfg, &dirs, "s", None, None).unwrap();
+        let cmd = build(StageId::DualReview, &cfg, &dirs, "s", None, None, None).unwrap();
         assert!(!has_env(&cmd));
 
         // Real bullets -> both review stages carry it; interactive ones don't.
         std::fs::write(dirs.invariants_file(), "# Invariants\n- no panics\n").unwrap();
         for stage in [StageId::PlanReview, StageId::DualReview] {
-            let cmd = build(stage, &cfg, &dirs, "s", None, None).unwrap();
+            let cmd = build(stage, &cfg, &dirs, "s", None, None, None).unwrap();
             assert!(
                 cmd.env
                     .iter()
@@ -875,7 +936,7 @@ mod tests {
                 "{stage:?} must carry the constitution"
             );
         }
-        let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None, None).unwrap();
+        let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None, None, None).unwrap();
         assert!(!has_env(&cmd));
     }
 
@@ -886,7 +947,7 @@ mod tests {
         std::fs::write(dirs.plan_file("s"), "# plan").unwrap();
         cfg.models.insert("plan-review".into(), "opus".into());
 
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None).unwrap();
+        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None, None).unwrap();
         assert!(cmd.argv.windows(2).any(|w| w == ["--model", "opus"]));
 
         let cmd = build(
@@ -896,6 +957,7 @@ mod tests {
             "s",
             None,
             Some("claude-sonnet-5"),
+            None,
         )
         .unwrap();
         assert!(
