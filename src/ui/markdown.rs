@@ -1,6 +1,6 @@
 //! Markdown → styled ratatui lines, in the render-markdown.nvim spirit the
 //! user lives in: heading icons, bg-banded code blocks, pink bullets, task
-//! checkboxes, quote gutters, aligned tables. Parsed with pulldown-cmark —
+//! checkboxes, quote gutters, aligned tables. Parsed with pulldown-cmark,
 //! no ad-hoc regexes.
 
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
@@ -83,7 +83,7 @@ impl<'t> Renderer<'t> {
     }
 
     /// Every finished Line goes through here so `lines` and `src` stay in
-    /// lockstep — THE invariant of the source map.
+    /// lockstep, THE invariant of the source map.
     fn push_line(&mut self, line: Line<'static>, src: Option<usize>) {
         self.lines.push(line);
         self.src.push(src);
@@ -166,7 +166,7 @@ impl<'t> Renderer<'t> {
             return;
         }
         // Rows map to the table's start line + offset (header divider counts
-        // as the delimiter row) — close enough for focus banding.
+        // as the delimiter row), close enough for focus banding.
         let table_src = self.table_src.take();
         let t = self.t;
         let cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);

@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 
 use crate::state::RitualDirs;
 
-/// Undo depth per document — enough for a whole chat session of edits.
+/// Undo depth per document, enough for a whole chat session of edits.
 pub const CAP: usize = 10;
 
 fn undo_dir(dirs: &RitualDirs, slug: &str, doc_label: &str) -> PathBuf {
@@ -22,7 +22,7 @@ fn redo_dir(dirs: &RitualDirs, slug: &str, doc_label: &str) -> PathBuf {
 }
 
 /// Sortable snapshot name: millis + process-local sequence (two edits in the
-/// same millisecond — e.g. a drained queue — must still order correctly).
+/// same millisecond, e.g. a drained queue, must still order correctly).
 fn snapshot_name() -> String {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     format!(
@@ -59,7 +59,7 @@ fn migrate_legacy(dirs: &RitualDirs, slug: &str, doc_label: &str) {
 }
 
 /// Record the pre-edit state (called before every chat edit). A new edit
-/// invalidates the redo branch — standard editor semantics.
+/// invalidates the redo branch, standard editor semantics.
 pub fn push(dirs: &RitualDirs, slug: &str, doc_label: &str, content: &str) -> Result<()> {
     migrate_legacy(dirs, slug, doc_label);
     let dir = undo_dir(dirs, slug, doc_label);
@@ -91,7 +91,7 @@ pub fn undo(dirs: &RitualDirs, slug: &str, doc_label: &str, doc_path: &Path) -> 
     Ok(true)
 }
 
-/// Walk one step forward again (only meaningful right after undos — any new
+/// Walk one step forward again (only meaningful right after undos; any new
 /// edit clears this branch). false = nothing to redo.
 pub fn redo(dirs: &RitualDirs, slug: &str, doc_label: &str, doc_path: &Path) -> Result<bool> {
     let mut e = entries(&redo_dir(dirs, slug, doc_label));
@@ -101,7 +101,7 @@ pub fn redo(dirs: &RitualDirs, slug: &str, doc_label: &str, doc_path: &Path) -> 
     let current = std::fs::read_to_string(doc_path).unwrap_or_default();
     let udir = undo_dir(dirs, slug, doc_label);
     std::fs::create_dir_all(&udir)?;
-    // Directly onto the undo stack — must NOT clear the redo branch.
+    // Directly onto the undo stack. This must NOT clear the redo branch.
     std::fs::write(udir.join(snapshot_name()), current)?;
     let restored = std::fs::read_to_string(&snap).context("reading redo snapshot")?;
     std::fs::write(doc_path, restored)?;

@@ -31,7 +31,7 @@ pub struct FileConfig {
     pub notifications: Option<bool>,
     /// `[models]` table: stage label -> model override ("plan-review = \"opus\"").
     pub models: Option<HashMap<String, String>>,
-    /// Fallback model(s) for headless claude runs, comma-separated — retryable
+    /// Fallback model(s) for headless claude runs, comma-separated. Retryable
     /// API errors (overload) switch instead of failing the run.
     pub fallback_model: Option<String>,
     /// Hard ceiling on any check.sh invocation (hung boards, wedged builds).
@@ -72,7 +72,7 @@ pub struct RetryFileConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct CodeRabbitFileConfig {
-    /// Run a CodeRabbit review before dual-review (default false — needs an
+    /// Run a CodeRabbit review before dual-review (default false: needs an
     /// account, is cloud-backed, and free tier allows 3 reviews/hour).
     pub enabled: Option<bool>,
     /// CLI argv override, default "coderabbit".
@@ -114,7 +114,7 @@ pub struct MutantsFileConfig {
 #[serde(deny_unknown_fields)]
 pub struct ConsensusFileConfig {
     /// Grant plan-review the mcp__pal__consensus tool (needs the pal MCP
-    /// server + a Gemini key — see the guide). Default false.
+    /// server + a Gemini key; see the guide). Default false.
     pub enabled: Option<bool>,
 }
 

@@ -1,4 +1,4 @@
-//! `ritual bench` — run a stage N times and score the results, aider-style:
+//! `ritual bench`: run a stage N times and score the results, aider-style:
 //! repeatable quality measurement for comparing models/prompts/skills.
 //! Works token-free against the fake agent via RITUAL_CLAUDE_CMD.
 
@@ -31,7 +31,7 @@ pub fn bench(
 ) -> Result<()> {
     let stage =
         StageId::parse(stage_str).with_context(|| format!("unknown stage '{stage_str}'"))?;
-    anyhow::ensure!(dirs.exists(), "no .ritual/ here — run `ritual init` first");
+    anyhow::ensure!(dirs.exists(), "no .ritual/ here; run `ritual init` first");
 
     // Golden file: JSON array of expected finding titles (substring match).
     let golden_titles: Vec<String> = match golden {
@@ -118,7 +118,7 @@ pub fn bench(
             }
         }
         eprintln!(
-            "{} — {} findings",
+            "{}: {} findings",
             if score.ok { "ok" } else { "FAILED" },
             score.findings
         );
@@ -179,7 +179,7 @@ pub fn bench(
     Ok(())
 }
 
-/// (mean, population std-dev, min, max) — empty input yields zeros.
+/// (mean, population std-dev, min, max); empty input yields zeros.
 fn stats(xs: &[f64]) -> (f64, f64, f64, f64) {
     if xs.is_empty() {
         return (0.0, 0.0, 0.0, 0.0);

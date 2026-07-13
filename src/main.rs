@@ -38,11 +38,11 @@ fn main() -> Result<()> {
                     r.identical.len()
                 );
                 for s in &r.skipped {
-                    println!("  skipped {s} (local file differs — --force to overwrite)");
+                    println!("  skipped {s} (local file differs, --force to overwrite)");
                 }
                 if !r.created.is_empty() || !r.updated.is_empty() {
                     println!(
-                        "  settings.json blocks are NOT auto-merged — see workbench/settings-snippet.json"
+                        "  settings.json blocks are NOT auto-merged; see workbench/settings-snippet.json"
                     );
                 }
             }
@@ -90,14 +90,14 @@ fn main() -> Result<()> {
                 }
             }
             None => {
-                println!("no dispositions yet — mark findings fixed (f) or dismissed (d) first")
+                println!("no dispositions yet. Mark findings fixed (f) or dismissed (d) first")
             }
         },
         Some(Command::Mutants { base }) => {
             let r = ritual::mutants::run(&cfg, &dirs, base.as_deref())?;
             if r.empty_diff {
                 println!(
-                    "no diff against {} — nothing to mutate",
+                    "no diff against {}, nothing to mutate",
                     base.as_deref().unwrap_or(&cfg.base_ref)
                 );
             } else {
@@ -107,12 +107,12 @@ fn main() -> Result<()> {
                 );
                 match r.findings_path {
                     Some(p) => println!(
-                        "{} surviving mutant(s) → {} — test gaps; review with `ritual findings` or the TUI (f/d)",
+                        "{} surviving mutant(s) → {}: test gaps; review with `ritual findings` or the TUI (f/d)",
                         r.missed,
                         p.display()
                     ),
                     None => println!(
-                        "no surviving mutants — the tests discriminate every mutation in the diff"
+                        "no surviving mutants: the tests discriminate every mutation in the diff"
                     ),
                 }
             }
@@ -120,7 +120,7 @@ fn main() -> Result<()> {
         Some(Command::Secrets) => {
             anyhow::ensure!(
                 ritual::secrets::available(&cfg),
-                "`{}` not runnable — install gitleaks (pacman -S gitleaks)",
+                "`{}` not runnable; install gitleaks (pacman -S gitleaks)",
                 cfg.gitleaks_cmd.join(" ")
             );
             let r = ritual::secrets::scan(&cfg, &dirs)?;
@@ -128,7 +128,7 @@ fn main() -> Result<()> {
                 println!("no changed files to scan");
             } else if r.leaks == 0 {
                 println!(
-                    "{} changed file(s) scanned — no secrets found",
+                    "{} changed file(s) scanned, no secrets found",
                     r.scanned_files
                 );
             } else {
@@ -180,7 +180,7 @@ fn main() -> Result<()> {
                 }
                 if divergent > 0 {
                     println!(
-                        "\n{divergent} divergent — `ritual init --skills --force` pushes repo → {}",
+                        "\n{divergent} divergent; `ritual init --skills --force` pushes repo → {}",
                         home.display()
                     );
                 }
@@ -231,7 +231,7 @@ fn main() -> Result<()> {
             let meta = metas
                 .iter()
                 .find(|m| m.run_id == run_id)
-                .with_context(|| format!("no run '{run_id}' — see `ritual history`"))?;
+                .with_context(|| format!("no run '{run_id}'; see `ritual history`"))?;
             let recorded = meta.repro.clone().unwrap_or_default();
             println!("{}", serde_json::to_string_pretty(&recorded)?);
             let current = ritual::provenance::collect(&cfg, &dirs);
@@ -343,7 +343,7 @@ fn main() -> Result<()> {
         Some(Command::New { title, worktree }) => {
             let title = title.join(" ");
             anyhow::ensure!(!title.is_empty(), "usage: ritual new <title>");
-            anyhow::ensure!(dirs.exists(), "no .ritual/ here — run `ritual init` first");
+            anyhow::ensure!(dirs.exists(), "no .ritual/ here, run `ritual init` first");
             let branch = match &worktree {
                 Some(branch) => {
                     // Parallel feature: own worktree, shared .ritual state.

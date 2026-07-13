@@ -1,4 +1,4 @@
-//! `ritual export` — OTLP-shaped JSON lines from run metas, one span per
+//! `ritual export`: OTLP-shaped JSON lines from run metas, one span per
 //! run. The cheapest honest OpenTelemetry integration: pipe the output into
 //! any OTLP-JSON-aware collector; no live exporter dependency in the binary.
 
@@ -28,7 +28,7 @@ pub fn otlp_json(dirs: &RitualDirs, out: Option<&std::path::Path>) -> Result<()>
             attr_str("ritual.branch", &m.branch),
             attr_bool("ritual.ok", m.ok),
             // OTel GenAI semconv (Development, 2026): gen_ai.provider.name is
-            // the current attribute — gen_ai.system is deprecated.
+            // the current attribute; gen_ai.system is deprecated.
             attr_str("gen_ai.operation.name", "invoke_agent"),
             attr_str(
                 "gen_ai.provider.name",
@@ -104,7 +104,7 @@ pub fn otlp_json(dirs: &RitualDirs, out: Option<&std::path::Path>) -> Result<()>
     Ok(())
 }
 
-/// `ritual export --audit-trail` — one draft-sharif-agent-audit-trail-00
+/// `ritual export --audit-trail`: one draft-sharif-agent-audit-trail-00
 /// record per finished run, oldest first, hash-chained: `prev_hash(N)` =
 /// SHA-256 over the RFC 8785 (JCS) canonicalization of record N-1. With
 /// default features serde_json already IS canonical for this value domain

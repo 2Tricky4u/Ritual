@@ -292,7 +292,7 @@ mod tests {
                 if i.status.is_none() && i.kind.is_none() && i.resets_at.is_none()
         )));
         // Non-init system, assistant without /message/content, and a
-        // plain-string user message all degrade to Raw — never a panic.
+        // plain-string user message all degrade to Raw, never a panic.
         assert!(
             events
                 .iter()

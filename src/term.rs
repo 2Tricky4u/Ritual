@@ -1,5 +1,5 @@
 //! Single owner of the terminal state. ALL raw-mode/altscreen transitions
-//! live here — never call crossterm enable/disable anywhere else.
+//! live here; never call crossterm enable/disable anywhere else.
 //!
 //! Suspend/resume contract (interactive handoff to `claude` / $EDITOR):
 //! 1. caller stops the input task (and AWAITS its join) BEFORE suspend()

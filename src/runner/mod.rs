@@ -52,7 +52,7 @@ pub struct RunRequest {
     pub redact: bool,
     /// Reproducibility bundle collected by the caller (provenance::collect).
     pub repro: Option<crate::provenance::ReproBundle>,
-    /// Where the agent runs — the (work)tree being operated on.
+    /// Where the agent runs: the (work)tree being operated on.
     pub cwd: PathBuf,
     /// Sandbox argv prefix (e.g. `srt --settings …`) prepended at spawn.
     /// Supervisor-owned and persisted per-run: the agent can't edit it, and
@@ -75,7 +75,7 @@ pub struct RunStatus {
 pub enum RunState {
     Running(RunStatus),
     Finished(Box<RunMeta>),
-    /// No live pid and no meta — the daemon died before finishing.
+    /// No live pid and no meta: the daemon died before finishing.
     Vanished,
 }
 
@@ -84,7 +84,7 @@ pub fn new_run_id(stage: &str) -> String {
     static RUN_SEQ: AtomicU64 = AtomicU64::new(0);
     // Uniqueness matters: two runs launched in the same second used to collide
     // on run_id and clobber each other's archive/meta/status files (found by
-    // end-to-end testing — rapid back-to-back `ritual run`). Millisecond
+    // end-to-end testing, rapid back-to-back `ritual run`). Millisecond
     // precision keeps ids chronologically sortable (history/chain rely only on
     // lexicographic order); the pid disambiguates concurrent processes; the
     // per-process counter guarantees uniqueness within a single process.
@@ -108,7 +108,7 @@ fn request_path(dirs: &RitualDirs, run_id: &str) -> PathBuf {
 
 /// The persisted RunRequest for a run, if its .request.json still exists (it
 /// is written at spawn and deleted when the run finishes). This is the
-/// authoritative source for a LIVE run's agent — RunStatus doesn't carry it.
+/// authoritative source for a LIVE run's agent; RunStatus doesn't carry it.
 pub fn load_request(dirs: &RitualDirs, run_id: &str) -> Option<RunRequest> {
     let text = std::fs::read_to_string(request_path(dirs, run_id)).ok()?;
     serde_json::from_str(&text).ok()
@@ -159,7 +159,7 @@ pub fn live_runs(dirs: &RitualDirs) -> Vec<(String, RunStatus)> {
 
 /// Detach a run: persist the request, re-exec `ritual _spawn <run_id>` in its
 /// own session. The daemon writes the same archive/meta files the inline
-/// runner always did — callers follow along with [`tail_run`].
+/// runner always did; callers follow along with [`tail_run`].
 pub fn spawn_detached(dirs: &RitualDirs, req: &RunRequest, run_id: &str) -> Result<()> {
     std::fs::create_dir_all(dirs.runs_dir())?;
     std::fs::write(
@@ -202,8 +202,8 @@ pub fn spawn_detached(dirs: &RitualDirs, req: &RunRequest, run_id: &str) -> Resu
     Ok(())
 }
 
-/// Daemon side: load the persisted request and execute it. Events go nowhere
-/// — the archive on disk IS the stream.
+/// Daemon side: load the persisted request and execute it. Events go nowhere;
+/// the archive on disk IS the stream.
 pub async fn daemon_main(dirs: &RitualDirs, run_id: &str) -> Result<()> {
     let req: RunRequest = serde_json::from_str(
         &std::fs::read_to_string(request_path(dirs, run_id))
@@ -257,7 +257,7 @@ pub async fn tail_run(
             RunState::Running(_) => seen_running = true,
             RunState::Vanished => {
                 if !seen_running && started.elapsed() < STARTUP_GRACE {
-                    // Daemon still booting — keep polling.
+                    // Daemon still booting; keep polling.
                 } else {
                     // Meta may lag the process death by a beat.
                     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
@@ -326,7 +326,7 @@ pub async fn execute_run(
         feature: req.feature.clone(),
         branch: req.branch.clone(),
         agent: req.agent.label().into(),
-        // The EFFECTIVE argv, wrapper included — repro must see the sandbox.
+        // The EFFECTIVE argv, wrapper included, because repro must see the sandbox.
         argv: req.wrapper.iter().chain(req.argv.iter()).cloned().collect(),
         started_at: Some(Utc::now()),
         repro: req.repro.clone(),
@@ -349,7 +349,7 @@ pub async fn execute_run(
     }
     let mut child = cmd
         .spawn()
-        .with_context(|| format!("spawning {bin} — is it installed and on PATH?"))?;
+        .with_context(|| format!("spawning {bin}: is it installed and on PATH?"))?;
 
     let stdout = child.stdout.take().context("no stdout")?;
     let stderr = child.stderr.take().context("no stderr")?;
@@ -474,7 +474,7 @@ mod tests {
         assert!(ids.iter().all(|id| id.ends_with("-plan-review")));
         assert!(ids.iter().all(|id| !id.contains('/') && !id.contains(' ')));
         // The millisecond timestamp prefix (before the first '-') is
-        // monotonically nondecreasing across a burst — that is what makes
+        // monotonically nondecreasing across a burst; that is what makes
         // `history` sort newest-first correctly.
         let stamps: Vec<&str> = ids.iter().map(|id| id.split('-').next().unwrap()).collect();
         for w in stamps.windows(2) {
@@ -667,7 +667,7 @@ mod tests {
             format!(r#"{{"pid":{alive},"stage":"plan-review","branch":"main"}}"#),
         )
         .unwrap();
-        // 999999999 exceeds every default pid_max — guaranteed dead.
+        // 999999999 exceeds every default pid_max, so it is guaranteed dead.
         std::fs::write(
             runs.join("20260712T000002Z-b.status"),
             r#"{"pid":999999999,"stage":"dual-review","branch":"main"}"#,
@@ -723,7 +723,7 @@ mod tests {
         std::fs::create_dir_all(dirs.runs_dir()).unwrap();
 
         // The child gets its OWN process group (kill_run signals -pid; the
-        // daemon is a setsid leader in production — never our test group).
+        // daemon is a setsid leader in production, never our test group).
         let mut child = std::process::Command::new("sleep")
             .arg("30")
             .process_group(0)

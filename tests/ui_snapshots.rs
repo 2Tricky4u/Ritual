@@ -40,7 +40,7 @@ fn setup_chat_app(tmp: &tempfile::TempDir) -> App {
     std::fs::write(
         tmp.path().join(".ritual/features/detached/spec.md"),
         "# Feature: Audio\n\n## Goal\nlow-latency playback\n\n\
-         ## Behavior (the contract — WHAT, not HOW)\nmust retry on drop\n\n\
+         ## Behavior (the contract: WHAT, not HOW)\nmust retry on drop\n\n\
          ## Edge cases & failure modes\n\n## Out of scope\n",
     )
     .unwrap();
@@ -76,7 +76,7 @@ fn setup_chat_app(tmp: &tempfile::TempDir) -> App {
             },
             ChatTarget {
                 doc: DocKind::Spec,
-                section: Some("Behavior (the contract — WHAT, not HOW)".into()),
+                section: Some("Behavior (the contract: WHAT, not HOW)".into()),
                 range: 5..7,
                 missing: false,
             },
@@ -268,7 +268,7 @@ fn dashboard_palette_filters() {
     insta::assert_snapshot!(render(&app));
 }
 
-/// Rendering must never panic — not on a 1×1 terminal, not on absurd aspect
+/// Rendering must never panic, not on a 1×1 terminal, not on absurd aspect
 /// ratios, not in any tab or overlay. ratatui panics on out-of-bounds Rect
 /// math, so this is the guard against a resize crashing the whole TUI.
 #[test]

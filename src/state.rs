@@ -157,9 +157,9 @@ impl State {
 
 /// All `.ritual/` paths for one project.
 ///
-/// `project_root` is where `.ritual/` lives — in a git-worktree setup that is
+/// `project_root` is where `.ritual/` lives. In a git-worktree setup that is
 /// always the MAIN repository root, so every worktree shares one state.
-/// `work_root` is where commands (check.sh, agents) actually run — the
+/// `work_root` is where commands (check.sh, agents) actually run: the
 /// current checkout, which may be a worktree.
 #[derive(Debug, Clone)]
 pub struct RitualDirs {
@@ -177,7 +177,7 @@ impl RitualDirs {
     }
 
     /// Walk up from cwd to find an existing `.ritual/`; in a linked worktree,
-    /// the MAIN repository root wins (shared state across worktrees) — even
+    /// the MAIN repository root wins (shared state across worktrees), even
     /// when committed `.ritual` files (invariants.md, config.toml, specs)
     /// materialize a `.ritual/` inside the worktree checkout.
     pub fn discover(cwd: &Path) -> Self {

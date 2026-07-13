@@ -1,5 +1,5 @@
 {
-  "_comment": "Reference blocks for ~/.claude/settings.json — ritual never merges these automatically (no JSON surgery on your settings). `ritual init --skills` installs skills/agents/hooks as files; add these keys yourself if missing, and `ritual doctor` checks for them.",
+  "_comment": "Reference blocks for ~/.claude/settings.json; ritual never merges these automatically (no JSON surgery on your settings). `ritual init --skills` installs skills/agents/hooks as files; add these keys yourself if missing, and `ritual doctor` checks for them.",
 
   "hooks": {
     "PostToolUse": [

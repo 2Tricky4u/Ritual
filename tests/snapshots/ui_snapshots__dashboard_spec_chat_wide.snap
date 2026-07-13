@@ -1,21 +1,22 @@
 ---
 source: tests/ui_snapshots.rs
+assertion_line: 219
 expression: "render_at(&app, 120, 30)"
 ---
-"                            │ spec · § Behavior (the contract — WHAT, not HOW) │ 󰚩 chat · spec · § Behavior (the contra…"
+"                            │ spec · § Behavior (the contract: WHAT, not HOW)  │ 󰚩 chat · spec · § Behavior (the contra…"
 "  PIPELINE ──────────────── │󰲡 Feature: Audio                                  │› make behavior stricter: retry 3x      "
 "  ○ spec                    │                                                  │Tightening the retry rule.              "
 "  ○ plan                    │󰲣 Goal                                            │ $0.030 4.2s                            "
 "  ○ plan-review             │                                                  │  ✓ spec updated · $0.030               "
 "  ○ tests-red               │low-latency playback                              │                                        "
 "  ○ implement               │                                                  │                                        "
-"  ○ dual-review             │󰲣 Behavior (the contract — WHAT, not HOW)         │                                        "
+"  ○ dual-review             │󰲣 Behavior (the contract: WHAT, not HOW)          │                                        "
 "                            │                                                  │                                        "
 " 󰚩 AGENTS ───────────────── │must retry on drop                                │                                        "
 "  󰚩 claude …                │                                                  │                                        "
 "  󰚩 codex …                 │󰲣 Edge cases & failure modes                      │                                        "
 "  󱘖 bridge …                │                                                  │                                        "
-"   nvim —                   │󰲣 Out of scope                                    │                                        "
+"   nvim …                   │󰲣 Out of scope                                    │                                        "
 "   check ?                  │                                                  │                                        "
 "                            │                                                  │                                        "
 "   detached                 │                                                  │                                        "

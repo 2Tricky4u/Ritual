@@ -1,5 +1,5 @@
 //! End-to-end subcommand tests. Agent runs use tests/fake_agent.sh via the
-//! RITUAL_CLAUDE_CMD / RITUAL_CODEX_CMD seams — zero tokens burned.
+//! RITUAL_CLAUDE_CMD / RITUAL_CODEX_CMD seams; zero tokens burned.
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -185,7 +185,7 @@ fn run_plan_review_e2e_with_fake_agent() {
         .success()
         .stdout(predicate::str::contains("plan-review"));
 
-    // Findings browser shows the canned finding — which is a confirmed
+    // Findings browser shows the canned finding, which is a confirmed
     // critical, so the scriptability contract demands exit code 1.
     Command::cargo_bin("ritual")
         .unwrap()
@@ -884,7 +884,7 @@ fn worktree_feature_shares_state_and_resolves_dirs() {
 
     // ...and shares the MAIN repo's .ritual: committed files (invariants.md)
     // materialize a .ritual/ inside the checkout, but discovery still binds
-    // to the main root — status from inside the worktree sees the same state.
+    // to the main root; status from inside the worktree sees the same state.
     assert!(wt.join(".ritual/invariants.md").exists());
     assert!(!wt.join(".ritual/state.json").exists());
     let out = Command::cargo_bin("ritual")

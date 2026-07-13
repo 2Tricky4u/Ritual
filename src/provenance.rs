@@ -52,7 +52,7 @@ fn cmd_line(bin: &str, args: &[&str], cwd: &Path) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// Best-effort collection — a missing tool yields None, never an error.
+/// Best-effort collection: a missing tool yields None, never an error.
 pub fn collect(cfg: &Config, dirs: &RitualDirs) -> ReproBundle {
     let root = &dirs.work_root;
     let git_commit = cmd_line("git", &["rev-parse", "HEAD"], root);
@@ -126,22 +126,22 @@ pub fn compute_link(prev: &str, archive_bytes: &[u8], meta: &RunMeta) -> Result<
 /// runs so pruning never breaks `verify-log`. Only the latest checkpoint is
 /// kept on disk; lineage is carried by `prev_checkpoint` (the replaced
 /// checkpoint's self_hash, or GENESIS for the first). Trust model: the
-/// checkpoint is the trust anchor for everything it covers — like a git
+/// checkpoint is the trust anchor for everything it covers, like a git
 /// shallow clone, history behind it is attested by one hash, everything
 /// after it stays fully tamper-evident.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Checkpoint {
     /// run_id of the NEWEST pruned chained run this checkpoint covers.
     pub as_of_run_id: String,
-    /// chain.this of that run — the link the oldest surviving run chains from.
+    /// chain.this of that run: the link the oldest surviving run chains from.
     pub link_hash: String,
     /// Cumulative chained runs pruned under this lineage.
     pub pruned_runs: usize,
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// self_hash of the checkpoint this replaced, or GENESIS for the first.
     pub prev_checkpoint: String,
-    /// sha256 of the canonical JSON of self with self_hash blanked —
-    /// mirrors compute_link's "canonical minus the hash field" pattern.
+    /// sha256 of the canonical JSON of self with self_hash blanked.
+    /// Mirrors compute_link's "canonical minus the hash field" pattern.
     pub self_hash: String,
 }
 
@@ -156,7 +156,7 @@ pub fn compute_checkpoint_hash(cp: &Checkpoint) -> Result<String> {
     Ok(sha256_hex(&canonical))
 }
 
-/// Ok(None) when absent; Err when present but unreadable/unparseable —
+/// Ok(None) when absent; Err when present but unreadable/unparseable:
 /// verify_log treats that as a broken chain, not a missing checkpoint.
 pub fn load_checkpoint(runs_dir: &Path) -> Result<Option<Checkpoint>> {
     let path = checkpoint_path(runs_dir);
@@ -208,7 +208,7 @@ pub enum VerifyOutcome {
 
 /// Walk the chain oldest→newest, recomputing every link. When a checkpoint
 /// exists it becomes the starting link, and chained metas it covers
-/// (run_id <= as_of_run_id) are skipped — that makes a crash between
+/// (run_id <= as_of_run_id) are skipped; that makes a crash between
 /// "checkpoint written" and "files deleted" recoverable instead of Broken.
 pub fn verify_log(runs_dir: &Path) -> Result<VerifyOutcome> {
     let checkpoint = match load_checkpoint(runs_dir) {
@@ -466,7 +466,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let c1 = mk_run(tmp.path(), "20260711T000001Z-a", GENESIS);
         // A NEWER meta without a chain (failed write, foreign copy) must not
-        // reset the chain to GENESIS — the newest CHAINED link wins.
+        // reset the chain to GENESIS: the newest CHAINED link wins.
         let meta = RunMeta {
             run_id: "20260711T000002Z-b".into(),
             ..Default::default()

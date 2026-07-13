@@ -110,13 +110,13 @@ echo "── history / report / provenance ────────────�
 ok "history lists run"        0 "plan-review" -- bash -c "cd '$PROJ' && '$RITUAL' history"
 ok "history --json array"     0 "run_id"    -- bash -c "cd '$PROJ' && '$RITUAL' history --json"
 ok "report markdown"          0 "report:"   -- bash -c "cd '$PROJ' && '$RITUAL' report"
-# report --pdf: exit 0 either way — produces a PDF if an engine works, else
+# report --pdf: exit 0 either way; produces a PDF if an engine works, else
 # gracefully keeps the markdown. Here we only require the graceful contract.
 ok "report --pdf graceful"    0 "report:"   -- bash -c "cd '$PROJ' && '$RITUAL' report --pdf"
 if compgen -G "$PROJ/.ritual/reports/*.pdf" >/dev/null; then
   printf '  \033[32m✓\033[0m pdf produced (engine available)\n'; PASS=$((PASS+1))
 else
-  printf '  \033[33m•\033[0m pdf skipped (no working PDF engine in this env — markdown kept)\n'
+  printf '  \033[33m•\033[0m pdf skipped (no working PDF engine in this env; markdown kept)\n'
 fi
 ok "verify-log intact"        0 "chain intact" -- bash -c "cd '$PROJ' && '$RITUAL' verify-log"
 
@@ -213,7 +213,7 @@ printf 'tampered!\n' > "$ARCHIVE"
 ok "verify-log detects tamper" 1 "CHAIN BROKEN" -- bash -c "cd '$PROJ' && '$RITUAL' verify-log"
 # All runs are today-protected here, so clean must delete nothing even with
 # --keep 0 (the broken-chain refusal path is covered by unit tests with aged
-# runs — live runs are always today-dated).
+# runs; live runs are always today-dated).
 ok "clean deletes nothing (broken chain + today)" 0 "0 group(s) deleted" -- bash -c "cd '$PROJ' && \
   '$RITUAL' clean --keep 0"
 
@@ -305,7 +305,7 @@ ok "audit-trail exports"      0 "audit record(s) exported" -- bash -c "cd '$PROJ
 ok "audit chain re-verifies"  0 "chain ok" -- "$ROOT/bin/verify-audit" "$ROOT/audit.jsonl"
 
 echo "── v0.5.1: aged clean, live attach --kill, undo stack ───────────────"
-# Aged UNCHAINED runs actually get PRUNED (today's stay protected) — the
+# Aged UNCHAINED runs actually get PRUNED (today's stay protected); the
 # real deletion path, not just today-protection.
 for i in 1 2; do
   printf '{"run_id":"20260101T00000%sZ-old","stage":"plan-review","ok":true,"started_at":"2026-01-01T00:00:0%sZ"}\n' "$i" "$i" \

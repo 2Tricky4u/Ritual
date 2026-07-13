@@ -8,7 +8,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-/// (skill name, SKILL.md body) — installed to `~/.claude/skills/<name>/SKILL.md`.
+/// (skill name, SKILL.md body), installed to `~/.claude/skills/<name>/SKILL.md`.
 pub const SKILLS: &[(&str, &str)] = &[
     (
         "brainstorm",
@@ -74,7 +74,7 @@ pub const EXTRAS: &[VendoredFile] = &[
     },
 ];
 
-/// Reference for the settings.json blocks — printed as a pointer, never
+/// Reference for the settings.json blocks: printed as a pointer, never
 /// merged automatically (`ritual doctor` checks for the hook block).
 pub const SETTINGS_SNIPPET: &str = include_str!("../workbench/settings-snippet.json");
 
@@ -92,7 +92,7 @@ pub enum SkillDiff {
 }
 
 /// Compare every vendored skill against the installed copy under
-/// `<claude_home>/skills/<name>/SKILL.md` — read-only companion to
+/// `<claude_home>/skills/<name>/SKILL.md`, a read-only companion to
 /// `install()` (doctor only hashes; this says WHERE they diverge).
 pub fn diff(claude_home: &Path) -> Vec<(&'static str, SkillDiff)> {
     SKILLS
@@ -125,7 +125,7 @@ pub fn diff(claude_home: &Path) -> Vec<(&'static str, SkillDiff)> {
                         }
                     }
                     // Bytes differ but no LINE differs: the divergence is in
-                    // line endings or a trailing newline — say so instead of
+                    // line endings or a trailing newline, so say so instead of
                     // reporting an empty "line 1" diff.
                     let first = first.unwrap_or_else(|| {
                         let marker = "<line endings / trailing newline differ>".to_string();
@@ -148,7 +148,7 @@ pub struct InstallReport {
     pub created: Vec<String>,
     pub updated: Vec<String>,
     pub identical: Vec<String>,
-    /// Local file differs from the vendored one — left alone (use --force).
+    /// Local file differs from the vendored one, left alone (use --force).
     pub skipped: Vec<String>,
 }
 
@@ -261,7 +261,7 @@ mod tests {
         let tdd = home.path().join("skills/tdd/SKILL.md");
         let original = std::fs::read_to_string(&tdd).unwrap();
 
-        // Trailing-newline-only divergence (final \n stripped — the one case
+        // Trailing-newline-only divergence (final \n stripped, the one case
         // where bytes differ but no LINE does): named, not an empty "line 1".
         std::fs::write(&tdd, original.trim_end_matches('\n')).unwrap();
         let d = diff(home.path());

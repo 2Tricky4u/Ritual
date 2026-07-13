@@ -1,4 +1,4 @@
-# ritual — guide & tips
+# ritual: guide & tips
 
 > One ritual: **plan → review → tests → implement → review → merge.**
 > Two models keep each other honest; `check.sh` keeps both honest.
@@ -6,56 +6,56 @@
 ## Why this shape
 
 Research verdict behind the workflow: *external feedback* (tests,
-execution, checks) is the quality engine — not model debate. A second
+execution, checks) is the quality engine, not model debate. A second
 model pays off in exactly three roles: **plan critic**, **independent
 test designer**, and **second reviewer**. That is the pipeline.
 
 ## The pipeline
 
-- **spec** — you write intent in `spec.md` (`⟨enter⟩` opens it in
-  $EDITOR; or press `⟨s⟩` to **chat** it into shape — see below)
-- **plan** — Claude drafts `plan.md` from the spec
-- **plan-review** — Codex attacks the plan; bounded 2-round debate;
+- **spec**: you write intent in `spec.md` (`⟨enter⟩` opens it in
+  $EDITOR; or press `⟨s⟩` to **chat** it into shape, see below)
+- **plan**: Claude drafts `plan.md` from the spec
+- **plan-review**: Codex attacks the plan; bounded 2-round debate;
   plan revised in place
-- **tests-red** — Codex designs tests from the spec — written *red*,
+- **tests-red**: Codex designs tests from the spec, written *red*,
   no implementation
-- **implement** — Claude implements until `check.sh` is green
-- **dual-review** — both models review the diff independently;
+- **implement**: Claude implements until `check.sh` is green
+- **dual-review**: both models review the diff independently;
   findings merged
 
 Cross-confirmed findings (both models agree, `◆ both`) are the strong
-signal — treat them as blockers. Single-source minor findings are
+signal: treat them as blockers. Single-source minor findings are
 suggestions.
 
 ## Running things
 
 - `enter` runs the selected stage. Runs are **daemons**: quit the TUI,
-  close the terminal — the run survives. Reopen `ritual` and it
+  close the terminal, and the run survives. Reopen `ritual` and it
   reattaches (resurrection), or press `a` to take the session over in
   interactive claude (`--resume`).
 - From ANY terminal: `ritual ps` lists live daemons (chat edits too),
   `ritual attach <run-id>` streams one right there (`--kill` stops it).
 - `x` cancels the running stage (kills the whole process group).
 - Sidebar **needs-you** badge = a stage finished and wants a decision.
-- `c` / `C` run `check.sh fast` / full — same script the hook runs.
+- `c` / `C` run `check.sh fast` / full, the same script the hook runs.
 - Everything is also a palette command: `:` then fuzzy-type
   (`rpl` → *run plan-review*).
-- Something off? `ritual doctor` checks every prerequisite — agents,
+- Something off? `ritual doctor` checks every prerequisite: agents,
   auth, MCP wiring, skills drift, hooks, check.sh, disk space
   (`--deep` also runs the fast checks).
 
 ## Tabs
 
-- **1 live** — agent stream; greeter when idle
-- **2 findings** — j/k select · f fix · d dismiss · v resolved ·
+- **1 live**: agent stream; greeter when idle
+- **2 findings**: j/k select · f fix · d dismiss · v resolved ·
   `/` filter · enter/e editor · o nvim · Q quickfix
-- **3 history** — past runs: cost, tokens, duration · `/` filter
-- **4 plan** — rendered plan.md (falls back to spec)
-- **5 guide** — this page
+- **3 history** shows past runs: cost, tokens, duration · `/` filter
+- **4 plan**: rendered plan.md (falls back to spec)
+- **5 guide**: this page
 
 `tab` cycles; `j/k` scroll or select; `g` top; `G` follow the tail.
 `/` opens a live filter on the findings/history lists (type to narrow,
-Enter to keep it and navigate, Esc to clear — it drops when you leave
+Enter to keep it and navigate, Esc to clear; it drops when you leave
 the tab). The statusline carries a spend sparkline of recent runs, and
 pasting multi-line text into the chat input keeps its newlines instead
 of submitting at the first one.
@@ -66,27 +66,27 @@ All keys are rebindable in `[keys]` (see config below).
 Press `⟨s⟩` (or `:` → *chat: edit spec/plan*) to open an interactive
 chat: the **live document is on the left, the conversation on the
 right**. Type an instruction (`⟨enter⟩` sends), and Claude edits the
-file in place — you watch it change on the left as it happens.
+file in place; you watch it change on the left as it happens.
 
 - `⟨Tab⟩` cycles the **target**: the whole spec, each of its sections,
   then the plan. No plan yet? The target reads *plan (draft from spec)*
   and your first message drafts one FROM the spec. The left pane shows
   the whole document with the focused section highlighted in place.
 - Each message acts on the document as it stands now, with your last
-  few messages as context — so "make it 3 attempts, not 5" works. The
+  few messages as context, so "make it 3 attempts, not 5" works. The
   file is the memory; no session state to manage.
-- `⟨Ctrl+Z⟩` **undo** walks back through the last 10 edits (persisted —
+- `⟨Ctrl+Z⟩` **undo** walks back through the last 10 edits (persisted:
   survives restarts, covers CLI chats too); `⟨Alt+Z⟩` **redo** walks
   forward again. A new edit invalidates the redo branch, like any editor.
 - `⟨Ctrl+X⟩` **cancel** an in-flight edit (kills the daemon, drops any
   queued messages).
 - Closed the TUI mid-edit? Press `⟨s⟩` again: if the daemonized edit is
-  still running, the chat **reattaches** — transcript replayed, completion
+  still running, the chat **reattaches**: transcript replayed, completion
   lands normally.
 - `⟨Alt+Enter⟩` inserts a newline (the input box grows); `⟨enter⟩`
   while an edit runs **queues** the message (up to 3, sent in order).
 - `⟨↑⟩`/`⟨↓⟩` scroll the transcript, `⟨esc⟩` closes (a running edit
-  finishes on its own — it's a daemon like any other run).
+  finishes on its own; it's a daemon like any other run).
 - From a script: `ritual chat "tighten the goal to one sentence"`,
   `--section "Behavior…"` to scope it, `--plan` to target the plan.
 
@@ -102,7 +102,7 @@ the one document you targeted (enforced at the permission layer).
    `ritual mutants` (test gaps), `ritual secrets` (gitleaks hits), and
    the optional CodeRabbit reviewer.
 2. Tab 2: severity pills (crit/major/minor), `◆ both` = cross-model.
-   The selected finding shows its **snippet** — the 1-3 verbatim source
+   The selected finding shows its **snippet**: the 1-3 verbatim source
    lines the reviewer anchored it to.
 3. `Q` sends all locations to nvim's quickfix; `o` opens the selected
    one in your **running** nvim (auto-discovers the server socket);
@@ -120,7 +120,7 @@ blocks scripts/CI **until you mark it fixed or dismissed**. In CI:
 exits nonzero on unresolved blocking findings.
 
 Your dispositions feed back into reviews: `ritual lessons` (auto-run
-before every dual-review) distills them into `.ritual/lessons.md` —
+before every dual-review) distills them into `.ritual/lessons.md`:
 dismissed findings become a "known noise, do not re-flag" list the
 reviewer reads first, fixed ones mark where real bugs actually lived.
 The critic stops re-reporting what you already threw out.
@@ -128,29 +128,29 @@ The critic stops re-reporting what you already threw out.
 ## Invariants (the project constitution)
 
 `ritual init` scaffolds `.ritual/invariants.md`. Fill it with the
-non-negotiables — one bullet each ("parsers never panic on unknown
+non-negotiables, one bullet each ("parsers never panic on unknown
 input", "state mutations flow through AppMsg"). Once it has real
 bullets, every review stage receives it and treats each bullet as an
 acceptance criterion: violations become major+ findings, /tdd derives
 tests from the invariants a change touches, and the chat agent refuses
 to write spec/plan content that contradicts one. Re-injected per stage,
 so a standing constraint can never silently fall out of context.
-`doctor` shows whether it's active. Commit it — worktrees still resolve
+`doctor` shows whether it's active. Commit it. Worktrees still resolve
 the shared main-root `.ritual`.
 
 ## Quality gates
 
-**Mutation gate — `ritual mutants`.** After implement goes green:
+**Mutation gate (`ritual mutants`).** After implement goes green:
 mutates only the code your diff touched (`cargo mutants --in-diff`),
 runs the tests, and records every mutant the suite FAILED to kill as a
-major finding with the mutated code as its snippet — proof of a test
+major finding with the mutated code as its snippet: proof of a test
 gap, file:line-anchored. Advisory by design (major never blocks CI);
 adjudicate with `f`/`d`. Baseline-red trees are refused with advice.
 `[mutants] cmd` swaps the runner (TS/JS: point it at Stryker with a
-wrapper that emits the same outcomes.json — recipe out of scope here).
+wrapper that emits the same outcomes.json; recipe out of scope here).
 
-**Secrets gate — `ritual secrets`.** Scans exactly what changed
-(tracked modifications + untracked files — the "agent wrote a .env"
+**Secrets gate (`ritual secrets`).** Scans exactly what changed
+(tracked modifications + untracked files, the "agent wrote a .env"
 surface) with one `gitleaks dir` pass over a staged copy, so hits are
 file:line-anchored and `.gitleaksignore` fingerprints keep matching.
 Hits are critical/confirmed findings → they **block** until dismissed
@@ -162,10 +162,10 @@ automatically before every dual-review when gitleaks is installed
 
 `[coderabbit] enabled = true` runs the CodeRabbit CLI before each
 dual-review (`coderabbit auth login` once; free tier = 3 reviews/hour;
-**cloud-backed — your diff leaves the machine**). Its comments land as
+**cloud-backed: your diff leaves the machine**). Its comments land as
 single-source *unconfirmed* findings that never block; the dual-review
 skill verifies or refutes each one and only then adds `coderabbit` to a
-finding's sources — three sources is the strongest signal there is.
+finding's sources: three sources is the strongest signal there is.
 
 ## Sandboxing headless runs (optional)
 
@@ -175,7 +175,7 @@ enabled = true
 wrapper = "srt --settings /home/you/.config/ritual/srt-settings.json"
 ```
 
-Every headless agent run gets spawned as `<wrapper> <agent argv>` —
+Every headless agent run gets spawned as `<wrapper> <agent argv>`:
 pipeline, chat, bench, and resumed daemons alike, because there is a
 single spawn chokepoint. The wrapper is supervisor-owned config the
 agent can't edit, and it's recorded in each run's meta for repro.
@@ -184,7 +184,7 @@ Recipe for Anthropic's sandbox-runtime: `npm i -g
 start from `docs/srt-settings.example.json` (allow-lists your project,
 target dir, and the agent vendors' domains; denies ~/.ssh). Caveat:
 file-watchers that scan outside the sandbox trip violations. Interactive
-stages are never wrapped — they own your terminal.
+stages are never wrapped, because they own your terminal.
 
 ## Retry with another model
 
@@ -196,8 +196,8 @@ models = ["claude-opus-4-8", "claude-sonnet-5"]
 
 `fallback_model` rides every headless claude run as `--fallback-model`:
 a retryable API error hours into a review switches models instead of
-failing the run. `[retry] models` adds palette entries — *retry
-dual-review with claude-opus-4-8* — that appear only when a headless
+failing the run. `[retry] models` adds palette entries (*retry
+dual-review with claude-opus-4-8*) that appear only when a headless
 stage failed or needs attention; `ritual run <stage> --model <m>` is
 the CLI form. The pipeline sidebar shows `×N` once a stage has multiple
 attempts, and history/report grow a model column so attempts compare.
@@ -205,8 +205,8 @@ attempts, and history/report grow a model column so attempts compare.
 ## Money
 
 - Per-run caps: `budget_plan_review_usd` (default $5),
-  `budget_dual_review_usd` ($10) — passed to claude as a hard budget.
-- Daily ceiling: `budget_daily_usd` — refuses new runs past it;
+  `budget_dual_review_usd` ($10), passed to claude as a hard budget.
+- Daily ceiling: `budget_daily_usd` refuses new runs past it;
   `--force` overrides once. Statusline meter shows spend vs cap.
 - `ritual history` = the ledger (`--json` for scripts); the footer now
   shows today's **cache-hit rate**.
@@ -217,7 +217,7 @@ attempts, and history/report grow a model column so attempts compare.
 ## Safety & provenance
 
 - **Redaction** (on by default): secrets are scrubbed *before* any
-  byte hits the archive — vendor keys, JWTs, PEM blocks, assignments,
+  byte hits the archive: vendor keys, JWTs, PEM blocks, assignments,
   high-entropy tokens. Archives are safe to commit.
 - **Hash chain**: every run links to the previous one;
   `ritual verify-log` proves nobody edited history.
@@ -226,8 +226,8 @@ attempts, and history/report grow a model column so attempts compare.
 - **Pruning without breaking the chain**: `ritual clean` (default:
   keep the newest 50) deletes old run artifacts but never touches live
   runs, state-referenced runs, or today's runs (the budget ledger).
-  Pruned chained runs are attested by a **checkpoint** — a rolling
-  genesis, like a git shallow clone — so `verify-log` stays intact:
+  Pruned chained runs are attested by a **checkpoint** (a rolling
+  genesis, like a git shallow clone), so `verify-log` stays intact:
   `chain intact: checkpoint(2026-07-12, 34 pruned) + 16 run(s)
   verified`. Tampering with the checkpoint breaks verification like
   tampering with any run. `--dry-run` previews.
@@ -245,39 +245,39 @@ you which feature wants attention next.
 ## nvim control
 
 Auto-discovers your running nvim (newest `$XDG_RUNTIME_DIR/nvim.*.0`),
-or pin one: `nvim_server = "/path/to/socket"` — or launch with
+or pin one: `nvim_server = "/path/to/socket"`, or launch with
 `nvim --listen`. `o` open file:line · `Q` findings → quickfix.
 
 ## CLI (scriptable, styled, `--json` where it counts)
 
-- `ritual` — the dashboard
-- `ritual init` — scaffold .ritual/, check.sh, CLAUDE.md
+- `ritual`: the dashboard
+- `ritual init`: scaffold .ritual/, check.sh, CLAUDE.md
   (`--skills` also installs the vendored workbench into `~/.claude`:
-  all 13 skills, the code-reviewer agent, both hooks — one clone
+  all 13 skills, the code-reviewer agent, both hooks; one clone
   reproduces the whole setup)
-- `ritual doctor` — check every prerequisite (`--deep` runs checks)
-- `ritual status` — pipeline state (`--json`)
-- `ritual run <stage>` — headless stage (`--force`, `--ci`)
-- `ritual chat <msg>` — edit spec/plan (`--plan`, `--section`)
-- `ritual ps` / `attach <run-id>` — live daemons; follow or `--kill`
-- `ritual findings` / `history` — browse artifacts (`--json`, `--all`)
-- `ritual pr-comment [N]` — findings → GitHub PR (`--inline`)
-- `ritual report [--pdf]` — feature report from all artifacts
-- `ritual new [--worktree B]` — name/create a feature
-- `ritual clean` — prune old runs safely (`--keep N`, `--dry-run`)
-- `ritual verify-log` — check the tamper-evident chain
-- `ritual repro <run-id>` — reproducibility bundle + env diff
-- `ritual bench <stage>` — N repeated runs, scored + spread stats
+- `ritual doctor`: check every prerequisite (`--deep` runs checks)
+- `ritual status`: pipeline state (`--json`)
+- `ritual run <stage>`: headless stage (`--force`, `--ci`)
+- `ritual chat <msg>`: edit spec/plan (`--plan`, `--section`)
+- `ritual ps` / `attach <run-id>`: live daemons; follow or `--kill`
+- `ritual findings` / `history`: browse artifacts (`--json`, `--all`)
+- `ritual pr-comment [N]`: findings → GitHub PR (`--inline`)
+- `ritual report [--pdf]`: feature report from all artifacts
+- `ritual new [--worktree B]`: name/create a feature
+- `ritual clean`: prune old runs safely (`--keep N`, `--dry-run`)
+- `ritual verify-log`: check the tamper-evident chain
+- `ritual repro <run-id>`: reproducibility bundle + env diff
+- `ritual bench <stage>`: N repeated runs, scored + spread stats
   (`--golden` adds recall and cost-per-hit)
-- `ritual costs` — per-stage, cache-aware spend analytics (`--json`)
-- `ritual lessons` — regenerate the review memory (`--stdout`)
-- `ritual mutants` — mutation-kill gate over the diff (`--base`)
-- `ritual secrets` — gitleaks over changed files; exits 1 on leaks
-- `ritual skills diff` — vendored workbench vs installed skills
-- `ritual export` — OTLP-JSON spans of all runs, with OTel GenAI
+- `ritual costs`: per-stage, cache-aware spend analytics (`--json`)
+- `ritual lessons`: regenerate the review memory (`--stdout`)
+- `ritual mutants`: mutation-kill gate over the diff (`--base`)
+- `ritual secrets`: gitleaks over changed files; exits 1 on leaks
+- `ritual skills diff`: vendored workbench vs installed skills
+- `ritual export`: OTLP-JSON spans of all runs, with OTel GenAI
   semconv attributes (`--audit-trail` emits IETF
   draft-sharif-agent-audit-trail records instead: JCS-canonical,
-  SHA-256 hash-chained JSONL — the compliance-shaped view of the
+  SHA-256 hash-chained JSONL, the compliance-shaped view of the
   same history the chain already protects)
 
 ## Config
@@ -331,7 +331,7 @@ enabled = false
 
 For a genuinely contested plan-review disagreement, a third vendor can
 arbitrate: one stance argues for, one against, and the verdict lands
-under the disagreement — clearly labeled as an opinion, not truth.
+under the disagreement, clearly labeled as an opinion, not truth.
 Use sparingly: the evidence says ungrounded debate is the weakest
 pattern; prefer a discriminating test when one exists.
 
@@ -351,28 +351,28 @@ skill. `ritual doctor` shows the pal server's status.
 - Small plans review better. One feature = one plan; split epics
   before plan-review, not after.
 - Let plan-review change your plan. The debate is bounded (2 rounds)
-  and detector-not-resolver — *you* arbitrate what it flags.
-- Never let the implementer design its own tests — that is the whole
+  and detector-not-resolver: *you* arbitrate what it flags.
+- Never let the implementer design its own tests. That is the whole
   point of tests-red running on the other model.
 - Trust `◆ both` findings even when they look pedantic. Live stat:
   the first real run's cross-confirmed critical was a genuine
   path-traversal bug.
-- `check.sh fast` must stay under ~10s — it runs on every edit via
+- `check.sh fast` must stay under ~10s because it runs on every edit via
   the hook. Push slow suites to the full variant.
 - Archives are the truth: `.ritual/runs/*.jsonl` is raw agent output,
   kept verbatim (post-redaction) even when parsing fails.
-- If a run looks stuck, quit the TUI and reopen — reattach is free.
+- If a run looks stuck, quit the TUI and reopen. Reattach is free.
   `a` (takeover) turns any headless run into an interactive session.
 - Worktrees + `offline = false` on hotel wifi: queue specs and plans
   locally, fire reviews when you're back on a real connection.
-- `NO_COLOR=1 ritual status` / `--ascii` for logs and plain terminals
-  — every state is readable without color.
+- `NO_COLOR=1 ritual status` / `--ascii` for logs and plain terminals:
+  every state is readable without color.
 
 ## A full run, start to finish
 
 A concrete walkthrough of one feature, touching every part of the tool.
 Keys are shown as `⟨key⟩`. The sidebar (left) always shows three
-sections — FEATURES, PIPELINE, AGENTS; the main pane (right) is the
+sections: FEATURES, PIPELINE, AGENTS; the main pane (right) is the
 five tabs.
 
 **0. Open ritual.** Run `ritual init` once in your repo (scaffolds
@@ -384,7 +384,7 @@ powerline statusline: branch, today's spend vs budget, check state.
 For parallel work that shouldn't touch your current branch, use a
 worktree: `ritual new --worktree feat/audio` (own checkout, shared
 `.ritual`). Back in the TUI, `⟨r⟩` refreshes; the feature shows in the
-FEATURES section. `⟨[⟩` / `⟨]⟩` cycle features — needs-you ones sort
+FEATURES section. `⟨[⟩` / `⟨]⟩` cycle features: needs-you ones sort
 first, flagged with a yellow ``.
 
 **2. Write the spec.** The PIPELINE section lists the six stages with
@@ -394,36 +394,36 @@ land on `spec` and press `⟨enter⟩`. ritual opens `spec.md` in your
 exit). Write what you want built, `:wq`. The stage flips to **done**
 if you wrote real content, stays pending if you only left comments.
 *Prefer to talk it out?* Press `⟨s⟩` instead for the chat (see "Chat
-to author the spec" above) — describe the feature and Claude drafts
+to author the spec" above). Describe the feature and Claude drafts
 the spec live, section by section.
 
 **3. Draft the plan.** Highlight `plan`, `⟨enter⟩` → an interactive
 Claude session opens (plan mode). When it saves `plan.md` and exits,
-the stage goes done. Read the result on the **plan** tab (`⟨4⟩`) —
+the stage goes done. Read the result on the **plan** tab (`⟨4⟩`):
 it's rendered markdown; `⟨j⟩`/`⟨k⟩` scroll, `⟨g⟩` jumps to top.
 
 **4. Cross-review the plan.** The fastest way to run any stage from
 anywhere is the command palette: `⟨:⟩`, type `run plan-review`,
-`⟨enter⟩` (fuzzy — `rpl` works). Claude and Codex now debate the plan.
+`⟨enter⟩` (fuzzy, `rpl` works). Claude and Codex now debate the plan.
 This is a **daemon**: the **live** tab (`⟨1⟩`) streams both models;
 the statusline budget meter ticks up. You can quit ritual entirely
-(`⟨q⟩`) and reopen later — it reattaches to the running daemon. Press
+(`⟨q⟩`) and reopen later; it reattaches to the running daemon. Press
 `⟨a⟩` to take the session over in interactive Claude (`--resume`).
 `⟨x⟩` cancels. When it finishes you get a desktop notification and the
 stage shows **needs-you** (a human decides).
 
 **5. Triage findings.** Switch to the **findings** tab (`⟨2⟩`). Each
 finding is a severity pill (crit/major/minor); a green **◆ both**
-badge means *both* models flagged it — treat those as blockers.
+badge means *both* models flagged it. Treat those as blockers.
 `⟨j⟩`/`⟨k⟩` select. Then either `⟨o⟩` (open the file:line in your
 already-running nvim), `⟨Q⟩` (push *all* findings to nvim's quickfix
-list — `:cnext` through them), or `⟨e⟩` (open in `$EDITOR`). Edit
+list, `:cnext` through them), or `⟨e⟩` (open in `$EDITOR`). Edit
 `plan.md` to address them; re-run `plan-review` if the plan changed
 materially.
 
 **6. Tests first.** Palette → `run tests-red`: Codex designs tests
 from the *spec* (not from your plan, and never the model that will
-implement), written **failing**. Press `⟨c⟩` to run `check.sh fast` —
+implement), written **failing**. Press `⟨c⟩` to run `check.sh fast`:
 red, as expected. This is the whole point: the test author and the
 implementer are different models.
 
@@ -441,23 +441,23 @@ exits nonzero on blocking findings.
 
 **9. Wrap up and prove it.** From the shell (or the palette's custom
 commands):
-- `ritual report --pdf` — a shareable report from every artifact
+- `ritual report --pdf`: a shareable report from every artifact
   (redacted, safe to commit).
-- **history** tab (`⟨3⟩`) or `ritual history` — cost, tokens, duration
+- **history** tab (`⟨3⟩`) or `ritual history`: cost, tokens, duration
   per run; the statusline shows today's total vs your `budget_daily_usd`.
-- `ritual verify-log` — proves the tamper-evident hash chain over all
+- `ritual verify-log` proves the tamper-evident hash chain over all
   runs is intact.
-- `ritual repro <run-id>` — the exact models, CLI versions, and git sha
+- `ritual repro <run-id>`: the exact models, CLI versions, and git sha
   a run used, diffed against your current environment.
-- `ritual export` — OTLP-JSON spans for a tracing backend.
-- `ritual bench plan-review --runs 5 --golden expected.json` — measure
+- `ritual export`: OTLP-JSON spans for a tracing backend.
+- `ritual bench plan-review --runs 5 --golden expected.json`: measure
   a stage's quality/recall across repeats when tuning models or prompts.
 
 **Throughout:** secrets are redacted before anything is archived;
 runs survive the TUI dying; the daily budget refuses new runs past the
 ceiling (`--force` overrides once); `offline = true` blocks agent calls
 for metered connections. Nothing here needs the cloud except the agent
-calls themselves — archives, findings, reports, and the chain are all
+calls themselves: archives, findings, reports, and the chain are all
 local files.
 
 That's the loop: **spec → plan → plan-review → tests-red → implement →

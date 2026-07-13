@@ -1,15 +1,16 @@
 ---
 source: tests/ui_snapshots.rs
+assertion_line: 227
 expression: "render_at(&app, 80, 24)"
 ---
-" spec · § Behavior (the contract — WHAT, no│ 󰚩 chat · spec · § Behavior (the con"
+" spec · § Behavior (the contract: WHAT, not│ 󰚩 chat · spec · § Behavior (the con"
 "󰲡 Feature: Audio                           │› make behavior stricter: retry 3x  "
 "                                           │Tightening the retry rule.          "
 "󰲣 Goal                                     │ $0.030 4.2s                        "
 "                                           │  ✓ spec updated · $0.030           "
 "low-latency playback                       │                                    "
 "                                           │                                    "
-"󰲣 Behavior (the contract — WHAT, not HOW)  │                                    "
+"󰲣 Behavior (the contract: WHAT, not HOW)   │                                    "
 "                                           │                                    "
 "must retry on drop                         │                                    "
 "                                           │                                    "

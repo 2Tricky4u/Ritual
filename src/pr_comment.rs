@@ -1,4 +1,4 @@
-//! `ritual pr-comment` — post the latest dual-review findings to a GitHub PR
+//! `ritual pr-comment`: post the latest dual-review findings to a GitHub PR
 //! via `gh`. One summary comment by default; `--inline` additionally tries
 //! per-finding review comments (best-effort). The body passes through the
 //! redactor: PR comments are outward-facing.
@@ -86,7 +86,7 @@ fn resolve_pr(cfg: &Config, pr: Option<u32>) -> Result<u32> {
         .context("running gh pr view (is gh installed?)")?;
     anyhow::ensure!(
         out.status.success(),
-        "no PR for this branch — pass a PR number: ritual pr-comment <N>"
+        "no PR for this branch; pass a PR number: ritual pr-comment <N>"
     );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
     v["number"]
@@ -97,13 +97,13 @@ fn resolve_pr(cfg: &Config, pr: Option<u32>) -> Result<u32> {
 
 pub fn pr_comment(cfg: &Config, dirs: &RitualDirs, pr: Option<u32>, inline: bool) -> Result<()> {
     let latest = latest_dual_review(&dirs.findings_dir())
-        .context("no dual-review findings recorded — run `ritual run dual-review` first")?;
+        .context("no dual-review findings recorded. Run `ritual run dual-review` first")?;
     let (raw_body, posted) = build_body(&latest.file);
     // PR comments leave the machine: redact like any other outward artifact.
     let body = Redactor::new(cfg.redaction).text(&raw_body);
     let pr = resolve_pr(cfg, pr)?;
 
-    // Body via stdin — no argv-length or quoting hazards.
+    // Body via stdin, no argv-length or quoting hazards.
     let mut child = gh(cfg)
         .args(["pr", "comment", &pr.to_string(), "--body-file", "-"])
         .stdin(std::process::Stdio::piped())
@@ -164,7 +164,7 @@ fn post_inline(cfg: &Config, file: &FindingsFile, pr: u32) {
         .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
         .and_then(|v| v["headRefOid"].as_str().map(str::to_string));
     let Some(commit) = head else {
-        eprintln!("  ⚠ could not resolve the PR head commit — inline comments skipped");
+        eprintln!("  ⚠ could not resolve the PR head commit; inline comments skipped");
         return;
     };
     let redactor = |s: &str| Redactor::new(cfg.redaction).text(s);
