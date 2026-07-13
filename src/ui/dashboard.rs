@@ -1750,7 +1750,9 @@ fn draw_settings(f: &mut Frame, app: &App) {
         .iter()
         .position(|(ci, _)| *ci == Some(s.selected))
         .unwrap_or(0);
-    let visible = (inner.height as usize).saturating_sub(1); // minus top pad
+    // The inline edit block pins to the panel bottom: prompt, hint, error.
+    let reserved = if s.edit.is_some() { 3 } else { 0 };
+    let visible = (inner.height as usize).saturating_sub(1 + reserved);
     let first = sel_row.saturating_sub(visible.saturating_sub(1));
 
     let mut lines = vec![Line::default()];
@@ -1802,7 +1804,50 @@ fn draw_settings(f: &mut Frame, app: &App) {
             }
         }
     }
+    if let Some(e) = &s.edit {
+        let def = &catalog[s.selected.min(catalog.len().saturating_sub(1))];
+        let target = (inner.height as usize).saturating_sub(reserved);
+        while lines.len() < target {
+            lines.push(Line::default());
+        }
+        let prompt = vec![
+            Span::styled(
+                format!(" {} {}: ", t.icon_prompt(), def.label),
+                Style::default()
+                    .fg(t.highlight())
+                    .bg(t.bg_row())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(e.input.clone(), Style::default().fg(t.fg()).bg(t.bg_row())),
+            Span::styled("▏", Style::default().fg(t.info()).bg(t.bg_row())),
+        ];
+        lines.push(fill_row(prompt, inner.width, t.bg_row()));
+        lines.push(Line::from(Span::styled(
+            format!("  {}", setting_hint(def)),
+            Style::default().fg(t.comment()).add_modifier(Modifier::DIM),
+        )));
+        if let Some(err) = &e.error {
+            lines.push(Line::from(Span::styled(
+                format!("  ✗ {err}"),
+                Style::default().fg(t.error()),
+            )));
+        }
+    }
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// One-line allowed-values hint under the settings edit prompt.
+fn setting_hint(def: &crate::settings::SettingDef) -> String {
+    use crate::settings::SettingKind::*;
+    match def.kind {
+        F64 => format!("{} — number > 0", def.doc),
+        OptF64 => format!("{} — number > 0, empty = unset", def.doc),
+        U64 => format!("{} — whole number ≥ 1", def.doc),
+        Bool | Text => def.doc.to_string(),
+        OptText => format!("{} — empty = unset", def.doc),
+        Enum(vs) => format!("{} — {}", def.doc, vs.join("/")),
+        OptEnum(vs) => format!("{} — {}, empty = unset", def.doc, vs.join("/")),
+    }
 }
 
 /// The `t` triage confirm: what one `y` stages — dispositions only, the

@@ -2147,6 +2147,10 @@ impl App {
 
     /// Keys while the settings overlay is up; it consumes everything.
     fn settings_input(&mut self, code: KeyCode) {
+        if self.settings.as_ref().is_some_and(|s| s.edit.is_some()) {
+            self.settings_edit_input(code);
+            return;
+        }
         let last = crate::settings::CATALOG.len().saturating_sub(1);
         match code {
             KeyCode::Esc | KeyCode::Char('S') => self.settings = None,
@@ -2212,8 +2216,64 @@ impl App {
                 }
             }
             _ => {
-                self.status_msg = Some("text editing lands with the edit prompt".into());
+                // Numeric/text kinds edit inline, prefilled with the
+                // effective value (empty when unset).
+                if let Some(s) = self.settings.as_mut() {
+                    s.edit = Some(SettingsEdit {
+                        input: current.unwrap_or_default(),
+                        error: None,
+                    });
+                }
             }
+        }
+    }
+
+    /// Keys while the inline edit line is open: Enter validates then applies
+    /// (empty clears Opt* keys), a rejected value keeps the prompt open with
+    /// the error shown, Esc drops the edit but keeps the overlay.
+    fn settings_edit_input(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                if let Some(s) = self.settings.as_mut() {
+                    s.edit = None;
+                }
+            }
+            KeyCode::Enter => {
+                let Some(s) = self.settings.as_ref() else {
+                    return;
+                };
+                let idx = s.selected;
+                let Some(def) = crate::settings::CATALOG.get(idx) else {
+                    return;
+                };
+                let input = s.edit.as_ref().map(|e| e.input.clone()).unwrap_or_default();
+                match crate::settings::validate(&def.kind, &input) {
+                    Err(msg) => {
+                        if let Some(e) = self.settings.as_mut().and_then(|s| s.edit.as_mut()) {
+                            e.error = Some(msg);
+                        }
+                    }
+                    Ok(value) => {
+                        if let Some(s) = self.settings.as_mut() {
+                            s.edit = None;
+                        }
+                        self.apply_setting(idx, value);
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(e) = self.settings.as_mut().and_then(|s| s.edit.as_mut()) {
+                    e.input.pop();
+                    e.error = None;
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(e) = self.settings.as_mut().and_then(|s| s.edit.as_mut()) {
+                    e.input.push(c);
+                    e.error = None;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -3806,6 +3866,154 @@ mod tests {
             !std::fs::read_to_string(&path).unwrap().contains("plan ="),
             "key removed from the project file"
         );
+    }
+
+    fn type_str(app: &mut App, tx: &mpsc::Sender<AppMsg>, s: &str) {
+        for c in s.chars() {
+            press(app, tx, KeyCode::Char(c));
+        }
+    }
+
+    fn clear_edit_input(app: &mut App, tx: &mpsc::Sender<AppMsg>) {
+        let n = app
+            .settings
+            .as_ref()
+            .and_then(|s| s.edit.as_ref())
+            .map(|e| e.input.chars().count())
+            .unwrap_or(0);
+        for _ in 0..n {
+            press(app, tx, KeyCode::Backspace);
+        }
+    }
+
+    #[test]
+    fn settings_edit_validates_rejects_then_writes_budget() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.dispatch(Action::Settings, &tx);
+        app.settings.as_mut().unwrap().selected = catalog_idx("budget_finding_fix_usd");
+        press(&mut app, &tx, KeyCode::Enter);
+        let edit = app.settings.as_ref().unwrap().edit.clone();
+        assert_eq!(
+            edit.map(|e| e.input).as_deref(),
+            Some("1"),
+            "prompt opens prefilled with the effective value"
+        );
+
+        clear_edit_input(&mut app, &tx);
+        type_str(&mut app, &tx, "abc");
+        press(&mut app, &tx, KeyCode::Enter);
+        let s = app.settings.as_ref().unwrap();
+        assert!(
+            s.edit.as_ref().is_some_and(|e| e.error.is_some()),
+            "bad input shows an error and keeps the prompt open"
+        );
+        let path = app.dirs.project_root.join(".ritual/config.toml");
+        assert!(!path.exists(), "nothing written on validation failure");
+
+        clear_edit_input(&mut app, &tx);
+        type_str(&mut app, &tx, "4.5");
+        press(&mut app, &tx, KeyCode::Enter);
+        assert!(
+            app.settings.as_ref().unwrap().edit.is_none(),
+            "valid input closes the prompt"
+        );
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("budget_finding_fix_usd = 4.5")
+        );
+        assert_eq!(app.cfg.budget_finding_fix_usd, 4.5);
+    }
+
+    #[test]
+    fn settings_edit_empty_clears_optional_key() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.dispatch(Action::Settings, &tx);
+        app.settings.as_mut().unwrap().selected = catalog_idx("budget_daily_usd");
+        press(&mut app, &tx, KeyCode::Enter);
+        type_str(&mut app, &tx, "9");
+        press(&mut app, &tx, KeyCode::Enter);
+        assert_eq!(app.cfg.budget_daily_usd, Some(9.0));
+
+        press(&mut app, &tx, KeyCode::Enter); // reopen, prefilled "9"
+        clear_edit_input(&mut app, &tx);
+        press(&mut app, &tx, KeyCode::Enter); // empty = clear
+        assert_eq!(app.cfg.budget_daily_usd, None);
+        let path = app.dirs.project_root.join(".ritual/config.toml");
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("budget_daily_usd")
+        );
+        assert!(app.status_msg.as_deref().unwrap().contains("cleared"));
+    }
+
+    #[test]
+    fn settings_edit_models_and_timeout_types() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.dispatch(Action::Settings, &tx);
+        let path = app.dirs.project_root.join(".ritual/config.toml");
+
+        app.settings.as_mut().unwrap().selected = catalog_idx("models.plan");
+        press(&mut app, &tx, KeyCode::Enter);
+        type_str(&mut app, &tx, "opus");
+        press(&mut app, &tx, KeyCode::Enter);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let header = text.find("[models]").expect("header table");
+        assert!(text[header..].contains("plan = \"opus\""));
+        assert_eq!(app.cfg.models.get("plan").map(String::as_str), Some("opus"));
+
+        press(&mut app, &tx, KeyCode::Enter); // reopen prefilled "opus"
+        clear_edit_input(&mut app, &tx);
+        press(&mut app, &tx, KeyCode::Enter); // empty clears
+        assert!(!app.cfg.models.contains_key("plan"));
+
+        app.settings.as_mut().unwrap().selected = catalog_idx("check_timeout_secs");
+        press(&mut app, &tx, KeyCode::Enter);
+        clear_edit_input(&mut app, &tx);
+        type_str(&mut app, &tx, "0");
+        press(&mut app, &tx, KeyCode::Enter);
+        assert!(
+            app.settings
+                .as_ref()
+                .unwrap()
+                .edit
+                .as_ref()
+                .is_some_and(|e| e.error.is_some()),
+            "0 seconds rejected"
+        );
+        clear_edit_input(&mut app, &tx);
+        type_str(&mut app, &tx, "900");
+        press(&mut app, &tx, KeyCode::Enter);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("check_timeout_secs = 900"),
+            "written as a TOML integer: {text}"
+        );
+        assert!(!text.contains("900.0"));
+    }
+
+    #[test]
+    fn settings_edit_required_text_rejects_empty_and_esc_keeps_overlay() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.dispatch(Action::Settings, &tx);
+        app.settings.as_mut().unwrap().selected = catalog_idx("base_ref");
+        press(&mut app, &tx, KeyCode::Enter);
+        clear_edit_input(&mut app, &tx);
+        press(&mut app, &tx, KeyCode::Enter);
+        assert!(
+            app.settings
+                .as_ref()
+                .unwrap()
+                .edit
+                .as_ref()
+                .is_some_and(|e| e.error.is_some()),
+            "required value rejects empty"
+        );
+        press(&mut app, &tx, KeyCode::Esc);
+        let s = app.settings.as_ref().unwrap();
+        assert!(s.edit.is_none(), "esc drops the edit line");
+        assert!(app.settings.is_some(), "…but the overlay stays");
     }
 
     #[test]
