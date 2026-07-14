@@ -60,13 +60,16 @@ pub fn reset_plan(dirs: &RitualDirs, st: &mut State, branch: &str) -> ResetSumma
     }
 }
 
-/// Delete the plan-review/coverage findings files that belong to this feature
-/// (matched by the file's `branch`, or a branch-less file = the current
-/// feature). Code (dual-review) findings and other features' files survive.
+/// Delete the plan-review/coverage findings files that belong to this feature,
+/// matched EXACTLY by the file's `branch`. A destructive op must never touch a
+/// branch-LESS file (its owner is ambiguous - it may belong to another feature;
+/// the findings dir is shared). Such leftovers are harmless: coverage supersedes
+/// its file on the next run, and plan-review re-writes its own. Code
+/// (dual-review) findings and other features' files always survive.
 fn remove_plan_findings(dirs: &RitualDirs, slug: &str) -> usize {
     let mut removed = 0;
     for lf in crate::findings::load_all(&dirs.findings_dir()).unwrap_or_default() {
-        let belongs = lf.file.branch.is_empty() || state::branch_slug(&lf.file.branch) == slug;
+        let belongs = !lf.file.branch.is_empty() && state::branch_slug(&lf.file.branch) == slug;
         if belongs
             && PLAN_FINDING_STAGES.contains(&lf.file.stage.as_str())
             && std::fs::remove_file(&lf.path).is_ok()
@@ -96,7 +99,8 @@ pub fn preview(dirs: &RitualDirs, st: &State, branch: &str) -> ResetSummary {
         .unwrap_or_default()
         .iter()
         .filter(|lf| {
-            (lf.file.branch.is_empty() || state::branch_slug(&lf.file.branch) == slug)
+            !lf.file.branch.is_empty()
+                && state::branch_slug(&lf.file.branch) == slug
                 && PLAN_FINDING_STAGES.contains(&lf.file.stage.as_str())
         })
         .count();
@@ -165,6 +169,42 @@ mod tests {
         assert_eq!(left[0].file.stage, "dual-review");
         // Undo stack cleared.
         assert!(!dirs.feature_dir("main").join(".undo").join("plan").exists());
+    }
+
+    #[test]
+    fn reset_only_removes_exact_branch_matches_not_branch_less_findings() {
+        let (_t, dirs) = dirs_tmp();
+        let mut st = State::default();
+        st.feature_for_branch_mut("main");
+        // A branch-less coverage finding (ambiguous owner - could be another
+        // feature's) and this feature's own branch-tagged one.
+        std::fs::write(
+            dirs.findings_dir().join("20260101T000000Z-coverage.json"),
+            r#"{"stage":"coverage","branch":"","findings":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dirs.findings_dir().join("20260101T000001Z-coverage.json"),
+            r#"{"stage":"coverage","branch":"main","findings":[]}"#,
+        )
+        .unwrap();
+        let sum = reset_plan(&dirs, &mut st, "main");
+        assert_eq!(
+            sum.findings_removed, 1,
+            "only the exact-branch match is removed"
+        );
+        assert!(
+            dirs.findings_dir()
+                .join("20260101T000000Z-coverage.json")
+                .exists(),
+            "branch-less finding survives (may belong to another feature)"
+        );
+        assert!(
+            !dirs
+                .findings_dir()
+                .join("20260101T000001Z-coverage.json")
+                .exists()
+        );
     }
 
     #[test]

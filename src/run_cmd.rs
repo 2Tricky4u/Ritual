@@ -510,6 +510,16 @@ pub fn reset_plan(dirs: &RitualDirs, force: bool) -> Result<()> {
         return Ok(());
     }
 
+    // A live plan-fix/chat could be mid-write to plan.md; don't race the delete
+    // (parity with the TUI's fix_running guard).
+    let live_plan_edit = runner::live_runs(dirs)
+        .into_iter()
+        .any(|(_, s)| s.branch == branch && (s.stage.contains("plan") || s.stage.contains("chat")));
+    anyhow::ensure!(
+        !live_plan_edit,
+        "a plan edit (plan-fix/chat) is running on '{branch}'; wait for it to finish before reset-plan"
+    );
+
     let sum = crate::reset::reset_plan(dirs, &mut st, &branch);
     st.save(dirs)?;
     println!(
