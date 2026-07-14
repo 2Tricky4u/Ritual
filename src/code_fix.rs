@@ -5,9 +5,14 @@
 //!
 //! Flow: the LLM fixes all queued code findings in ONE run, then two gates run
 //! in series - `./check.sh` (full), then an independent read-only re-review of
-//! the diff. A batch is accepted only if BOTH gates pass and every finding is
-//! confirmed resolved; ANY failure reverts the WHOLE batch (findings stay
-//! queued). Accept is strict all-or-nothing.
+//! the produced diff. The attempt is ALWAYS left in the working tree (git is
+//! the undo); accept/fail is pure bookkeeping over that one inseparable diff.
+//! A finding is marked fixed only if it was claimed FIXED by the run AND
+//! confirmed RESOLVED by the re-review; every other targeted finding stays
+//! queued (annotated with the review's reason). Because the diff cannot be
+//! split, a reported REGRESSION fails the WHOLE batch (nothing is accepted); so
+//! do check.sh red, an empty change set, and the fixer moving HEAD (the latter
+//! two are caught by the App before the gates even run).
 
 use std::collections::HashMap;
 
@@ -26,9 +31,9 @@ pub enum CodePhase {
 #[derive(Debug, Clone)]
 pub enum GateEvent {
     /// The fix run finished cleanly; `answers` are its parsed ANSWERS verdicts.
-    /// Whether it actually changed anything is left to the gates (an empty diff
-    /// makes the re-review report UNRESOLVED), since git cannot reliably detect
-    /// edits to files that are untracked in the repo.
+    /// Whether it actually changed anything is decided by the App via content
+    /// hashing (`git::observed_change`), which works even on untracked or
+    /// gitignored targets; an empty change set fails the batch before the gates.
     FixOk {
         answers: HashMap<u32, AnswerVerdict>,
     },
@@ -44,9 +49,12 @@ pub enum GateEvent {
 pub enum Step {
     SpawnCheck,
     SpawnReview,
-    /// Accept the batch: mark exactly these finding numbers fixed.
+    /// Accept these finding numbers: mark exactly them fixed. Any targeted
+    /// finding NOT listed stays queued (the App annotates it with the reason).
     Accept(Vec<u32>),
-    /// Revert the whole batch (git restore) with this reason for the status.
+    /// Fail the whole batch with this reason: NO finding is marked fixed and the
+    /// attempt is LEFT in the working tree (git is the undo - despite the name,
+    /// this never runs `git restore`).
     Revert(String),
 }
 
@@ -85,10 +93,13 @@ pub fn advance(
     }
 }
 
-/// The strict accept/reject rule (locked): the batch is accepted ONLY if the
-/// re-review flags no regressions AND every targeted finding is BOTH claimed
-/// FIXED by the fix run AND confirmed RESOLVED by the re-review. Otherwise the
-/// whole batch is reverted.
+/// The per-finding accept rule. A reported regression fails the whole batch (the
+/// single diff can't be split, so nothing can be safely kept). Otherwise accept
+/// exactly the findings that were BOTH claimed FIXED by the run AND confirmed
+/// RESOLVED by the re-review; every other targeted finding stays queued (the App
+/// annotates it with the review's reason). If nothing qualifies, the batch fails
+/// (the attempt stays in the tree either way). The "no observable change" and
+/// "fixer moved HEAD" failures are caught earlier by the App, before the gates.
 pub fn decide(
     answers: &HashMap<u32, AnswerVerdict>,
     review: &ReviewVerdict,
@@ -97,21 +108,18 @@ pub fn decide(
     if let Some(desc) = &review.regressions {
         return Step::Revert(format!("re-review flagged regressions: {desc}"));
     }
-    for &n in numbers {
-        let claimed_fixed = matches!(answers.get(&n), Some(AnswerVerdict::Fixed));
-        let confirmed = matches!(review.per_finding.get(&n), Some(FindingReview::Resolved));
-        if !claimed_fixed {
-            return Step::Revert(format!("#{n} was not fixed by the run"));
-        }
-        if !confirmed {
-            let why = match review.per_finding.get(&n) {
-                Some(FindingReview::Unresolved(r)) => r.clone(),
-                _ => "re-review gave no verdict".to_string(),
-            };
-            return Step::Revert(format!("#{n} not confirmed resolved: {why}"));
-        }
+    let accepted: Vec<u32> = numbers
+        .iter()
+        .copied()
+        .filter(|n| {
+            matches!(answers.get(n), Some(AnswerVerdict::Fixed))
+                && matches!(review.per_finding.get(n), Some(FindingReview::Resolved))
+        })
+        .collect();
+    if accepted.is_empty() {
+        return Step::Revert("no finding was both fixed by the run and confirmed resolved".into());
     }
-    Step::Accept(numbers.to_vec())
+    Step::Accept(accepted)
 }
 
 #[cfg(test)]
@@ -195,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn decide_reverts_on_any_unresolved() {
+    fn decide_accepts_the_resolved_subset_and_requeues_the_rest() {
         let r = ReviewVerdict {
             per_finding: [
                 (1, FindingReview::Resolved),
@@ -204,20 +212,27 @@ mod tests {
             .into(),
             regressions: None,
         };
-        assert!(matches!(
-            decide(&fixed(&[1, 2]), &r, &[1, 2]),
-            Step::Revert(_)
-        ));
+        // #1 is accepted; #2 stays queued (the App annotates it with the reason).
+        assert_eq!(decide(&fixed(&[1, 2]), &r, &[1, 2]), Step::Accept(vec![1]));
     }
 
     #[test]
-    fn decide_reverts_when_a_finding_was_declined() {
+    fn decide_accepts_the_fixed_one_and_requeues_a_declined_finding() {
         let mut a = fixed(&[1]);
         a.insert(2, AnswerVerdict::Declined("couldn't".into()));
-        assert!(matches!(
+        assert_eq!(
             decide(&a, &review(&[1, 2], None), &[1, 2]),
-            Step::Revert(_)
-        ));
+            Step::Accept(vec![1])
+        );
+    }
+
+    #[test]
+    fn decide_reverts_when_nothing_qualifies() {
+        let r = ReviewVerdict {
+            per_finding: [(1, FindingReview::Unresolved("nope".into()))].into(),
+            regressions: None,
+        };
+        assert!(matches!(decide(&fixed(&[1]), &r, &[1]), Step::Revert(_)));
     }
 
     #[test]
