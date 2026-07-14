@@ -185,6 +185,18 @@ pub fn resolved_count(loaded: &[LoadedFindings]) -> usize {
         .count()
 }
 
+/// Any OPEN (unresolved) finding whose verdict is "confirmed", across all loaded
+/// files. Broader than the critical-only CI gate: a project is not "complete"
+/// while any confirmed finding still stands.
+pub fn has_open_confirmed(loaded: &[LoadedFindings]) -> bool {
+    loaded.iter().any(|lf| {
+        lf.file
+            .findings
+            .iter()
+            .any(|f| !f.resolved() && f.verdict.eq_ignore_ascii_case("confirmed"))
+    })
+}
+
 /// Set a finding's action ("fixed" / "dismissed"), toggling back to
 /// "pending" when it already carries that action. Mutates in memory AND
 /// rewrites the source file atomically (pretty JSON, tmp + rename) so the

@@ -8,6 +8,7 @@ pub mod clipboard;
 pub mod code_fix;
 pub mod coderabbit;
 pub mod config;
+pub mod coverage;
 pub mod doctor;
 pub mod export;
 pub mod findings;
