@@ -200,6 +200,9 @@ pub struct App {
     pub cfg: Config,
     pub dirs: RitualDirs,
     pub state: State,
+    /// mtime of `state.json` at the last reload, so a Tick only re-reads it when
+    /// a concurrent CLI command actually changed it.
+    state_mtime: Option<std::time::SystemTime>,
     pub branch: String,
     pub slug: String,
 
@@ -398,10 +401,14 @@ impl App {
         st.feature_for_branch_mut(&branch);
         let findings = crate::findings::load_all(&dirs.findings_dir()).unwrap_or_default();
         let metas = crate::history::load_all(&dirs.runs_dir()).unwrap_or_default();
+        let state_mtime = std::fs::metadata(dirs.state_file())
+            .and_then(|m| m.modified())
+            .ok();
         let mut app = Self {
             cfg,
             dirs,
             state: st,
+            state_mtime,
             branch,
             slug,
             selected: 0,
@@ -607,8 +614,40 @@ impl App {
     }
 
     fn set_stage(&mut self, stage: StageId, status: StageStatus, run_id: Option<String>) {
+        // Reload-merge-save: fold in any concurrent CLI write BEFORE applying our
+        // delta, so the TUI's save can't clobber it (the load-once TUI otherwise
+        // overwrites the whole file with a stale snapshot).
+        self.reload_state();
         crate::run_cmd::set_stage(&mut self.state, &self.branch, stage, status, run_id);
         let _ = self.state.save(&self.dirs);
+        self.state_mtime = std::fs::metadata(self.dirs.state_file())
+            .and_then(|m| m.modified())
+            .ok();
+    }
+
+    /// Adopt state written by a concurrent CLI command WITHOUT clobbering the
+    /// TUI's own in-flight pipeline run (the TUI owns `self.running`; disk may
+    /// not reflect it yet). Also refreshes findings/metas, which the same CLI
+    /// commands change.
+    fn reload_state(&mut self) {
+        let Ok(mut disk) = State::load(&self.dirs) else {
+            return;
+        };
+        if let Some(stage) = self.running {
+            let slug = state::branch_slug(&self.branch);
+            if let Some(mem) = self
+                .state
+                .features
+                .get(&slug)
+                .and_then(|f| f.stages.get(&stage).cloned())
+            {
+                disk.feature_for_branch_mut(&self.branch)
+                    .stages
+                    .insert(stage, mem);
+            }
+        }
+        self.state = disk;
+        self.reload_artifacts();
     }
 
     fn reload_artifacts(&mut self) {
@@ -658,6 +697,16 @@ impl App {
         match msg {
             AppMsg::Tick => {
                 self.spinner = self.spinner.wrapping_add(1);
+                // Pick up state a concurrent CLI command wrote (`ritual run`/
+                // `complete`/`reset-plan`), gated on the file's mtime so we only
+                // re-read when it actually changed.
+                if let Ok(m) =
+                    std::fs::metadata(self.dirs.state_file()).and_then(|md| md.modified())
+                    && Some(m) != self.state_mtime
+                {
+                    self.state_mtime = Some(m);
+                    self.reload_state();
+                }
             }
             AppMsg::Input(ev) => self.on_input(ev, tx),
             AppMsg::Agent(ev) => {
@@ -6970,6 +7019,52 @@ mod tests {
             "plan reverted on cancel",
         );
         assert!(app.status_msg.as_deref().unwrap().contains("plan reverted"));
+    }
+
+    #[test]
+    fn reload_state_adopts_cli_writes_but_keeps_the_tui_in_flight_run() {
+        let (_t, mut app, _tx, _rx) = test_app();
+        let slug = app.slug.clone();
+        // The TUI is running dual-review and owns that live run.
+        app.running = Some(StageId::DualReview);
+        crate::run_cmd::set_stage(
+            &mut app.state,
+            &app.branch,
+            StageId::DualReview,
+            StageStatus::Running,
+            None,
+        );
+        // A concurrent CLI process completes plan-review (and, wrongly, flips
+        // dual-review to Failed) and saves to disk.
+        let mut disk = app.state.clone();
+        crate::run_cmd::set_stage(
+            &mut disk,
+            &app.branch,
+            StageId::PlanReview,
+            StageStatus::Done,
+            None,
+        );
+        crate::run_cmd::set_stage(
+            &mut disk,
+            &app.branch,
+            StageId::DualReview,
+            StageStatus::Failed,
+            None,
+        );
+        disk.save(&app.dirs).unwrap();
+
+        app.reload_state();
+        let feat = app.state.features.get(&slug).unwrap();
+        assert_eq!(
+            feat.stage(StageId::PlanReview).status,
+            StageStatus::Done,
+            "adopts the CLI's write"
+        );
+        assert_eq!(
+            feat.stage(StageId::DualReview).status,
+            StageStatus::Running,
+            "keeps the TUI's own in-flight run, not disk's stale Failed"
+        );
     }
 
     #[test]

@@ -439,6 +439,9 @@ fn drive_gaps(
             .collect();
         let plan_path = dirs.plan_file(slug);
         let spec = dirs.spec_file(slug);
+        // Headless: scoping rests on the command's plan.md tool-lock (Edit only
+        // that file), NOT the TUI's section-confinement gate; the next coverage
+        // pass re-judges, so a stray in-plan edit is caught by the loop.
         let cmd = stages::findings_batch_fix_command(
             cfg,
             &plan_path,

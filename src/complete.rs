@@ -21,7 +21,9 @@ pub struct Bounds {
     pub max_attempts: u32,
 }
 
-/// The loop's running state (persistable on the feature for resume).
+/// The loop's running state. Per-invocation only - NOT persisted across separate
+/// `ritual complete` runs; a re-run re-judges the tree from scratch (the round /
+/// attempt / stuck counters reset), which is safe because coverage is idempotent.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DriveState {
     pub round: u32,

@@ -199,7 +199,11 @@ plan was BUILT - so an LLM can green the tests at 40% and stop (the
   `complete_round_scope` (a few gaps per round so each pass actually finishes).
 - **`ritual complete --check`** is the token-free CI gate: exit 0 only when
   coverage is clean AND `check.sh` is green AND no confirmed finding is open.
-  "Done" means all three, never just tests-green.
+  "Done" means all three, never just tests-green. Completeness is judged
+  **deterministically** from the latest coverage report plus the plan's
+  checklist - a plan with no real `## Deliverables` can never be "complete", and
+  a coverage run that produced no report is never read as "clean". Each run
+  supersedes the prior coverage report (only the newest is kept).
 
 The exit-code contract follows the lifecycle: a confirmed critical
 blocks scripts/CI **until you mark it fixed or dismissed**. In CI:
@@ -352,7 +356,8 @@ or pin one: `nvim_server = "/path/to/socket"`, or launch with
 - `ritual report [--pdf]`: feature report from all artifacts
 - `ritual new [--worktree B]`: name/create a feature
 - `ritual reset-plan [--force]`: re-plan from the spec - delete plan.md, reset
-  the plan..coverage stages, clear plan-review/coverage findings + the plan undo
+  the plan..coverage stages, clear THIS feature's plan-review/coverage findings
+  (exact branch match, so it never touches another feature's) + the plan undo
   stack (spec + code untouched). Dry-run without `--force`; palette `reset-plan`
   in the TUI (confirm y/n)
 - `ritual clean`: prune old runs safely (`--keep N`, `--dry-run`)
