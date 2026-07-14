@@ -53,6 +53,15 @@ pub enum AppMsg {
     /// A claude plan fix finished; the tail carries the run's final
     /// assistant text (the ANSWERS block source) plus last-words context.
     FixExited(Box<Result<RunOutcome>>, FixTail),
+    /// The code-fix run finished (leg 1 of the code-fix pipeline).
+    CodeFixExited(Box<Result<RunOutcome>>, FixTail),
+    /// The code-fix verification `./check.sh` finished (leg 2).
+    CodeGateDone {
+        ok: bool,
+        tail: String,
+    },
+    /// The code-fix re-review run finished (leg 3).
+    CodeReviewExited(Box<Result<RunOutcome>>, FixTail),
     CheckDone {
         ok: bool,
         tail: String,
@@ -103,6 +112,42 @@ struct BatchFixCtx {
     branch: String,
     plan_path: std::path::PathBuf,
     items: Vec<FixItem>,
+}
+
+/// One queued CODE finding in a code-fix batch, tracked by findings-file PATH.
+#[derive(Debug, Clone)]
+struct CodeFixItem {
+    findings_path: std::path::PathBuf,
+    pos: usize,
+    number: u32,
+}
+
+/// An owned copy of a code finding's data, kept so the re-review command (built
+/// later, after the fix + check legs) can be reconstructed without re-reading
+/// the findings.
+#[derive(Debug, Clone)]
+struct OwnedCodeBrief {
+    number: u32,
+    title: String,
+    severity: String,
+    scenario: String,
+    file: String,
+    line: Option<u32>,
+    snippet: Option<String>,
+}
+
+/// The in-flight code-fix batch: its git snapshot (for auto-revert-on-failure),
+/// the findings it targets, and the multi-leg state (fix → check.sh → review).
+#[derive(Debug)]
+struct CodeFixCtx {
+    branch: String,
+    run_cwd: std::path::PathBuf,
+    snap: crate::git::GitSnapshot,
+    items: Vec<CodeFixItem>,
+    numbers: Vec<u32>,
+    briefs: Vec<OwnedCodeBrief>,
+    phase: crate::code_fix::CodePhase,
+    answers: std::collections::HashMap<u32, crate::answers::AnswerVerdict>,
 }
 
 /// The last APPLIED batch, so `u` can revert it: the one undo snapshot plus
@@ -209,6 +254,10 @@ pub struct App {
     fix_ctx: Option<BatchFixCtx>,
     /// The last APPLIED batch, revertable with `u` until a newer doc edit lands.
     last_fix: Option<LastBatch>,
+    /// The in-flight code-fix batch (fix → check.sh → re-review), if any.
+    code_fix_ctx: Option<CodeFixCtx>,
+    code_fix_task: Option<JoinHandle<()>>,
+    current_code_run_id: Option<String>,
     /// Open plan findings whose step no longer locates (path, pos): shown as
     /// ⚓ instead of silently mis-anchoring. Rebuilt on every artifact reload.
     anchor_lost: std::collections::HashSet<(std::path::PathBuf, usize)>,
@@ -384,6 +433,9 @@ impl App {
             fix_doc_before: String::new(),
             fix_ctx: None,
             last_fix: None,
+            code_fix_ctx: None,
+            code_fix_task: None,
+            current_code_run_id: None,
             anchor_lost: std::collections::HashSet::new(),
             theme_flag: None,
             ascii_flag: false,
@@ -394,11 +446,19 @@ impl App {
 
     /// True while a claude plan fix (`F`) is running.
     pub fn fix_running(&self) -> bool {
-        self.fix_ctx.is_some()
+        self.fix_ctx.is_some() || self.code_fix_ctx.is_some()
     }
 
     /// Statusline / overlay label for the in-flight fix, e.g. `fix §Steps`.
     pub fn fix_label(&self) -> Option<String> {
+        if let Some(c) = &self.code_fix_ctx {
+            let leg = match c.phase {
+                crate::code_fix::CodePhase::Fixing => "fixing",
+                crate::code_fix::CodePhase::Checking => "check.sh",
+                crate::code_fix::CodePhase::Reviewing => "reviewing",
+            };
+            return Some(format!("code-fix: {leg} ⚑{}", c.items.len()));
+        }
         self.fix_ctx
             .as_ref()
             .map(|c| format!("fix ⚑{}", c.items.len()))
@@ -606,6 +666,11 @@ impl App {
             }
             AppMsg::ChatExited(outcome) => self.on_chat_exited(*outcome, tx),
             AppMsg::FixExited(outcome, tail) => self.on_fix_exited(*outcome, tail, tx),
+            AppMsg::CodeFixExited(outcome, tail) => self.on_code_fix_exited(*outcome, tail, tx),
+            AppMsg::CodeGateDone { ok, tail } => self.on_code_gate_done(ok, tail, tx),
+            AppMsg::CodeReviewExited(outcome, tail) => {
+                self.on_code_review_exited(*outcome, tail, tx)
+            }
             AppMsg::CheckDone { ok, tail } => {
                 self.check = if ok {
                     CheckState::Green
@@ -3084,10 +3149,25 @@ impl App {
         agent: runner::AgentKind,
         tx: &mpsc::Sender<AppMsg>,
     ) {
-        let dirs = self.dirs.clone();
         self.current_fix_run_id = Some(run_id.clone());
+        self.fix_task = Some(self.attach_result_tail(run_id, agent, tx, AppMsg::FixExited));
+    }
+
+    /// Follow a detached run to completion off the event loop, capturing its
+    /// final result text (the ANSWERS/REVIEW block source) + last-words tail,
+    /// then send `mk(outcome, tail)`. Shared by the plan-fix and the three
+    /// legs of the code-fix pipeline. The caller stores the returned handle and
+    /// the run id on the fields it owns.
+    fn attach_result_tail(
+        &self,
+        run_id: String,
+        agent: runner::AgentKind,
+        tx: &mpsc::Sender<AppMsg>,
+        mk: fn(Box<Result<RunOutcome>>, FixTail) -> AppMsg,
+    ) -> JoinHandle<()> {
+        let dirs = self.dirs.clone();
         let tx_done = tx.clone();
-        self.fix_task = Some(tokio::spawn(async move {
+        tokio::spawn(async move {
             let (etx, mut erx) = mpsc::channel::<AgentEvent>(256);
             let watch = tokio::spawn(async move {
                 let mut tail = FixTail::default();
@@ -3097,7 +3177,6 @@ impl App {
                             tail.result_text = result_text; // last Completed wins
                         }
                         AgentEvent::Text { text } if !text.trim().is_empty() => {
-                            // Char-safe ~200-char tail: the agent's last words.
                             let t = text.trim();
                             let skip = t.chars().count().saturating_sub(200);
                             tail.last_text = Some(t.chars().skip(skip).collect());
@@ -3109,10 +3188,8 @@ impl App {
             });
             let outcome = runner::tail_run(&dirs, agent, &run_id, etx).await;
             let tail = watch.await.unwrap_or_default();
-            let _ = tx_done
-                .send(AppMsg::FixExited(Box::new(outcome), tail))
-                .await;
-        }));
+            let _ = tx_done.send(mk(Box::new(outcome), tail)).await;
+        })
     }
 
     /// The batch fix finished: enforce the union gate, then honor the
@@ -3289,6 +3366,430 @@ impl App {
             }
         }
         // A chat message may have queued while the fix held the doc.
+        if !self.chat_running()
+            && let Some(msg) = self.chat.as_mut().and_then(|c| c.pending.pop_front())
+        {
+            if let Some(chat) = self.chat.as_mut() {
+                chat.transcript.push(ChatTurn::User(msg.clone()));
+            }
+            self.spawn_doc_chat(msg, tx);
+        }
+    }
+
+    /// Build the code-fix batch: every queued CODE finding of this feature,
+    /// numbered, with a git snapshot taken so a failed gate can auto-revert.
+    /// No plan snapshot / undo::push - a passing code fix stays in the tree.
+    #[allow(dead_code)] // wired to the apply confirm in P5
+    fn prepare_code_fix_apply(
+        &mut self,
+        slug: &str,
+    ) -> Result<(stages::StageCommand, CodeFixCtx), String> {
+        if self.fix_running() {
+            return Err("a fix is already running".into());
+        }
+        if self.chat_running() {
+            return Err("a chat edit is in flight; wait for it to finish".into());
+        }
+        if let Some((spent, budget)) = crate::run_cmd::budget_exceeded(&self.cfg, &self.dirs) {
+            return Err(format!(
+                "daily budget reached (${spent:.2}/${budget:.2}); raise budget_daily_usd to override"
+            ));
+        }
+        let Some(run_cwd) = self.run_cwd() else {
+            return Err(format!("branch '{}' has no checkout", self.branch));
+        };
+        let queued = self.queued_auto();
+        let mine: Vec<_> = queued
+            .iter()
+            .filter(|af| self.finding_slug(af.file_idx) == slug)
+            .filter(|af| af.finding.file.is_some())
+            .collect();
+        if mine.is_empty() {
+            return Err("no queued code findings on this feature".into());
+        }
+        let snap =
+            crate::git::snapshot(&run_cwd).map_err(|e| format!("git snapshot failed: {e:#}"))?;
+        let mut items: Vec<CodeFixItem> = Vec::new();
+        let mut owned: Vec<OwnedCodeBrief> = Vec::new();
+        for (i, af) in mine.iter().enumerate() {
+            let f = &af.finding;
+            let number = (i + 1) as u32;
+            items.push(CodeFixItem {
+                findings_path: self.findings[af.file_idx].path.clone(),
+                pos: af.pos,
+                number,
+            });
+            owned.push(OwnedCodeBrief {
+                number,
+                title: f.title.clone(),
+                severity: f.severity.label().to_string(),
+                scenario: f.scenario.clone(),
+                file: f.file.clone().unwrap_or_default(),
+                line: f.line,
+                snippet: f.snippet.clone(),
+            });
+        }
+        let invariants = stages::meaningful_invariants(&self.dirs);
+        let cmd = {
+            let briefs: Vec<(u32, stages::CodeFindingBrief)> = owned
+                .iter()
+                .map(|b| {
+                    (
+                        b.number,
+                        stages::CodeFindingBrief {
+                            title: &b.title,
+                            severity: &b.severity,
+                            scenario: &b.scenario,
+                            file: &b.file,
+                            line: b.line,
+                            snippet: b.snippet.as_deref(),
+                        },
+                    )
+                })
+                .collect();
+            stages::findings_code_fix_command(&self.cfg, &briefs, invariants.as_deref())
+        };
+        let branch = mine
+            .first()
+            .and_then(|af| self.findings.get(af.file_idx))
+            .map(|lf| lf.file.branch.clone())
+            .filter(|b| !b.is_empty())
+            .unwrap_or_else(|| self.branch.clone());
+        let numbers = items.iter().map(|it| it.number).collect();
+        Ok((
+            cmd,
+            CodeFixCtx {
+                branch,
+                run_cwd,
+                snap,
+                items,
+                numbers,
+                briefs: owned,
+                phase: crate::code_fix::CodePhase::Fixing,
+                answers: std::collections::HashMap::new(),
+            },
+        ))
+    }
+
+    /// Spawn leg 1: one headless claude run fixing all queued code findings.
+    #[allow(dead_code)] // wired to the apply confirm in P5
+    fn spawn_code_fix(&mut self, slug: &str, tx: &mpsc::Sender<AppMsg>) {
+        let (cmd, ctx) = match self.prepare_code_fix_apply(slug) {
+            Ok(v) => v,
+            Err(msg) => {
+                self.status_msg = Some(msg);
+                return;
+            }
+        };
+        let title = self
+            .state
+            .features
+            .get(&self.slug)
+            .map(|f| f.title.clone())
+            .unwrap_or_default();
+        let req = RunRequest {
+            agent: cmd.agent,
+            argv: cmd.argv,
+            env: cmd.env,
+            stage: "code-fix".into(),
+            feature: title,
+            branch: ctx.branch.clone(),
+            redact: self.cfg.redaction,
+            repro: None,
+            cwd: ctx.run_cwd.clone(),
+            wrapper: stages::wrapper_argv(&self.cfg, cmd.mode),
+        };
+        let run_id = runner::new_run_id("code-fix");
+        if let Err(e) = runner::spawn_detached(&self.dirs, &req, &run_id) {
+            self.status_msg = Some(format!("code-fix failed to start: {e:#}"));
+            return;
+        }
+        self.status_msg = Some(format!(
+            "fixing {} code finding(s) via claude…",
+            ctx.items.len()
+        ));
+        self.current_code_run_id = Some(run_id.clone());
+        let task = self.attach_result_tail(run_id, req.agent, tx, AppMsg::CodeFixExited);
+        self.code_fix_ctx = Some(ctx);
+        self.code_fix_task = Some(task);
+    }
+
+    /// Leg 1 done → run the check.sh gate, or revert.
+    fn on_code_fix_exited(
+        &mut self,
+        outcome: Result<RunOutcome>,
+        tail: FixTail,
+        tx: &mpsc::Sender<AppMsg>,
+    ) {
+        self.code_fix_task = None;
+        let _run_id = self.current_code_run_id.take();
+        let Some(mut ctx) = self.code_fix_ctx.take() else {
+            return;
+        };
+        self.finding_detail = false;
+        let answers = tail
+            .result_text
+            .as_deref()
+            .map(crate::answers::parse_answers)
+            .unwrap_or_default();
+        let tree_changed = crate::git::touched_since(&ctx.run_cwd, &ctx.snap)
+            .map(|t| !t.is_empty())
+            .unwrap_or(true);
+        let event = match outcome {
+            Err(e) => crate::code_fix::GateEvent::FixFailed(format!("{e:#}")),
+            Ok(o) if !o.meta.ok => {
+                let mut reason = crate::history::decode_failure(&o.meta);
+                if reason.starts_with("agent reported failure")
+                    && let Some(last) = tail.last_text.as_deref()
+                {
+                    reason = format!("{reason} · last: \"{last}\"");
+                }
+                crate::code_fix::GateEvent::FixFailed(reason)
+            }
+            Ok(_) => crate::code_fix::GateEvent::FixOk {
+                answers: answers.clone(),
+                tree_changed,
+            },
+        };
+        ctx.answers = answers;
+        let numbers = ctx.numbers.clone();
+        let (_next, step) = crate::code_fix::advance(
+            crate::code_fix::CodePhase::Fixing,
+            event,
+            &numbers,
+            &ctx.answers,
+        );
+        match step {
+            crate::code_fix::Step::SpawnCheck => {
+                ctx.phase = crate::code_fix::CodePhase::Checking;
+                let run_cwd = ctx.run_cwd.clone();
+                self.status_msg = Some("code fix applied; verifying with check.sh…".into());
+                self.code_fix_ctx = Some(ctx);
+                self.spawn_gate_check(run_cwd, tx);
+            }
+            crate::code_fix::Step::Revert(reason) => self.revert_code_batch(ctx, &reason, tx),
+            _ => self.revert_code_batch(ctx, "internal: unexpected step after fix", tx),
+        }
+    }
+
+    /// Leg 2: run `./check.sh` (full) in the checkout, off the event loop.
+    fn spawn_gate_check(&self, run_cwd: std::path::PathBuf, tx: &mpsc::Sender<AppMsg>) {
+        let timeout = self.cfg.check_timeout_secs;
+        let tx = tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let (ok, tail) = match tempfile::NamedTempFile::new() {
+                Ok(log) => {
+                    let mut cmd = std::process::Command::new("./check.sh");
+                    cmd.current_dir(&run_cwd)
+                        .stdout(
+                            log.reopen()
+                                .map(std::process::Stdio::from)
+                                .unwrap_or_else(|_| std::process::Stdio::null()),
+                        )
+                        .stderr(
+                            log.reopen()
+                                .map(std::process::Stdio::from)
+                                .unwrap_or_else(|_| std::process::Stdio::null()),
+                        );
+                    let status = crate::run_cmd::run_with_timeout(cmd, timeout);
+                    let text = std::fs::read_to_string(log.path()).unwrap_or_default();
+                    let tail: String = text
+                        .lines()
+                        .rev()
+                        .take(15)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    match status {
+                        Some(s) => (s.success(), tail),
+                        None => (
+                            false,
+                            format!("check.sh timed out after {timeout}s\n{tail}"),
+                        ),
+                    }
+                }
+                Err(e) => (false, e.to_string()),
+            };
+            let _ = tx.blocking_send(AppMsg::CodeGateDone { ok, tail });
+        });
+    }
+
+    /// Leg 2 done → spawn the read-only re-review, or revert on a red check.
+    fn on_code_gate_done(&mut self, ok: bool, tail: String, tx: &mpsc::Sender<AppMsg>) {
+        let Some(mut ctx) = self.code_fix_ctx.take() else {
+            return;
+        };
+        let event = if ok {
+            crate::code_fix::GateEvent::CheckGreen
+        } else {
+            crate::code_fix::GateEvent::CheckRed(tail)
+        };
+        let numbers = ctx.numbers.clone();
+        let (_next, step) = crate::code_fix::advance(
+            crate::code_fix::CodePhase::Checking,
+            event,
+            &numbers,
+            &ctx.answers,
+        );
+        match step {
+            crate::code_fix::Step::SpawnReview => {
+                ctx.phase = crate::code_fix::CodePhase::Reviewing;
+                let diff = crate::git::diff_since(&ctx.run_cwd, &ctx.snap).unwrap_or_default();
+                let cmd = {
+                    let briefs: Vec<(u32, stages::CodeFindingBrief)> = ctx
+                        .briefs
+                        .iter()
+                        .map(|b| {
+                            (
+                                b.number,
+                                stages::CodeFindingBrief {
+                                    title: &b.title,
+                                    severity: &b.severity,
+                                    scenario: &b.scenario,
+                                    file: &b.file,
+                                    line: b.line,
+                                    snippet: b.snippet.as_deref(),
+                                },
+                            )
+                        })
+                        .collect();
+                    stages::code_fix_review_command(&self.cfg, &diff, &briefs)
+                };
+                let title = self
+                    .state
+                    .features
+                    .get(&self.slug)
+                    .map(|f| f.title.clone())
+                    .unwrap_or_default();
+                let req = RunRequest {
+                    agent: cmd.agent,
+                    argv: cmd.argv,
+                    env: cmd.env,
+                    stage: "code-fix-review".into(),
+                    feature: title,
+                    branch: ctx.branch.clone(),
+                    redact: self.cfg.redaction,
+                    repro: None,
+                    cwd: ctx.run_cwd.clone(),
+                    wrapper: stages::wrapper_argv(&self.cfg, cmd.mode),
+                };
+                let run_id = runner::new_run_id("code-fix-review");
+                if let Err(e) = runner::spawn_detached(&self.dirs, &req, &run_id) {
+                    self.revert_code_batch(ctx, &format!("re-review failed to start: {e:#}"), tx);
+                    return;
+                }
+                self.status_msg = Some("check.sh green; re-reviewing the fix…".into());
+                self.current_code_run_id = Some(run_id.clone());
+                let task = self.attach_result_tail(run_id, req.agent, tx, AppMsg::CodeReviewExited);
+                self.code_fix_ctx = Some(ctx);
+                self.code_fix_task = Some(task);
+            }
+            crate::code_fix::Step::Revert(reason) => self.revert_code_batch(ctx, &reason, tx),
+            _ => self.revert_code_batch(ctx, "internal: unexpected step after check", tx),
+        }
+    }
+
+    /// Leg 3 done → the strict decision: accept the whole batch or revert it.
+    fn on_code_review_exited(
+        &mut self,
+        outcome: Result<RunOutcome>,
+        tail: FixTail,
+        tx: &mpsc::Sender<AppMsg>,
+    ) {
+        self.code_fix_task = None;
+        let _run_id = self.current_code_run_id.take();
+        let Some(ctx) = self.code_fix_ctx.take() else {
+            return;
+        };
+        let event = match &outcome {
+            Ok(o) if o.meta.ok => crate::code_fix::GateEvent::ReviewOk(
+                tail.result_text
+                    .as_deref()
+                    .map(crate::review::parse_review)
+                    .unwrap_or_default(),
+            ),
+            Ok(o) => {
+                crate::code_fix::GateEvent::ReviewFailed(crate::history::decode_failure(&o.meta))
+            }
+            Err(e) => crate::code_fix::GateEvent::ReviewFailed(format!("{e:#}")),
+        };
+        let numbers = ctx.numbers.clone();
+        let (_next, step) = crate::code_fix::advance(
+            crate::code_fix::CodePhase::Reviewing,
+            event,
+            &numbers,
+            &ctx.answers,
+        );
+        match step {
+            crate::code_fix::Step::Accept(nums) => self.accept_code_batch(ctx, &nums, tx),
+            crate::code_fix::Step::Revert(reason) => self.revert_code_batch(ctx, &reason, tx),
+            _ => self.revert_code_batch(ctx, "internal: unexpected step after review", tx),
+        }
+    }
+
+    /// Both gates passed: mark the fixed findings, leave the diff in the tree.
+    fn accept_code_batch(&mut self, ctx: CodeFixCtx, nums: &[u32], tx: &mpsc::Sender<AppMsg>) {
+        self.reload_artifacts();
+        let mut fixed = 0usize;
+        for item in &ctx.items {
+            if !nums.contains(&item.number) {
+                continue;
+            }
+            let Some(i) = self
+                .findings
+                .iter()
+                .position(|lf| lf.path == item.findings_path)
+            else {
+                continue;
+            };
+            // A mid-run f/d by the user wins.
+            if self.findings[i]
+                .file
+                .findings
+                .get(item.pos)
+                .is_none_or(|f| f.resolved())
+            {
+                continue;
+            }
+            let _ = crate::findings::set_action(&mut self.findings, i, item.pos, "fixed");
+            let _ = crate::findings::set_answer(&mut self.findings, i, item.pos, None, None);
+            fixed += 1;
+        }
+        self.clamp_selected_finding();
+        self.status_msg = Some(format!(
+            "✓ {fixed} code finding(s) fixed; changes are in your working tree - review with git"
+        ));
+        crate::notify::notify(
+            self.cfg.notifications,
+            "ritual: code-fix done",
+            &format!(
+                "{}: {fixed} fixed (check.sh + re-review passed)",
+                ctx.branch
+            ),
+        );
+        self.drain_pending_chat(tx);
+    }
+
+    /// A gate failed: git-restore the touched files; the findings stay queued.
+    fn revert_code_batch(&mut self, ctx: CodeFixCtx, reason: &str, tx: &mpsc::Sender<AppMsg>) {
+        if let Ok(touched) = crate::git::touched_since(&ctx.run_cwd, &ctx.snap) {
+            let _ = crate::git::restore(&ctx.run_cwd, &ctx.snap, &touched);
+        }
+        self.reload_artifacts();
+        let n = ctx.items.len();
+        self.status_msg = Some(format!("code-fix reverted: {reason}; {n} stay queued"));
+        crate::notify::notify(
+            self.cfg.notifications,
+            "ritual: code-fix reverted",
+            &format!("{}: {reason}", ctx.branch),
+        );
+        self.drain_pending_chat(tx);
+    }
+
+    /// Send the next queued chat message once no fix/chat holds the agent.
+    fn drain_pending_chat(&mut self, tx: &mpsc::Sender<AppMsg>) {
         if !self.chat_running()
             && let Some(msg) = self.chat.as_mut().and_then(|c| c.pending.pop_front())
         {
@@ -5806,6 +6307,135 @@ mod tests {
         press(&mut app, &tx, KeyCode::Esc);
         assert!(app.implement_hint.is_none());
         assert!(app.pending_attached.is_none(), "esc launches nothing");
+    }
+
+    // ---- code-fix pipeline -------------------------------------------------
+
+    fn git(root: &std::path::Path, args: &[&str]) {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap();
+    }
+
+    /// Turn the test app's work_root into a git repo with one committed file,
+    /// and seed one queued (⚑A) code finding pointing at it.
+    fn seed_code_repo(app: &mut App) -> std::path::PathBuf {
+        let root = app.dirs.work_root.clone();
+        git(&root, &["init", "-q"]);
+        git(&root, &["config", "user.email", "t@t"]);
+        git(&root, &["config", "user.name", "t"]);
+        std::fs::write(root.join("x.rs"), "fn x() {}\n").unwrap();
+        git(&root, &["add", "x.rs"]);
+        git(&root, &["commit", "-qm", "init"]);
+        seed_findings(
+            &mut *app,
+            r#"{"stage":"dual-review","findings":[
+                {"id":1,"title":"bug","file":"x.rs","line":1,"severity":"major",
+                 "verdict":"confirmed","action":"pending","answer":"auto"}]}"#,
+        );
+        root
+    }
+
+    fn ok_outcome() -> Result<RunOutcome> {
+        Ok(RunOutcome {
+            meta: crate::history::RunMeta {
+                ok: true,
+                stage: "code-fix".into(),
+                ..Default::default()
+            },
+            archive: std::path::PathBuf::new(),
+        })
+    }
+
+    #[test]
+    fn code_fix_gate_red_reverts_and_requeues() {
+        let (_t, mut app, tx, _rx) = test_app();
+        let root = seed_code_repo(&mut app);
+        let slug = app.slug.clone();
+        let (_cmd, ctx) = app.prepare_code_fix_apply(&slug).unwrap();
+        app.code_fix_ctx = Some(ctx);
+        app.code_fix_ctx.as_mut().unwrap().phase = crate::code_fix::CodePhase::Checking;
+        // The fix edited the file; then check.sh comes back red.
+        std::fs::write(root.join("x.rs"), "fn x() { BROKEN }\n").unwrap();
+        app.on_code_gate_done(false, "clippy: error".into(), &tx);
+        assert!(app.code_fix_ctx.is_none(), "batch cleared");
+        assert_eq!(
+            std::fs::read_to_string(root.join("x.rs")).unwrap(),
+            "fn x() {}\n",
+            "worktree restored on a red gate"
+        );
+        assert_eq!(app.queued_auto().len(), 1, "finding stays queued");
+        assert!(app.status_msg.as_deref().unwrap().contains("reverted"));
+    }
+
+    #[test]
+    fn code_fix_accepts_when_both_gates_pass() {
+        let (_t, mut app, tx, _rx) = test_app();
+        let root = seed_code_repo(&mut app);
+        let slug = app.slug.clone();
+        let (_cmd, mut ctx) = app.prepare_code_fix_apply(&slug).unwrap();
+        ctx.phase = crate::code_fix::CodePhase::Reviewing;
+        ctx.answers.insert(1, crate::answers::AnswerVerdict::Fixed);
+        app.code_fix_ctx = Some(ctx);
+        // The fix left a real edit in the tree.
+        std::fs::write(root.join("x.rs"), "fn x() { /* fixed */ }\n").unwrap();
+        let tail = FixTail {
+            result_text: Some("REVIEW:\n#1: RESOLVED\nREGRESSIONS: NONE".into()),
+            last_text: None,
+        };
+        app.on_code_review_exited(ok_outcome(), tail, &tx);
+        assert!(app.code_fix_ctx.is_none());
+        assert!(
+            seeded_json(&app).contains(r#""action": "fixed""#),
+            "finding marked fixed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("x.rs")).unwrap(),
+            "fn x() { /* fixed */ }\n",
+            "a passing fix is LEFT in the worktree"
+        );
+    }
+
+    #[test]
+    fn code_fix_reverts_on_reported_regression() {
+        let (_t, mut app, tx, _rx) = test_app();
+        let root = seed_code_repo(&mut app);
+        let slug = app.slug.clone();
+        let (_cmd, mut ctx) = app.prepare_code_fix_apply(&slug).unwrap();
+        ctx.phase = crate::code_fix::CodePhase::Reviewing;
+        ctx.answers.insert(1, crate::answers::AnswerVerdict::Fixed);
+        app.code_fix_ctx = Some(ctx);
+        std::fs::write(root.join("x.rs"), "fn x() { regressed }\n").unwrap();
+        let tail = FixTail {
+            result_text: Some("REVIEW:\n#1: RESOLVED\nREGRESSIONS: breaks the caller".into()),
+            last_text: None,
+        };
+        app.on_code_review_exited(ok_outcome(), tail, &tx);
+        assert_eq!(
+            std::fs::read_to_string(root.join("x.rs")).unwrap(),
+            "fn x() {}\n",
+            "regression → reverted"
+        );
+        assert_eq!(app.queued_auto().len(), 1, "requeued");
+        assert!(!seeded_json(&app).contains(r#""action": "fixed""#));
+    }
+
+    #[test]
+    fn code_fix_ctx_gates_other_actions() {
+        let (_t, mut app, _tx, _rx) = test_app();
+        let root = seed_code_repo(&mut app);
+        let slug = app.slug.clone();
+        let (_cmd, ctx) = app.prepare_code_fix_apply(&slug).unwrap();
+        assert!(!app.fix_running());
+        app.code_fix_ctx = Some(ctx);
+        assert!(
+            app.fix_running(),
+            "a code-fix batch counts as a running fix"
+        );
+        assert!(app.fix_label().unwrap().starts_with("code-fix:"));
+        let _ = root;
     }
 
     #[test]
