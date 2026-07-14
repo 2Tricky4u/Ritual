@@ -280,15 +280,20 @@ pub fn complete(cfg: &Config, dirs: &RitualDirs, check: bool) -> Result<bool> {
         }
     }
 
-    let st = State::load(dirs)?;
     let findings = crate::findings::load_all(&dirs.findings_dir())?;
-    let feature = st.features.get(&slug);
-    let cov_done = feature.is_some_and(|f| f.stage(StageId::Coverage).status == StageStatus::Done);
+    // Completeness is derived from EVIDENCE, never the Coverage stage status:
+    // the latest coverage report must be genuinely zero-gap AND the plan must
+    // declare a real `## Deliverables` checklist (the deterministic backstop).
+    let report = crate::coverage::latest_report(&dirs.findings_dir());
+    let coverage_clean = report.as_ref().is_some_and(|r| r.gaps.is_empty());
+    let plan_text = std::fs::read_to_string(dirs.plan_file(&slug)).unwrap_or_default();
+    let deliverables = crate::spec::deliverables_gate(&plan_text);
+    let deliverables_ok = deliverables.is_ok();
     let no_open = !crate::findings::has_open_confirmed(&findings);
-    // Only spend a check.sh run once coverage has passed - otherwise the feature
-    // is incomplete regardless of the tree's colour.
-    let green = cov_done && check_green(&dirs.work_root, cfg.check_timeout_secs);
-    let done = cov_done && green && no_open;
+    // Only spend a check.sh run once coverage + deliverables pass.
+    let green =
+        coverage_clean && deliverables_ok && check_green(&dirs.work_root, cfg.check_timeout_secs);
+    let done = crate::coverage::feature_complete(coverage_clean, deliverables_ok, &findings, green);
 
     if done {
         println!(
@@ -296,17 +301,24 @@ pub fn complete(cfg: &Config, dirs: &RitualDirs, check: bool) -> Result<bool> {
         );
     } else {
         println!("✗ not complete:");
-        if !cov_done {
-            let rep = crate::coverage::latest_report(&dirs.findings_dir());
-            let n = rep.as_ref().map(|r| r.gaps.len()).unwrap_or(0);
-            println!("  coverage: {n} deliverable gap(s) (run `ritual complete` to judge/fix)");
-            if let Some(rep) = rep {
-                for g in rep.gaps.iter().take(20) {
-                    println!("    - {}: {}", g.deliverable, g.finding.title);
+        if let Err(why) = &deliverables {
+            println!("  deliverables: {why}");
+        }
+        if deliverables_ok && !coverage_clean {
+            match &report {
+                Some(rep) => {
+                    println!(
+                        "  coverage: {} deliverable gap(s) (run `ritual complete` to fix)",
+                        rep.gaps.len()
+                    );
+                    for g in rep.gaps.iter().take(20) {
+                        println!("    - {}: {}", g.deliverable, g.finding.title);
+                    }
                 }
+                None => println!("  coverage: not judged yet (run `ritual complete`)"),
             }
         }
-        if cov_done && !green {
+        if coverage_clean && deliverables_ok && !green {
             println!("  check.sh: red");
         }
         if !no_open {
@@ -907,6 +919,18 @@ fn finalize_coverage(dirs: &RitualDirs, branch: &str, new_findings: &[String]) -
     };
     let report = crate::coverage::parse_report(&ff);
 
+    // Supersede: keep only the file we just read; delete older coverage files so
+    // stale gaps don't accumulate or pollute the findings browser / CI counts.
+    if let Ok(rd) = std::fs::read_dir(dirs.findings_dir()) {
+        for e in rd.flatten() {
+            let fname = e.file_name();
+            let fname = fname.to_string_lossy();
+            if fname.ends_with("-coverage.json") && fname != name.as_str() {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+
     // Tick satisfied deliverables (never one that is also flagged a gap) into
     // the plan, confined to the `## Deliverables` section and undo-pushed.
     let gap_ids: std::collections::HashSet<&str> =
@@ -930,9 +954,18 @@ fn finalize_coverage(dirs: &RitualDirs, branch: &str, new_findings: &[String]) -
         }
     }
 
-    if report.gaps.is_empty() {
+    // Deterministic backstop: a plan with no real `## Deliverables` checklist is
+    // never "complete", no matter how empty the gap list is.
+    let deliverables_ok = std::fs::read_to_string(dirs.plan_file(&slug))
+        .map(|t| crate::spec::deliverables_gate(&t).is_ok())
+        .unwrap_or(false);
+
+    if report.gaps.is_empty() && deliverables_ok {
         println!("coverage: all deliverables satisfied - feature complete");
         StageStatus::Done
+    } else if report.gaps.is_empty() {
+        println!("coverage: no `## Deliverables` checklist to verify against; needs attention");
+        StageStatus::NeedsAttention
     } else {
         println!(
             "coverage: {} deliverable gap(s) remain; needs attention",

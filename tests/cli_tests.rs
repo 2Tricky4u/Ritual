@@ -664,6 +664,38 @@ fn reset_plan_dry_run_then_force_wipes_the_plan() {
     );
 }
 
+#[test]
+fn complete_check_requires_a_deliverables_checklist_even_when_coverage_is_clean() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = setup_project();
+    let root = tmp.path();
+    // A plan with NO ## Deliverables section (the reward-hacking trap).
+    let feat = root.join(".ritual/features/main");
+    std::fs::create_dir_all(&feat).unwrap();
+    std::fs::write(feat.join("plan.md"), "# Plan\n\n## Steps\n1. do it\n").unwrap();
+    // A clean coverage report + green check.sh already on disk.
+    std::fs::write(
+        root.join(".ritual/findings/20260101T000000Z-coverage.json"),
+        r#"{"stage":"coverage","satisfied":[],"findings":[]}"#,
+    )
+    .unwrap();
+    std::fs::write(root.join("check.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(
+        root.join("check.sh"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    // Deterministic backstop: no deliverables declared -> NOT complete (exit 1),
+    // even though coverage is "clean" and the tree is green.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(root)
+        .args(["complete", "--check"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("deliverables"));
+}
+
 fn complete_agent() -> String {
     format!(
         "{}/tests/fixtures/complete_agent.sh",

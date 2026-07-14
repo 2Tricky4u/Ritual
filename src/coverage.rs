@@ -8,7 +8,6 @@
 use std::path::Path;
 
 use crate::findings::{Finding, FindingsFile, LoadedFindings};
-use crate::state::{Feature, StageId, StageStatus};
 
 /// One unmet deliverable the coverage judge flagged.
 #[derive(Debug, Clone)]
@@ -82,11 +81,20 @@ pub fn latest_report(findings_dir: &Path) -> Option<CoverageReport> {
         .map(|ff| parse_report(&ff))
 }
 
-/// The real "project is done" signal (the missing gate): the coverage stage
-/// judged it complete (== Done, i.e. zero gaps), the tree passes `check.sh`, AND
-/// no confirmed finding is still open. Green tests alone are never enough.
-pub fn feature_complete(feature: &Feature, findings: &[LoadedFindings], check_green: bool) -> bool {
-    feature.stage(StageId::Coverage).status == StageStatus::Done
+/// The real "project is done" signal (the missing gate). Derived DETERMINISTICALLY
+/// from evidence, NOT from the Coverage stage status (which the TUI and CLI set
+/// differently and can be stale): the latest coverage report is genuinely
+/// zero-gap (`coverage_clean`), the plan declares a real `## Deliverables`
+/// checklist (`deliverables_ok`), the tree passes `check.sh`, AND no confirmed
+/// non-coverage finding is still open. Green tests alone are never enough.
+pub fn feature_complete(
+    coverage_clean: bool,
+    deliverables_ok: bool,
+    findings: &[LoadedFindings],
+    check_green: bool,
+) -> bool {
+    coverage_clean
+        && deliverables_ok
         && check_green
         && !crate::findings::has_open_confirmed(findings)
 }
@@ -126,17 +134,20 @@ mod tests {
     }
 
     #[test]
-    fn feature_complete_requires_coverage_done_and_green() {
-        let mut feat = Feature::new("main", "x");
+    fn feature_complete_requires_every_deterministic_signal() {
+        // All four must hold: coverage clean, deliverables declared, green, no open.
+        assert!(feature_complete(true, true, &[], true), "all signals true");
         assert!(
-            !feature_complete(&feat, &[], true),
-            "coverage pending -> not complete even when green"
+            !feature_complete(false, true, &[], true),
+            "coverage not clean blocks"
         );
-        feat.stages.get_mut(&StageId::Coverage).unwrap().status = StageStatus::Done;
-        assert!(feature_complete(&feat, &[], true), "done + green + clean");
         assert!(
-            !feature_complete(&feat, &[], false),
-            "a red check.sh blocks completion"
+            !feature_complete(true, false, &[], true),
+            "no deliverables checklist blocks"
+        );
+        assert!(
+            !feature_complete(true, true, &[], false),
+            "a red check.sh blocks"
         );
     }
 
