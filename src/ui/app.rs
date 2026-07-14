@@ -263,6 +263,11 @@ pub struct App {
     code_fix_ctx: Option<CodeFixCtx>,
     code_fix_task: Option<JoinHandle<()>>,
     current_code_run_id: Option<String>,
+    /// True while the code-fix gate's detached `check.sh` is in flight. It has
+    /// no join handle (it runs off-loop), so cancelling the batch can't kill it;
+    /// this flag keeps `run_check` from launching a SECOND check.sh against the
+    /// same checkout (build-lock contention) until the orphan finishes.
+    gate_check_running: bool,
     /// Open plan findings whose step no longer locates (path, pos): shown as
     /// ⚓ instead of silently mis-anchoring. Rebuilt on every artifact reload.
     anchor_lost: std::collections::HashSet<(std::path::PathBuf, usize)>,
@@ -440,6 +445,7 @@ impl App {
             last_fix: None,
             code_fix_ctx: None,
             code_fix_task: None,
+            gate_check_running: false,
             current_code_run_id: None,
             anchor_lost: std::collections::HashSet::new(),
             theme_flag: None,
@@ -2114,7 +2120,7 @@ impl App {
         // A fix runs its own check.sh gate in the checkout; a second one here
         // would fight over the build lock (the idle FileChanged path already
         // guards this, but the c/C keys and palette reach run_check directly).
-        if self.fix_running() {
+        if self.fix_running() || self.gate_check_running {
             self.status_msg = Some("a fix is running; check resumes when it finishes".into());
             return;
         }
@@ -3736,6 +3742,7 @@ impl App {
                 let run_cwd = ctx.run_cwd.clone();
                 self.status_msg = Some("code fix applied; verifying with check.sh…".into());
                 self.code_fix_ctx = Some(ctx);
+                self.gate_check_running = true;
                 self.spawn_gate_check(run_cwd, tx);
             }
             crate::code_fix::Step::Revert(reason) => {
@@ -3791,6 +3798,10 @@ impl App {
 
     /// Leg 2 done → spawn the read-only re-review, or revert on a red check.
     fn on_code_gate_done(&mut self, ok: bool, tail: String, tx: &mpsc::Sender<AppMsg>) {
+        // Always clear first, even if the batch was cancelled mid-check: this
+        // message means the (possibly orphaned) gate check.sh has finished, so
+        // `run_check` may launch again.
+        self.gate_check_running = false;
         let Some(mut ctx) = self.code_fix_ctx.take() else {
             return;
         };
@@ -6910,6 +6921,23 @@ mod tests {
             "plan reverted on cancel",
         );
         assert!(app.status_msg.as_deref().unwrap().contains("plan reverted"));
+    }
+
+    #[test]
+    fn orphaned_gate_check_blocks_a_second_check() {
+        let (_t, mut app, tx, _rx) = test_app();
+        // Post-cancel state: the batch is gone but its detached check.sh (which
+        // has no join handle) is still running.
+        app.gate_check_running = true;
+        app.run_check(&tx, true);
+        assert_ne!(
+            app.check,
+            CheckState::Running,
+            "no second check.sh while the gate check is in flight",
+        );
+        // The orphan finishing clears the flag even though the ctx is gone.
+        app.on_code_gate_done(true, "ok".into(), &tx);
+        assert!(!app.gate_check_running);
     }
 
     #[test]

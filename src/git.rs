@@ -155,16 +155,27 @@ pub fn snapshot(cwd: &Path) -> Result<GitSnapshot> {
 /// and the gate fails closed.
 pub fn observed_change(cwd: &Path, snap: &GitSnapshot) -> Result<ChangeSet> {
     let diff = git(cwd, &["-c", "core.quotepath=false", "diff", &snap.base])?;
+    let now_untracked = untracked(cwd)?;
     let mut untracked_changed = Vec::new();
-    for p in untracked(cwd)? {
-        let now = hash_file(cwd, &p);
-        let moved = match snap.before_hashes.get(&p) {
+    for p in &now_untracked {
+        let now = hash_file(cwd, p);
+        let moved = match snap.before_hashes.get(p) {
             Some(before) => now.as_deref() != Some(before.as_str()),
             None => true, // brand-new untracked file
         };
         if moved {
-            let contents = std::fs::read_to_string(cwd.join(&p)).unwrap_or_default();
-            untracked_changed.push((p, contents));
+            let contents = std::fs::read_to_string(cwd.join(p)).unwrap_or_default();
+            untracked_changed.push((p.clone(), contents));
+        }
+    }
+    // A DELETION of a pre-existing untracked file is invisible to both git and
+    // the loop above (the path is simply gone), so a deletion-only fix would
+    // read as "no change". Detect it: a snapshot-hashed path that is neither
+    // still untracked nor present on disk was removed.
+    let now_set: std::collections::HashSet<&PathBuf> = now_untracked.iter().collect();
+    for p in snap.before_hashes.keys() {
+        if !now_set.contains(p) && !cwd.join(p).exists() {
+            untracked_changed.push((p.clone(), "(file deleted)".to_string()));
         }
     }
     Ok(ChangeSet {
@@ -175,9 +186,15 @@ pub fn observed_change(cwd: &Path, snap: &GitSnapshot) -> Result<ChangeSet> {
 
 /// Did HEAD move since the snapshot? True when the fixer committed, reset, or
 /// checked out despite the prompt forbidding it - grounds to abort the batch.
+/// Fails OPEN on an unreadable HEAD (a transient git error must not trigger a
+/// false abort), matching `observed_change`'s error handling.
 pub fn head_moved(cwd: &Path, snap: &GitSnapshot) -> bool {
     let now = git_opt(cwd, &["rev-parse", "HEAD"]).filter(|s| !s.is_empty());
-    now != snap.head
+    match (now, &snap.head) {
+        (Some(a), Some(b)) => &a != b, // both readable: moved iff different
+        (Some(_), None) => true,       // was unborn, now has a commit
+        (None, _) => false,            // can't read HEAD now: don't falsely abort
+    }
 }
 
 /// A human-readable diff of everything the run changed since the snapshot, for
@@ -276,6 +293,23 @@ mod tests {
         );
         let r = cs.render();
         assert!(r.contains("CHANGED (untracked): u.rs") && r.contains("after"));
+    }
+
+    #[test]
+    fn observed_change_sees_a_deleted_untracked_file() {
+        let t = init_repo();
+        let p = t.path();
+        commit(p, "a.rs", "x\n");
+        std::fs::write(p.join("scratch.rs"), "junk\n").unwrap(); // untracked
+        let snap = snapshot(p).unwrap();
+        std::fs::remove_file(p.join("scratch.rs")).unwrap(); // deletion-only fix
+        let cs = observed_change(p, &snap).unwrap();
+        assert!(!cs.is_empty(), "a deletion is an observable change");
+        assert!(
+            cs.untracked_changed
+                .iter()
+                .any(|(pp, c)| pp == Path::new("scratch.rs") && c.contains("deleted")),
+        );
     }
 
     #[test]

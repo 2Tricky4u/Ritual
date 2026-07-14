@@ -191,17 +191,22 @@ pub fn confine_by_heading(before: &str, after: &str, queued: &[String]) -> Optio
     let mut changed = Vec::new();
     for (title, bodies_b) in &map_b {
         if queued.contains(title.as_str()) {
-            // A queued section: allowed to change; record whether it did.
-            let moved = map_a
-                .get(title)
-                .is_none_or(|bodies_a| !eq_multiset(bodies_a, bodies_b));
+            // A queued section: allowed to change; record whether it did. Exact
+            // ordered comparison so a pure REORDER of the body counts as changed
+            // (an order-insensitive check would decline a valid reorder fix).
+            let moved = map_a.get(title).is_none_or(|bodies_a| bodies_a != bodies_b);
             if moved {
                 changed.push(title.clone());
             }
         } else {
-            // A locked section: its body-multiset must be identical in `after`.
+            // A locked section must survive verbatim, in order: an exact
+            // sequence match (a reorder of locked content is a leak). Requiring
+            // the exact set also keeps the decoy closed - a duplicated locked
+            // body changes the count. (This does conservatively reject the rare
+            // case of ADDING a new section whose title collides with a locked
+            // one; that stays fail-safe rather than reopen the decoy.)
             match map_a.get(title) {
-                Some(bodies_a) if eq_multiset(bodies_a, bodies_b) => {}
+                Some(bodies_a) if bodies_a == bodies_b => {}
                 _ => return None,
             }
         }
@@ -245,17 +250,6 @@ fn group_by_title(secs: &[(String, String)]) -> std::collections::BTreeMap<Strin
         map.entry(title.clone()).or_default().push(body.clone());
     }
     map
-}
-
-fn eq_multiset(a: &[String], b: &[String]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut a: Vec<&String> = a.iter().collect();
-    let mut b: Vec<&String> = b.iter().collect();
-    a.sort();
-    b.sort();
-    a == b
 }
 
 /// Line-multiset delta between two documents: (# lines that appeared, # that
@@ -602,7 +596,7 @@ mod tests {
             "positional gate is fooled by the decoy",
         );
         // The heading-structured gate keys on the heading, so the duplicated
-        // locked B breaks the multiset and the batch is rejected.
+        // locked B breaks the exact sequence and the batch is rejected.
         let queued = vec!["A".to_string(), "C".to_string()];
         assert_eq!(confine_by_heading(DECOY_BEFORE, decoy, &queued), None);
     }
@@ -625,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn confine_by_heading_treats_duplicate_locked_headings_as_a_multiset() {
+    fn confine_by_heading_treats_duplicate_locked_headings_as_a_sequence() {
         let before = "# Plan\n\n## Dup\nx\n\n## Dup\ny\n\n## A\na1\n";
         let queued = vec!["A".to_string()];
         // Editing one of the two locked `## Dup` bodies leaks.
@@ -634,6 +628,24 @@ mod tests {
         // Leaving both `## Dup` intact and editing only A is confined.
         let after_ok = "# Plan\n\n## Dup\nx\n\n## Dup\ny\n\n## A\na1\nmore\n";
         assert!(confine_by_heading(before, after_ok, &queued).is_some());
+    }
+
+    #[test]
+    fn confine_by_heading_counts_a_reordered_queued_section_as_changed() {
+        // A pure reorder of a queued section's body is a real edit, so it must
+        // be reported changed (else a valid reorder fix is falsely declined).
+        let queued = vec!["A".to_string()];
+        let after = "# Plan\n\n## A\na2\na1\n\n## B\nb1\n"; // a1/a2 swapped
+        let rep = confine_by_heading(GATE_DOC, after, &queued).expect("confined");
+        assert_eq!(rep.changed, vec!["A".to_string()]);
+    }
+
+    #[test]
+    fn confine_by_heading_rejects_reordering_a_locked_section() {
+        let before = "# Plan\n\n## A\na1\n\n## B\nb1\nb2\n";
+        let queued = vec!["A".to_string()];
+        let after = "# Plan\n\n## A\na1 fixed\n\n## B\nb2\nb1\n"; // B (locked) reordered
+        assert_eq!(confine_by_heading(before, after, &queued), None);
     }
 
     #[test]
