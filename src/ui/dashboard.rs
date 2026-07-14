@@ -12,6 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Wrap};
 
 use crate::findings::Severity;
+use crate::keymap::{Action, describe};
 use crate::runner::events::AgentEvent;
 use crate::state::{PIPELINE, StageStatus};
 use crate::theme::Theme;
@@ -147,8 +148,9 @@ fn section_header<'a>(t: &Theme, icon: &'a str, label: &'a str, width: u16) -> L
     ])
 }
 
-/// A which-key style keycap chip.
-fn keycap<'a>(t: &Theme, key: &'a str) -> Span<'a> {
+/// A which-key style keycap chip. Returns an owned span (the label is
+/// formatted, never borrowed), so callers may pass a temporary `&String`.
+fn keycap(t: &Theme, key: &str) -> Span<'static> {
     Span::styled(
         format!(" {key} "),
         Style::default()
@@ -247,7 +249,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_settings(f, app);
     }
     if app.show_help {
-        draw_help(f, t);
+        draw_help(f, app);
     }
     if app.palette.is_some() {
         draw_palette(f, app);
@@ -1649,78 +1651,177 @@ fn draw_palette(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-fn draw_help(f: &mut Frame, t: &Theme) {
-    let groups: [(&str, &[(&str, &str)]); 5] = [
-        (
-            "navigate",
-            &[
-                ("j/k", "move"),
-                ("[ ]", "cycle features"),
-                ("tab 1-5", "panes"),
-                ("g/G", "top / follow"),
-            ],
-        ),
-        (
+/// The ordered key sections to show in the which-key overlay for the CURRENT
+/// context: the actions specific to the active tab (or the finding-detail
+/// overlay) FIRST - the "what's available here" - then the always-present
+/// `global` and `move` sections. Mirrors what `dispatch`/`nav` actually gate per
+/// context so the list stays honest to what a keypress does.
+fn whichkey_sections(app: &App) -> Vec<(&'static str, Vec<Action>)> {
+    use Action::*;
+    // The finding-detail overlay is its own modal: `detail_input` honors only a
+    // subset (the finding actions + up/down + help/close), swallowing tabs,
+    // palette, settings, scrolling and feature-nav - so advertise ONLY what
+    // works here, not the base-layer global/move sections.
+    if app.finding_detail {
+        return vec![
+            (
+                "finding",
+                vec![
+                    FindingFix,
+                    FindingDismiss,
+                    FindingClaudeFix,
+                    FindingManual,
+                    DocUndo,
+                    NvimOpen,
+                    OpenEditor,
+                ],
+            ),
+            ("move", vec![Up, Down]),
+        ];
+    }
+    let ctx: (&'static str, Vec<Action>) = match app.tab {
+        Tab::Live => (
             "run",
-            &[
-                ("enter", "run stage / open"),
-                ("s", "chat: edit spec/plan"),
-                ("a", "take over session"),
-                ("x", "cancel run"),
-                ("c/C", "check fast / full"),
+            vec![
+                Confirm, Cancel, Takeover, CheckFast, CheckFull, SpecChat, OpenEditor,
             ],
         ),
-        (
+        Tab::Findings => (
             "findings",
-            &[
-                ("enter", "details"),
-                ("f", "mark fixed (toggle)"),
-                ("d", "dismiss (+reason)"),
-                ("F", "queue/apply claude answers"),
-                ("A", "queue all code fixes"),
-                ("m", "queue manual fix"),
-                ("t", "apply recommended triage"),
-                ("u", "revert applied batch"),
-                ("v", "show/hide resolved"),
-                ("/", "filter list (2/3)"),
+            vec![
+                FindingFix,
+                FindingDismiss,
+                FindingClaudeFix,
+                FindingManual,
+                FindingsApply,
+                TriageAll,
+                QueueAllCode,
+                ToggleResolved,
+                Filter,
+                NvimOpen,
+                NvimQuickfix,
             ],
         ),
-        (
-            "tools",
-            &[
-                (":", "command palette"),
-                ("S", "settings editor"),
-                ("o", "open in running nvim"),
-                ("Q", "findings → nvim quickfix"),
-                ("e", "open in $EDITOR"),
-                ("r", "refresh"),
-            ],
-        ),
-        ("misc", &[("?", "this help"), ("q", "quit")]),
-    ];
-    let height = 3 + groups.iter().map(|(_, ks)| ks.len() + 2).sum::<usize>() as u16;
-    let area = centered_rect(f.area(), 46, height.min(f.area().height));
-    let inner = float_panel(f, t, area, "keys");
+        Tab::Plan => ("plan", vec![SpecChat, DocUndo, OpenEditor]),
+        Tab::History => ("history", vec![Filter, Takeover, OpenEditor]),
+        Tab::Guide => ("", vec![]),
+    };
+    let mut out: Vec<(&'static str, Vec<Action>)> = Vec::new();
+    if !ctx.1.is_empty() {
+        out.push(ctx);
+    }
+    out.push((
+        "global",
+        vec![
+            Quit,
+            Help,
+            Palette,
+            NextTab,
+            TabLive,
+            TabFindings,
+            TabHistory,
+            TabPlan,
+            TabGuide,
+            Refresh,
+            Settings,
+        ],
+    ));
+    out.push((
+        "move",
+        vec![Up, Down, ScrollTop, Follow, FeaturePrev, FeatureNext],
+    ));
+    out
+}
 
-    let mut lines = vec![Line::default()];
-    for (group, keys) in groups {
-        lines.push(Line::from(Span::styled(
-            format!(" {group}"),
-            Style::default()
-                .fg(t.grey_fg())
-                .add_modifier(Modifier::BOLD),
-        )));
-        for (key, desc) in keys {
-            lines.push(Line::from(vec![
+/// The which-key help overlay: the keys/actions live in the CURRENT view,
+/// generated from the RESOLVED keymap (so it reflects `[keys]` rebinds) with
+/// each action's human label. Packs sections into a which-key grid: one column
+/// when it fits the frame height, wrapping into more columns when it doesn't, so
+/// the context section is never clipped. Press the help key again or Esc to close.
+fn draw_help(f: &mut Frame, app: &App) {
+    let t = &app.cfg.theme;
+    let header_style = Style::default()
+        .fg(t.grey_fg())
+        .add_modifier(Modifier::BOLD);
+    let desc_style = Style::default().fg(t.muted());
+
+    // One rendered block per non-empty section: a header line + one row per
+    // action that actually has a bound chord (palette-only actions stay
+    // reachable via `:`), plus that block's display width.
+    let mut blocks: Vec<(Vec<Line>, usize)> = Vec::new();
+    for (title, actions) in whichkey_sections(app) {
+        let mut ls: Vec<Line> = Vec::new();
+        let mut w = title.chars().count() + 1;
+        for a in actions {
+            let caps: Vec<String> = app
+                .cfg
+                .keymap
+                .chords_for(a)
+                .iter()
+                .map(|c| c.caption())
+                .collect();
+            if caps.is_empty() {
+                continue;
+            }
+            let keys = caps.join(" / ");
+            let desc = describe(a);
+            w = w.max(keys.chars().count() + desc.chars().count() + 6);
+            ls.push(Line::from(vec![
                 Span::raw("  "),
-                keycap(t, key),
+                keycap(t, &keys),
                 Span::raw(" "),
-                Span::styled(desc.to_string(), Style::default().fg(t.muted())),
+                Span::styled(desc, desc_style),
             ]));
         }
-        lines.push(Line::default());
+        if ls.is_empty() {
+            continue;
+        }
+        ls.insert(
+            0,
+            Line::from(Span::styled(format!(" {title}"), header_style)),
+        );
+        blocks.push((ls, w));
     }
-    f.render_widget(Paragraph::new(lines), inner);
+
+    // Pack blocks top-to-bottom into columns; start a new column when the
+    // current one would overflow the frame's inner height.
+    let avail_h = (f.area().height.saturating_sub(2) as usize).max(1);
+    let gap = 2usize;
+    let mut cols: Vec<Vec<Line>> = vec![Vec::new()];
+    let mut cols_w: Vec<usize> = vec![0];
+    for (ls, w) in blocks {
+        let ci = cols.len() - 1;
+        let sep = usize::from(!cols[ci].is_empty());
+        if !cols[ci].is_empty() && cols[ci].len() + sep + ls.len() > avail_h {
+            cols.push(Vec::new());
+            cols_w.push(0);
+        }
+        let ci = cols.len() - 1;
+        if !cols[ci].is_empty() {
+            cols[ci].push(Line::default());
+        }
+        cols[ci].extend(ls);
+        cols_w[ci] = cols_w[ci].max(w);
+    }
+
+    let total_w: usize = cols_w.iter().sum::<usize>() + gap * cols.len().saturating_sub(1);
+    let max_h = cols.iter().map(|c| c.len()).max().unwrap_or(1);
+    let width = (total_w as u16 + 4).min(f.area().width);
+    let height = (max_h as u16 + 2).min(f.area().height);
+    let area = centered_rect(f.area(), width, height);
+    let inner = float_panel(f, t, area, "keys");
+
+    // Render each column into its own slice of the inner rect.
+    let mut x = inner.x + 1;
+    for (i, col) in cols.into_iter().enumerate() {
+        if x >= inner.x + inner.width {
+            break;
+        }
+        let remaining = inner.x + inner.width - x;
+        let cw = (cols_w[i] as u16).min(remaining);
+        f.render_widget(Paragraph::new(col), Rect::new(x, inner.y, cw, inner.height));
+        x += cw + gap as u16;
+    }
 }
 
 /// The `S` settings editor: grouped catalog rows with effective values and

@@ -143,6 +143,16 @@ pub fn action_by_name(name: &str) -> Option<Action> {
         .map(|(_, a, _)| *a)
 }
 
+/// The human-readable label for a nameable action (empty for the dynamic
+/// palette-only variants and any action absent from `ACTIONS`).
+pub fn describe(action: Action) -> &'static str {
+    ACTIONS
+        .iter()
+        .find(|(_, a, _)| *a == action)
+        .map(|(_, _, label)| *label)
+        .unwrap_or("")
+}
+
 /// A pressed key, normalized: alphabetic keys carry case in the char and
 /// never a SHIFT modifier (terminals disagree; we normalize both sides).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -166,6 +176,40 @@ impl Chord {
             other => other,
         };
         Self { code, mods }
+    }
+
+    /// Render this chord as a compact keycap string ("j", "G", "ctrl+c", "tab",
+    /// "↓") for the which-key help overlay. SHIFT is already folded into the
+    /// uppercase char by `normalize`, so it is never a prefix here.
+    pub fn caption(&self) -> String {
+        let key = match self.code {
+            KeyCode::Char(' ') => "space".to_string(),
+            KeyCode::Char(c) => c.to_string(),
+            KeyCode::Enter => "enter".to_string(),
+            KeyCode::Tab => "tab".to_string(),
+            KeyCode::BackTab => "shift+tab".to_string(),
+            KeyCode::Esc => "esc".to_string(),
+            KeyCode::Up => "↑".to_string(),
+            KeyCode::Down => "↓".to_string(),
+            KeyCode::Left => "←".to_string(),
+            KeyCode::Right => "→".to_string(),
+            KeyCode::Backspace => "bksp".to_string(),
+            other => format!("{other:?}").to_lowercase(),
+        };
+        let mut out = String::new();
+        if self.mods.contains(KeyModifiers::CONTROL) {
+            out.push_str("ctrl+");
+        }
+        if self.mods.contains(KeyModifiers::ALT) {
+            out.push_str("alt+");
+        }
+        // SHIFT survives normalization only for non-alphabetic keys (alphabetic
+        // SHIFT is folded into the uppercase char), so a retained SHIFT is real.
+        if self.mods.contains(KeyModifiers::SHIFT) {
+            out.push_str("shift+");
+        }
+        out.push_str(&key);
+        out
     }
 }
 
@@ -473,6 +517,35 @@ mod tests {
         assert!(
             km.chords_for(Action::RetryStage(crate::state::StageId::DualReview, 0))
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn chord_caption_renders_keycaps() {
+        let cap = |s: &str| parse_chord(s).unwrap().caption();
+        assert_eq!(cap("G"), "G");
+        assert_eq!(cap("ctrl+c"), "ctrl+c");
+        assert_eq!(cap("tab"), "tab");
+        assert_eq!(cap("enter"), "enter");
+        assert_eq!(cap("esc"), "esc");
+        assert_eq!(cap("space"), "space");
+        assert_eq!(cap("down"), "↓");
+        assert_eq!(cap("["), "[");
+        assert_eq!(cap(":"), ":");
+        // shift+g and G normalize identically -> uppercase, no shift prefix.
+        assert_eq!(cap("shift+g"), "G");
+        assert_eq!(cap("alt+up"), "alt+↑");
+        // SHIFT on a non-alphabetic key is retained and shown.
+        assert_eq!(cap("shift+left"), "shift+←");
+    }
+
+    #[test]
+    fn describe_returns_labels_and_empty_for_dynamic() {
+        assert_eq!(describe(Action::Quit), "quit ritual");
+        assert_eq!(describe(Action::FindingFix), "finding: mark fixed");
+        assert_eq!(
+            describe(Action::RunStage(crate::state::StageId::DualReview)),
+            ""
         );
     }
 

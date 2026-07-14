@@ -804,7 +804,13 @@ impl App {
             return;
         }
         if self.show_help {
-            self.show_help = false;
+            // The which-key cheat-sheet stays up until you dismiss it with the
+            // help key again or Esc; other keys are swallowed so it can be read.
+            if key.code == KeyCode::Esc
+                || self.cfg.keymap.resolve(key.code, key.modifiers) == Some(Action::Help)
+            {
+                self.show_help = false;
+            }
             return;
         }
         if self.settings.is_some() {
@@ -969,7 +975,7 @@ impl App {
                     self.quit = true;
                 }
             }
-            Action::Help => self.show_help = true,
+            Action::Help => self.show_help = !self.show_help,
             Action::Palette => self.palette = Some(PaletteState::default()),
             Action::NextTab => self.next_tab(),
             Action::TabLive => self.tab = Tab::Live,

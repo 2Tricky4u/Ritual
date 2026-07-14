@@ -151,6 +151,46 @@ fn dashboard_help_overlay() {
 }
 
 #[test]
+fn dashboard_help_overlay_findings() {
+    // The which-key overlay is context-aware: on Findings it lists the
+    // finding-triage keys, not the Live-tab run keys.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_app(&tmp);
+    app.tab = Tab::Findings;
+    app.show_help = true;
+    insta::assert_snapshot!(render(&app));
+}
+
+#[test]
+fn dashboard_help_overlay_plan() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_app(&tmp);
+    app.tab = Tab::Plan;
+    app.show_help = true;
+    insta::assert_snapshot!(render(&app));
+}
+
+#[test]
+fn dashboard_help_overlay_finding_detail() {
+    // Over the finding-detail modal, which-key advertises ONLY the keys
+    // `detail_input` honors (finding actions + up/down), not the global/tab
+    // keys that modal swallows.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".ritual/findings")).unwrap();
+    std::fs::write(
+        tmp.path()
+            .join(".ritual/findings/20260711T000000Z-dual-review.json"),
+        r#"{"ritual_findings":1,"stage":"dual-review","branch":"main","findings":[{"id":1,"severity":"major","title":"x","file":"src/a.rs","line":1,"scenario":"s","sources":["claude"],"verdict":"confirmed","action":"pending"}]}"#,
+    )
+    .unwrap();
+    let mut app = setup_app(&tmp);
+    app.tab = Tab::Findings;
+    app.finding_detail = true;
+    app.show_help = true;
+    insta::assert_snapshot!(render(&app));
+}
+
+#[test]
 fn dashboard_findings_tab_triage_states() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(tmp.path().join(".ritual/findings")).unwrap();

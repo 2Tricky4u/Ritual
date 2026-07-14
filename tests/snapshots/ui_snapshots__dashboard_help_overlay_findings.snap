@@ -1,0 +1,26 @@
+---
+source: tests/ui_snapshots.rs
+expression: render(&app)
+---
+"   ╭ keys ────────────────────────────────────────────────────────────────────────────╮   "
+"  P│  findings                                         global                         │───"
+"  ○│    f  finding: mark fixed                           ctrl+c / q  quit ritual      │   "
+"  ○│    d  finding: dismiss                              ?  show help                 │   "
+"  ○│    F  finding: answer/apply via claude              :  command palette           │   "
+"  ○│    m  finding: queue manual fix                     tab  next tab                │   "
+"  ○│    t  findings: apply recommended triage            1  go to live tab            │   "
+"  ○│    A  findings: queue all confirmed code fixes      2  go to findings tab        │   "
+"  ○│    v  findings: show/hide resolved                  3  go to history tab         │   "
+"   │    /  filter findings/history                       4  go to plan tab            │   "
+" 󰚩 │    o  open in running nvim                          5  go to guide tab           │   "
+"  󰚩│    Q  send findings to nvim quickfix                r  refresh auth + artifacts  │   "
+"  󰚩│                                                     S  settings: edit config     │   "
+"  󱘖│                                                                                  │   "
+"   │                                                   move                           │   "
+"   │                                                     k / ↑  move up               │   "
+"   │                                                     j / ↓  move down             │   "
+"   │                                                     g  scroll to top             │   "
+"   │                                                     G  follow stream tail        │   "
+"   │                                                     [  previous feature          │   "
+"   │                                                     ]  next feature              │   "
+" R╰──────────────────────────────────────────────────────────────────────────────────╯   "
