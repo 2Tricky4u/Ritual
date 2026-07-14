@@ -26,6 +26,10 @@ pub const SKILLS: &[(&str, &str)] = &[
         "consensus",
         include_str!("../workbench/skills/consensus/SKILL.md"),
     ),
+    (
+        "coverage",
+        include_str!("../workbench/skills/coverage/SKILL.md"),
+    ),
     ("debug", include_str!("../workbench/skills/debug/SKILL.md")),
     (
         "deps-audit",

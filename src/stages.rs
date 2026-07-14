@@ -526,7 +526,12 @@ pub fn build(
             let spec = dirs.spec_file(slug);
             let plan = dirs.plan_file(slug);
             let prompt = format!(
-                "Read {} and plan the implementation. When the plan is approved, save it to {} before finishing.",
+                "Read {} and plan the implementation. Include a `## Deliverables` \
+                 checklist - one item per concrete deliverable, each \
+                 `- [ ] <ID>: <description> - accept: <measurable pass/fail criterion> \
+                 - route: <path or §Section>` (stable ids like D1) - so completeness \
+                 can be verified against the built tree. When the plan is approved, \
+                 save it to {} before finishing.",
                 spec.display(),
                 plan.display()
             );

@@ -40,6 +40,10 @@ If `${RITUAL_INVARIANTS_FILE:-.ritual/invariants.md}` exists and contains bullet
 - If the `codex` tool fails because the MODEL is unavailable (model-not-found / unsupported model - NOT an auth error), retry the same call ONCE with `model: "gpt-5.5"` (verified fallback) and note the downgrade in your report. Codex's default is deliberately unpinned so it tracks the newest model (gpt-5.6 today); this keeps the cross-model gate alive when that default isn't available on the account.
 - If Codex returns zero findings, say so plainly - do not fabricate rigor.
 
+## Deliverables gate (ritual)
+
+A plan can only be verified "done" if it declares what done means. Check for a `## Deliverables` checklist of items shaped `- [ ] <ID>: <description> - accept: <measurable pass/fail criterion> - route: <path or §Section>`, one per concrete spec promise (a stable id like `D1`, independent of step numbers). If the section is MISSING, or any item is vague, not pass/fail, or lacks an `accept:` criterion, that is a **major** finding (`plan_step: "Deliverables"`) - the plan is not machine-verifiable without it. Recommend the exact items to add, derived from the spec's promises, so the coverage gate can later check each against the built tree.
+
 ## Machine-readable findings (ritual)
 
 If the project working directory contains a `.ritual/` directory: after producing the output above, ALSO write the findings to a NEW file (never modify an existing one) at `${RITUAL_FINDINGS_DIR:-.ritual/findings}/<UTC timestamp yyyymmddTHHMMSSZ>-plan-review.json`, creating the directory if needed, with exactly this JSON shape:
