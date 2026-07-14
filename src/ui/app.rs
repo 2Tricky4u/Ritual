@@ -162,6 +162,11 @@ struct LastBatch {
 pub struct ApplyConfirm {
     pub slug: String,
     pub count: usize,
+    /// Queued PLAN findings on this feature (→ the section-gated plan-fix).
+    pub plan_count: usize,
+    /// Queued CODE findings on this feature (→ the check.sh + re-review
+    /// code-fix; a passing fix stays in the worktree for git).
+    pub code_count: usize,
     /// Queued findings on OTHER features (skipped by this apply).
     pub skipped_other_features: usize,
     /// Items whose plan step no longer locates (whole-plan scope, gate off).
@@ -934,6 +939,7 @@ impl App {
             Action::FindingManual => self.finding_toggle_manual(),
             Action::FindingsApply => self.findings_apply_from_palette(tx),
             Action::TriageAll => self.open_triage_confirm(),
+            Action::QueueAllCode => self.queue_all_code(),
             Action::DocUndo => self.doc_undo(),
             Action::Settings => self.toggle_settings(),
             Action::ToggleResolved => {
@@ -2607,13 +2613,10 @@ impl App {
             self.status_msg = Some("no finding selected".into());
             return;
         };
-        if af.finding.file.is_some() {
-            self.status_msg =
-                Some("F answers plan findings; m queues a manual fix for code".into());
-            return;
-        }
-        if af.finding.plan_step.is_none() {
-            self.status_msg = Some("finding has no plan step to fix".into());
+        // Both plan findings (plan_step) and code findings (file:line) queue
+        // for claude; only a finding with neither anchor has nothing to fix.
+        if af.finding.file.is_none() && af.finding.plan_step.is_none() {
+            self.status_msg = Some("finding has no location to fix".into());
             return;
         }
         if af.finding.resolved() {
@@ -2626,6 +2629,11 @@ impl App {
             self.open_apply_confirm(unqueue);
             return;
         }
+        let kind = if af.finding.file.is_some() {
+            "code-fix"
+        } else {
+            "claude"
+        };
         match crate::findings::set_answer(
             &mut self.findings,
             af.file_idx,
@@ -2635,12 +2643,50 @@ impl App {
         ) {
             Ok(()) => {
                 self.status_msg = Some(format!(
-                    "⚑A queued for claude ({} queued) · F again to apply",
+                    "⚑A queued for {kind} ({} queued) · F again to apply",
                     self.queued_auto().len()
                 ));
             }
             Err(e) => self.status_msg = Some(format!("could not update finding: {e:#}")),
         }
+    }
+
+    /// `A`: queue EVERY confirmed, unresolved, un-answered CODE finding on this
+    /// feature for the code-fix batch ("fix all automatically"). Then F / the
+    /// apply modal runs one code-fix run over the lot.
+    fn queue_all_code(&mut self) {
+        if self.tab != Tab::Findings {
+            self.status_msg = Some("A queues code fixes on the findings tab (2)".into());
+            return;
+        }
+        // Collect (file_idx, pos) by PATH-stable identity before mutating.
+        let targets: Vec<(usize, usize)> = self
+            .visible_findings()
+            .iter()
+            .filter(|af| self.finding_slug(af.file_idx) == self.slug)
+            .filter(|af| {
+                af.finding.file.is_some()
+                    && af.finding.verdict.eq_ignore_ascii_case("confirmed")
+                    && !af.finding.resolved()
+                    && af.finding.answer.is_none()
+            })
+            .map(|af| (af.file_idx, af.pos))
+            .collect();
+        if targets.is_empty() {
+            self.status_msg = Some("no un-queued confirmed code findings to fix".into());
+            return;
+        }
+        let mut queued = 0usize;
+        for (file_idx, pos) in targets {
+            if crate::findings::set_answer(&mut self.findings, file_idx, pos, Some("auto"), None)
+                .is_ok()
+            {
+                queued += 1;
+            }
+        }
+        self.status_msg = Some(format!(
+            "⚑A queued {queued} code finding(s) - F or apply to run the code-fix batch"
+        ));
     }
 
     /// Palette "findings: apply answers": same modal, nothing to unqueue.
@@ -2659,7 +2705,7 @@ impl App {
             .partition(|af| self.finding_slug(af.file_idx) == self.slug);
         if mine.is_empty() {
             self.status_msg = Some(if other.is_empty() {
-                "no queued answers - F queues a plan finding for claude".into()
+                "no queued answers - F queues a finding for claude".into()
             } else {
                 format!(
                     "{} queued on other features; switch with [ ] to apply them",
@@ -2668,23 +2714,34 @@ impl App {
             });
             return;
         }
-        // Anchor health against the CURRENT plan: unlocatable steps degrade
-        // the gate to whole-doc for the whole batch - say so up front.
-        let plan_text =
-            std::fs::read_to_string(self.dirs.plan_file(&self.slug)).unwrap_or_default();
-        let anchor_lost = mine
+        let plan_count = mine
             .iter()
-            .filter(|af| {
-                af.finding
-                    .plan_step
-                    .as_deref()
-                    .and_then(|s| locate_plan_step(&plan_text, s))
-                    .is_none()
-            })
+            .filter(|af| af.finding.file.is_none() && af.finding.plan_step.is_some())
             .count();
+        let code_count = mine.iter().filter(|af| af.finding.file.is_some()).count();
+        // Anchor health is a PLAN concern; only compute it when the batch that
+        // would run first (plan) has queued findings.
+        let anchor_lost = if plan_count > 0 {
+            let plan_text =
+                std::fs::read_to_string(self.dirs.plan_file(&self.slug)).unwrap_or_default();
+            mine.iter()
+                .filter(|af| af.finding.file.is_none() && af.finding.plan_step.is_some())
+                .filter(|af| {
+                    af.finding
+                        .plan_step
+                        .as_deref()
+                        .and_then(|s| locate_plan_step(&plan_text, s))
+                        .is_none()
+                })
+                .count()
+        } else {
+            0
+        };
         self.apply_confirm = Some(ApplyConfirm {
             slug: self.slug.clone(),
             count: mine.len(),
+            plan_count,
+            code_count,
             skipped_other_features: other.len(),
             anchor_lost,
             unqueue,
@@ -2698,7 +2755,17 @@ impl App {
             return;
         };
         match code {
-            KeyCode::Char('y') => self.spawn_findings_apply(&confirm.slug, tx),
+            KeyCode::Char('y') => {
+                // One type per apply, and only one fix runs at a time. Plan
+                // findings (section-gated, u-revertable) go first; the code
+                // batch (check.sh + re-review, git-is-undo) runs on the next
+                // apply once the plan queue is clear.
+                if confirm.plan_count > 0 {
+                    self.spawn_findings_apply(&confirm.slug, tx);
+                } else {
+                    self.spawn_code_fix(&confirm.slug, tx);
+                }
+            }
             KeyCode::Char('u') => {
                 let Some((path, pos)) = confirm.unqueue else {
                     self.status_msg = Some("nothing selected to unqueue".into());
@@ -3379,7 +3446,6 @@ impl App {
     /// Build the code-fix batch: every queued CODE finding of this feature,
     /// numbered, with a git snapshot taken so a failed gate can auto-revert.
     /// No plan snapshot / undo::push - a passing code fix stays in the tree.
-    #[allow(dead_code)] // wired to the apply confirm in P5
     fn prepare_code_fix_apply(
         &mut self,
         slug: &str,
@@ -3472,7 +3538,6 @@ impl App {
     }
 
     /// Spawn leg 1: one headless claude run fixing all queued code findings.
-    #[allow(dead_code)] // wired to the apply confirm in P5
     fn spawn_code_fix(&mut self, slug: &str, tx: &mpsc::Sender<AppMsg>) {
         let (cmd, ctx) = match self.prepare_code_fix_apply(slug) {
             Ok(v) => v,
@@ -4254,22 +4319,14 @@ mod tests {
     }
 
     #[test]
-    fn f_refuses_code_findings_m_takes_them() {
+    fn m_routes_a_code_finding_to_the_manual_queue() {
         let (_t, mut app, tx, _rx) = test_app();
         seed_findings(
             &mut app,
             r#"{"stage":"dual-review","findings":[
                 {"id":1,"title":"code bug","file":"src/a.rs","line":3,"severity":"major","verdict":"confirmed"}]}"#,
         );
-        app.dispatch(Action::FindingClaudeFix, &tx);
-        assert!(
-            app.status_msg
-                .as_deref()
-                .unwrap()
-                .contains("m queues a manual fix")
-        );
-        assert_eq!(app.queued_auto().len(), 0);
-        // m queues code findings for the human; m again clears.
+        // m flags a code finding for the human (⚑M); m again clears it.
         let path = app
             .dirs
             .findings_dir()
@@ -6347,6 +6404,63 @@ mod tests {
             },
             archive: std::path::PathBuf::new(),
         })
+    }
+
+    #[test]
+    fn f_now_queues_a_code_finding() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_findings(
+            &mut app,
+            r#"{"stage":"dual-review","findings":[
+                {"id":1,"title":"bug","file":"src/a.rs","line":3,"severity":"major",
+                 "verdict":"confirmed","action":"pending"}]}"#,
+        );
+        app.dispatch(Action::FindingClaudeFix, &tx);
+        assert!(
+            seeded_json(&app).contains(r#""answer": "auto""#),
+            "F queues the code finding (was rejected before)"
+        );
+        assert_eq!(app.queued_auto().len(), 1);
+        assert!(app.status_msg.as_deref().unwrap().contains("code-fix"));
+    }
+
+    #[test]
+    fn queue_all_code_selects_only_confirmed_unresolved_code() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_findings(
+            &mut app,
+            r#"{"stage":"dual-review","findings":[
+                {"id":1,"title":"code confirmed","file":"src/a.rs","line":1,"verdict":"confirmed","action":"pending"},
+                {"id":2,"title":"code unconfirmed","file":"src/b.rs","line":2,"verdict":"unconfirmed","action":"pending"},
+                {"id":3,"title":"plan finding","plan_step":"Step 1","verdict":"confirmed","action":"pending"},
+                {"id":4,"title":"code already fixed","file":"src/c.rs","line":3,"verdict":"confirmed","action":"fixed"}]}"#,
+        );
+        app.dispatch(Action::QueueAllCode, &tx);
+        // Only #1 qualifies (confirmed code, unresolved, un-answered).
+        assert_eq!(app.queued_auto().len(), 1);
+        let json = seeded_json(&app);
+        assert!(json.contains(r#""title": "code confirmed""#));
+        // The plan finding was NOT auto-queued by A.
+        assert_eq!(
+            json.matches(r#""answer": "auto""#).count(),
+            1,
+            "A queues only the confirmed code finding"
+        );
+    }
+
+    #[test]
+    fn apply_confirm_partitions_plan_and_code() {
+        let (_t, mut app, _tx, _rx) = test_app();
+        seed_findings(
+            &mut app,
+            r#"{"stage":"dual-review","findings":[
+                {"id":1,"title":"code","file":"src/a.rs","line":1,"verdict":"confirmed","action":"pending","answer":"auto"},
+                {"id":2,"title":"plan","plan_step":"Step 1","verdict":"confirmed","action":"pending","answer":"auto"}]}"#,
+        );
+        app.open_apply_confirm(None);
+        let c = app.apply_confirm.as_ref().expect("modal open");
+        assert_eq!(c.plan_count, 1);
+        assert_eq!(c.code_count, 1);
     }
 
     #[test]

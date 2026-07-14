@@ -511,6 +511,8 @@ fn rendering_survives_hostile_sizes_in_every_state() {
                 a.apply_confirm = Some(ritual::ui::app::ApplyConfirm {
                     slug: "detached".into(),
                     count: 3,
+                    plan_count: 3,
+                    code_count: 0,
                     skipped_other_features: 1,
                     anchor_lost: 1,
                     unqueue: None,

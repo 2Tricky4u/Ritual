@@ -141,9 +141,19 @@ the one document you targeted (enforced at the permission layer).
    reopened AND requeued. One run = one `plan-fix` row in `ritual
    costs`, capped by `budget_finding_fix_usd` (per run, not per
    finding).
-6. **The manual pass**: with a ⚑M queue, `Q` sends ONLY those findings
-   to nvim's quickfix; work through them and `⟨f⟩` each as done. (`Q`
-   with no manual queue sends every locatable finding, as before.)
+6. **Let claude fix code findings too**: a confirmed dual-review code
+   finding (`file:line`) can go to the LLM just like a plan finding -
+   `⟨F⟩` queues it (⚑A), or `⟨A⟩` queues EVERY confirmed code finding on
+   the feature at once ("fix all"). `⟨F⟩`/apply then runs ONE headless
+   pass that fixes them all, and verifies against the **global context**:
+   it runs `./check.sh` (full), then an independent read-only **re-review**
+   of the diff confirms each finding is resolved and nothing regressed.
+   Only a fix that passes BOTH is accepted; any failure **git-reverts the
+   whole batch** and the findings stay queued. Unlike a plan-fix (section-
+   gated, `⟨u⟩`-revertable), **a passing code fix is LEFT in your working
+   tree** - review it with `git diff` and keep or discard it with git.
+   Prefer to fix by hand instead? `⟨m⟩` flags a finding ⚑M and `Q` sends
+   the manual queue to nvim's quickfix; work through them and `⟨f⟩` each.
 7. Fix code findings, re-run `C`, then **close the loop**: `⟨f⟩` marks
    the selected finding fixed, `⟨d⟩` dismisses it (either toggles back
    on re-press), writing into the findings JSON. Resolved findings
@@ -360,7 +370,8 @@ transparency = true           # terminal bg shows through
 redaction = true
 budget_daily_usd = 15.0
 budget_doc_chat_usd = 0.50    # per spec/plan chat message
-budget_finding_fix_usd = 1.0  # per F-apply batch run (not per finding)
+budget_finding_fix_usd = 1.0  # per F-apply plan-fix batch run
+budget_code_fix_usd = 5.0     # per code-fix batch run (fix + re-review)
 check_timeout_secs = 600
 offline = false               # block runs (metered/plane mode)
 nvim_server = ""              # empty = auto-discover

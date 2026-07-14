@@ -22,5 +22,5 @@ expression: render(&app)
 "                      │   f  mark fixed (toggle)                   │, in-app              "
 "                      │   d  dismiss (+reason)                     │                      "
 "                      │   F  queue/apply claude answers            │?  keys    q  quit    "
-"                      │   m  queue manual fix                      │                      "
+"                      │   A  queue all code fixes                  │                      "
 " RITUAL   detached ╰────────────────────────────────────────────╯                      "

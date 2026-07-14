@@ -1674,6 +1674,7 @@ fn draw_help(f: &mut Frame, t: &Theme) {
                 ("f", "mark fixed (toggle)"),
                 ("d", "dismiss (+reason)"),
                 ("F", "queue/apply claude answers"),
+                ("A", "queue all code fixes"),
                 ("m", "queue manual fix"),
                 ("t", "apply recommended triage"),
                 ("u", "revert applied batch"),
@@ -1998,24 +1999,46 @@ fn draw_apply_confirm(f: &mut Frame, app: &App) {
     if inner.height == 0 {
         return;
     }
+    // One type per apply: plan findings (section-gated, u-revertable) run
+    // first; code findings run on the next apply.
+    let headline = if c.plan_count > 0 {
+        format!(
+            "apply {} plan answer(s) via claude - ONE run?",
+            c.plan_count
+        )
+    } else {
+        format!(
+            "fix {} code finding(s) - one run + check.sh + re-review?",
+            c.code_count
+        )
+    };
     let mut lines = vec![Line::from(Span::styled(
-        format!("apply {} answer(s) via claude - ONE run?", c.count),
+        headline,
         Style::default().fg(t.fg()).add_modifier(Modifier::BOLD),
     ))];
-    if c.skipped_other_features > 0 || c.anchor_lost > 0 {
-        let mut notes = Vec::new();
-        if c.skipped_other_features > 0 {
-            notes.push(format!(
-                "{} on other features skipped",
-                c.skipped_other_features
-            ));
-        }
-        if c.anchor_lost > 0 {
-            notes.push(format!(
-                "{} anchor(s) lost → whole-plan scope, gate off",
-                c.anchor_lost
-            ));
-        }
+    if c.plan_count == 0 && c.code_count > 0 {
+        lines.push(Line::from(Span::styled(
+            "a passing fix stays in your working tree - review with git",
+            Style::default().fg(t.comment()),
+        )));
+    }
+    let mut notes = Vec::new();
+    if c.plan_count > 0 && c.code_count > 0 {
+        notes.push(format!("{} code finding(s) apply next", c.code_count));
+    }
+    if c.skipped_other_features > 0 {
+        notes.push(format!(
+            "{} on other features skipped",
+            c.skipped_other_features
+        ));
+    }
+    if c.anchor_lost > 0 {
+        notes.push(format!(
+            "{} anchor(s) lost → whole-plan scope, gate off",
+            c.anchor_lost
+        ));
+    }
+    if !notes.is_empty() {
         lines.push(Line::from(Span::styled(
             notes.join(" · "),
             Style::default().fg(t.warn()),

@@ -295,7 +295,7 @@ blame = "git log --oneline -3 -- {{finding.file}}"
 
 All rebindable via `[keys]`:
 
-`enter` run stage / finding details · `s` chat: edit spec/plan · `:` palette · `S` settings editor · `j/k` move · `tab` `1-5` panes (`5` = in-app guide & tips) · `f/d/v` finding fix/dismiss(+reason)/show-resolved · `F` queue + apply claude answers (batch, gated) · `m` queue manual · `t` one-touch recommended triage · `u` revert applied batch · `/` filter list · `[` `]` features · `a` takeover · `o` open in nvim · `Q` findings → quickfix · `c/C` check fast/full · `x` cancel · `e` editor · `r` refresh · `g/G` scroll/follow · `?` help · `q` quit. In chat: `Ctrl+Z` undo · `Alt+Z` redo · `Ctrl+X` cancel · `Alt+Enter` newline
+`enter` run stage / finding details · `s` chat: edit spec/plan · `:` palette · `S` settings editor · `j/k` move · `tab` `1-5` panes (`5` = in-app guide & tips) · `f/d/v` finding fix/dismiss(+reason)/show-resolved · `F` queue + apply claude answers (plan + code, batch, gated) · `A` queue all code fixes · `m` queue manual · `t` one-touch recommended triage · `u` revert applied batch · `/` filter list · `[` `]` features · `a` takeover · `o` open in nvim · `Q` findings → quickfix · `c/C` check fast/full · `x` cancel · `e` editor · `r` refresh · `g/G` scroll/follow · `?` help · `q` quit. In chat: `Ctrl+Z` undo · `Alt+Z` redo · `Ctrl+X` cancel · `Alt+Enter` newline
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -311,6 +311,7 @@ All rebindable via `[keys]`:
 - [x] **v0.8**: decoded failure reasons (budget knob / tool-lock denials / `ritual attach` hint), right-aligned triage state chips + recommendation ghosts, `t` one-touch recommended triage, prose resolutions preserved as reasons, subdir-launch root canonicalization fix
 - [x] **v0.9**: in-TUI settings editor (`S`) - effective values + source tags over the practical knobs, comment-preserving project-config writes (toml_edit), transactional live-apply with byte-exact revert
 - [x] **v0.9.1–.5**: deterministic tests-red → implement handoff - ritual pins the tests-red session (`--session-id`) and implement resumes it by id, immune to concurrent Claude sessions; since interactive `--resume` can't be handed an opening message, ritual copies a ready implement prompt to the system clipboard AND primary selection (wl-copy/xclip/xsel/pbcopy, OSC 52 fallback) and shows a launch overlay with no selectable text to drag over (bare `--resume` picker fallback); `a` takeover works for interactive stages
+- [x] **v0.10**: LLM batch-fix for dual-review **code** findings - `F`/`A` queue confirmed code findings, one headless broad-edit run fixes them all, verified against the global context by `./check.sh` plus an independent re-review of the diff; a passing fix is left in your working tree for git review, any gate failure git-reverts the whole batch (new `budget_code_fix_usd`)
 - [ ] **Deferred**: steerable runs (Agent SDK), `ritual mcp-server`, SQLite/fuzzy history, chat fork-at-turn, container worktrees, OTLP receiver + in-TUI span waterfall, tree-sitter repo map
 
 See the full [ROADMAP.md][roadmap-url] for the design rationale behind each item, and the non-goals.
@@ -379,10 +380,10 @@ conditions.
 <!-- MARKDOWN LINKS & IMAGES -->
 [ci-shield]: https://github.com/2Tricky4u/Ritual/actions/workflows/ci.yml/badge.svg
 [ci-url]: https://github.com/2Tricky4u/Ritual/actions/workflows/ci.yml
-[version-shield]: https://img.shields.io/badge/version-0.9.5-9d7cd8?style=for-the-badge
+[version-shield]: https://img.shields.io/badge/version-0.10.0-9d7cd8?style=for-the-badge
 [license-shield]: https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-a9b665?style=for-the-badge
 [license-url]: #license
-[tests-shield]: https://img.shields.io/badge/cargo_tests-386_passing-73daca?style=for-the-badge
+[tests-shield]: https://img.shields.io/badge/cargo_tests-420_passing-73daca?style=for-the-badge
 [e2e-shield]: https://img.shields.io/badge/live_driver-80%2F80-7aa2f7?style=for-the-badge
 [chain-shield]: https://img.shields.io/badge/audit-tamper--evident-e0af68?style=for-the-badge
 [zero-token-shield]: https://img.shields.io/badge/testing-zero_tokens-bb9af7?style=for-the-badge

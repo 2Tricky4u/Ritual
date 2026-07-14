@@ -43,6 +43,7 @@ pub enum Action {
     FindingManual,
     FindingsApply,
     TriageAll,
+    QueueAllCode,
     DocUndo,
     ToggleResolved,
     Settings,
@@ -114,6 +115,11 @@ pub const ACTIONS: &[(&str, Action, &str)] = &[
         "triage-all",
         Action::TriageAll,
         "findings: apply recommended triage",
+    ),
+    (
+        "queue-all-code",
+        Action::QueueAllCode,
+        "findings: queue all confirmed code fixes",
     ),
     ("doc-undo", Action::DocUndo, "undo last plan fix"),
     (
@@ -234,6 +240,7 @@ impl Default for Keymap {
             ("F", "finding-claude-fix"),
             ("m", "finding-manual"),
             ("t", "triage-all"),
+            ("A", "queue-all-code"),
             ("u", "doc-undo"),
             ("v", "toggle-resolved"),
             ("S", "settings"),
@@ -359,6 +366,10 @@ mod tests {
         assert_eq!(
             km.resolve(KeyCode::Char('t'), KeyModifiers::NONE),
             Some(Action::TriageAll)
+        );
+        assert_eq!(
+            km.resolve(KeyCode::Char('A'), KeyModifiers::SHIFT),
+            Some(Action::QueueAllCode)
         );
         assert_eq!(
             km.resolve(KeyCode::Char('S'), KeyModifiers::SHIFT),
