@@ -32,9 +32,13 @@ const DUAL_REVIEW_TOOLS: &str =
 /// The code-fix batch edits source broadly and runs check.sh, so it needs the
 /// full edit + shell grant (like dual-review, minus codex; plus MultiEdit).
 const CODE_FIX_TOOLS: &str = "Task Read Glob Grep Edit Write MultiEdit Bash";
-/// The re-review is READ-ONLY: it inspects the diff and confirms, it must never
-/// edit (so it can't paper over its own verdict).
-const CODE_REVIEW_TOOLS: &str = "Read Glob Grep Bash(git *)";
+/// The re-review is strictly READ-ONLY with NO shell: it inspects the change
+/// (handed to it inline) and reads code for context, but cannot edit OR run git,
+/// so it can neither paper over its own verdict nor mutate the tree. Dropping
+/// the old `Bash(git *)` grant also sidesteps the risk that the internal space
+/// shatters when the CLI splits `--allowedTools`; the reviewer never needs git
+/// because the full diff (incl. untracked edits) is embedded in the prompt.
+const CODE_REVIEW_TOOLS: &str = "Read Glob Grep";
 
 /// plan-review's tool grant, plus the third-model consensus tool when the
 /// (dark-by-default) escalation tier is enabled; the skill only escalates
@@ -374,7 +378,8 @@ pub fn findings_code_fix_command(
          resolve them coherently in ONE pass. Read broadly for global context \
          and integration; make the MINIMAL changes needed. Do NOT commit, push, \
          reset, rebase, or run any destructive command (no `rm -rf`, no `git \
-         clean`). Run `./check.sh` yourself and make it pass before finishing. \
+         clean`): ritual verifies HEAD did not move and DISCARDS the whole batch \
+         if you commit or reset. Run `./check.sh` yourself and make it pass before finishing. \
          For any finding you cannot fix cleanly, make NO edit for it and decline \
          it instead (still fix the others). END your final message with exactly \
          this block, one line per finding, every number present:\n\
@@ -1261,6 +1266,10 @@ mod tests {
             "reviewer must be read-only"
         );
         assert!(!cmd.argv[i + 1].contains("Write"));
+        assert!(
+            !cmd.argv[i + 1].contains("Bash"),
+            "reviewer has no shell (can't mutate the tree or run git)"
+        );
         let prompt = cmd.argv.iter().find(|a| a.contains("REVIEW:")).unwrap();
         assert!(prompt.contains("diff --git a/x b/x"));
         assert!(prompt.contains("REGRESSIONS:"));
