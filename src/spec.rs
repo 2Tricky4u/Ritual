@@ -35,7 +35,7 @@ pub fn sections(text: &str) -> Vec<(String, Range<usize>)> {
 
 /// Mechanical scope gate for a section-scoped edit: did the change stay
 /// inside `range` (a `sections()` line range on `before`)? Confinement is
-/// judged positionally — the lines before `range.start` and the lines from
+/// judged positionally - the lines before `range.start` and the lines from
 /// `range.end` on must survive verbatim (same order, same count) at the top
 /// and bottom of `after`; everything between is the section's new body.
 ///
@@ -75,7 +75,7 @@ pub fn edits_confined(before: &str, after: &str, range: &Range<usize>) -> Option
 /// verbatim, in order, disjoint: the first anchored at the top of `after`
 /// when the doc starts locked, the last anchored at the bottom when it ends
 /// locked, interior blocks matched greedily leftmost (complete for
-/// existence — the classic glob-matching argument, since the gaps between
+/// existence - the classic glob-matching argument, since the gaps between
 /// blocks are unconstrained).
 ///
 /// `None` = the edit leaked outside every allowed region. `Some((added,

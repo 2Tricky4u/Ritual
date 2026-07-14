@@ -1,7 +1,7 @@
 name: CI (zero-token)
 
 # The entire suite runs with NO API keys. Unit/CLI/snapshot tests are pure,
-# and the live lifecycle driver uses the RITUAL_CLAUDE_CMD fake-agent seam —
+# and the live lifecycle driver uses the RITUAL_CLAUDE_CMD fake-agent seam -
 # CI never calls Claude or Codex, so this workflow needs no secrets.
 
 on:
@@ -34,5 +34,5 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: ./check.sh — fmt --check + clippy -D warnings + cargo test
+      - name: ./check.sh - fmt --check + clippy -D warnings + cargo test
         run: ./check.sh

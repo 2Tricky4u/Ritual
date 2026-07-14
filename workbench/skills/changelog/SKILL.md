@@ -11,7 +11,7 @@ Written for USERS of the software, not its developers: every line answers "what 
 ## Procedure
 
 1. Determine the range: argument, else `$(git describe --tags --abbrev=0)..HEAD`, else ask.
-2. Read `git log <range> --oneline` and, for anything unclear, the touched files — the entry describes the effect, not the commit message.
+2. Read `git log <range> --oneline` and, for anything unclear, the touched files - the entry describes the effect, not the commit message.
 3. Classify into Keep-a-Changelog sections, in this order: **Breaking changes** (first, prominent), Added, Changed, Fixed, Deprecated, Removed, Security.
 4. Drop internal noise: chore/refactor/test/CI commits appear only when they change observable behavior (perf, compatibility, install).
 5. Rewrite developer-speak into user-facing wording ("`fix(runner): tolerate EPIPE`" → "Fixed a crash when an agent process exited mid-stream").
@@ -20,4 +20,4 @@ Written for USERS of the software, not its developers: every line answers "what 
 ## Guardrails
 - Never pad: a two-line release is a two-line release.
 - Uncertain classification (breaking or not?) → check the actual code change, don't guess.
-- Version number comes from the user or the tag — never invent the next version.
+- Version number comes from the user or the tag - never invent the next version.

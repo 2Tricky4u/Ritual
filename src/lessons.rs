@@ -37,7 +37,7 @@ pub fn generate(dirs: &RitualDirs) -> Result<Option<String>> {
             if f.action == "dismissed"
                 && let Some(reason) = f.reason.as_deref().filter(|r| !r.trim().is_empty())
             {
-                entry.push_str(&format!(" — {}", reason.trim()));
+                entry.push_str(&format!(" - {}", reason.trim()));
             }
             match bucket.iter_mut().find(|(e, _)| *e == entry) {
                 Some((_, n)) => *n += 1,
@@ -146,7 +146,7 @@ mod tests {
         );
         let md = generate(&dirs).unwrap().expect("has lessons");
         assert!(
-            md.contains("- style nit (Step 3) — style is out of scope for reviews"),
+            md.contains("- style nit (Step 3) - style is out of scope for reviews"),
             "{md}"
         );
         // Reasons ride only the dismissed bucket.

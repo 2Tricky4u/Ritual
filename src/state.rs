@@ -307,7 +307,7 @@ pub fn git_main_root(dir: &Path) -> Option<PathBuf> {
     let common = String::from_utf8(out.stdout).ok()?.trim().to_string();
     // From a repo SUBDIRECTORY git returns a RELATIVE common dir ("../.git"):
     // joining leaves a `subdir/..` in the root, and every derived path
-    // (plan/spec files) inherits it — which broke the doc-edit tool-lock
+    // (plan/spec files) inherits it - which broke the doc-edit tool-lock
     // rules, since the Edit tool reports NORMALIZED paths that never match
     // an unnormalized rule. Canonicalize at the source.
     let common_path = if Path::new(&common).is_absolute() {

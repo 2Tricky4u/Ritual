@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Thanks for the report. The two fields marked required (`ritual doctor`
-        output and version) resolve most issues on their own — please include them.
+        output and version) resolve most issues on their own - please include them.
   - type: textarea
     id: what-happened
     attributes:

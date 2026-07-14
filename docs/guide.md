@@ -113,31 +113,31 @@ the one document you targeted (enforced at the permission layer).
    referenced step. If a later edit moves the plan under a finding, it
    gets an **`⚓` anchor-lost** marker instead of silently mis-anchoring.
 4. **Answer every finding first, then correct the plan ONCE.** Fixing
-   findings one at a time mutates the plan under the remaining ones —
+   findings one at a time mutates the plan under the remaining ones -
    anchors rot and n runs cost n×. Triage instead: `⟨F⟩` queues a plan
    finding for claude (**⚑A**, toggle), `⟨m⟩` queues any finding as
-   yours to fix (**⚑M**), `⟨d⟩` dismisses — with an optional one-line
+   yours to fix (**⚑M**), `⟨d⟩` dismisses - with an optional one-line
    **reason** (Enter on empty = plain dismiss) that feeds the review
    memory. The statusline counts your queue (`⚑N`).
    **Every row wears its state on the right**: `⚑A queued` / `⚑M
-   manual` / `✗ declined` / `✓ fixed` / `∅ dismissed` — or, while
+   manual` / `✗ declined` / `✓ fixed` / `∅ dismissed` - or, while
    untriaged, a dim **ghost of the recommended decision** (`→⚑A` `→⚑M`
    `→✓` archive `→∅` dismiss `→you`). One touch applies them all:
    `⟨t⟩` shows the counts (archive = the review already fixed it and
-   recorded HOW — the prose moves into `reason`, never lost; withdrawn/
+   recorded HOW - the prose moves into `reason`, never lost; withdrawn/
    refuted → dismissed; confirmed plan/code → queued ⚑A/⚑M; "need you"
    is never auto-applied) and `y` writes the dispositions. `t` never
-   touches the plan — that stays behind `F`-apply.
+   touches the plan - that stays behind `F`-apply.
 5. **Apply**: `⟨F⟩` on a queued finding (or `:` → "findings: apply
    answers") confirms and spawns **one** headless run answering ALL
    queued findings against a single plan snapshot: it reads the whole
    plan, spec, and invariants, edits ONLY the queued findings' sections,
    and must end with a per-finding `ANSWERS:` verdict block. The union
-   of those sections is enforced **mechanically** — a leaked edit
+   of those sections is enforced **mechanically** - a leaked edit
    auto-reverts wholesale, queue intact. Per finding: `FIXED`
    auto-marks; `DECLINED <reason>` returns it to triage with the reason
    shown (an unchanged plan defeats any FIXED claim). `⟨u⟩` reverts the
-   whole applied batch atomically — plan restored, its fixed findings
+   whole applied batch atomically - plan restored, its fixed findings
    reopened AND requeued. One run = one `plan-fix` row in `ritual
    costs`, capped by `budget_finding_fix_usd` (per run, not per
    finding).
@@ -328,12 +328,12 @@ or pin one: `nvim_server = "/path/to/socket"`, or launch with
 `S` opens an in-TUI editor over the practical config knobs: budgets,
 model/effort routing, theme/icons/transparency, notifications,
 redaction, offline, base ref, check timeout. Each row shows the
-EFFECTIVE value after layering plus its source — `(default)`,
+EFFECTIVE value after layering plus its source - `(default)`,
 `(user)` = `~/.config/ritual/`, `(project)` = `.ritual/config.toml`,
 `(flag)` = a CLI flag shadows it this session.
 
 - `enter` on a toggle/choice flips or cycles it in place; on a
-  number/text row it opens an inline edit line (prefilled, validated —
+  number/text row it opens an inline edit line (prefilled, validated -
   a bad value keeps the prompt open with the error).
 - Empty input on an optional key CLEARS it from the project file so
   the layer below shows through; optional choices (per-stage effort)
@@ -505,7 +505,7 @@ deterministic.
 
 **7. Implement.** Palette → `run implement`: ritual **resumes the exact
 tests-red session** (`--resume <that id>`), so the same conversation that
-wrote the failing tests now makes them pass. This is pinned by id — a
+wrote the failing tests now makes them pass. This is pinned by id - a
 Claude session you have open in another terminal can't hijack the handoff
 (the old `--continue` grabbed "the most recent conversation in the
 directory"). Because an interactive `claude --resume` can't be handed an

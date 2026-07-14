@@ -8,7 +8,7 @@ expression: render(&app)
 "  ○│Race in state save                                                                │M  "
 "  ○│ CRIT   ◆both   claude+codex  confirmed [dual-review]                         │   "
 "  ○│src/state.rs:42                                                                   │   "
-"  ○│recommended: fix manually — confirmed code finding                                │   "
+"  ○│recommended: fix manually - confirmed code finding                                │   "
 "  ○│                                                                                  │   "
 "   │two writers clobber each other                                                    │   "
 " 󰚩 │                                                                                  │   "

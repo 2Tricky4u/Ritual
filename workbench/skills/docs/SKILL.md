@@ -1,12 +1,12 @@
 ---
 name: docs
 description: Generate or refresh project documentation (README sections, module docs, usage guides) from the actual code. Use for "document this", "update the README", "write usage docs".
-argument-hint: "[what to document — file, module, or 'readme']"
+argument-hint: "[what to document - file, module, or 'readme']"
 ---
 
 # Documentation
 
-Docs describe what the code DOES, verified by running it — never what it's hoped to do.
+Docs describe what the code DOES, verified by running it - never what it's hoped to do.
 
 ## Procedure
 

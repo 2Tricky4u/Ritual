@@ -17,14 +17,14 @@ use crate::theme::IconSet;
 pub enum SettingKind {
     Bool,
     F64,
-    /// Clearable number — empty input removes the key (daily budget).
+    /// Clearable number - empty input removes the key (daily budget).
     OptF64,
     U64,
     Text,
-    /// Clearable string — empty input removes the key.
+    /// Clearable string - empty input removes the key.
     OptText,
     Enum(&'static [&'static str]),
-    /// Clearable enum — cycling past the last variant unsets the key.
+    /// Clearable enum - cycling past the last variant unsets the key.
     OptEnum(&'static [&'static str]),
 }
 
@@ -261,7 +261,7 @@ pub fn source_of(user_path: Option<&Path>, project_path: &Path, key: &str) -> So
     Source::Default
 }
 
-/// Unreadable or unparseable layer files count as not defining the key —
+/// Unreadable or unparseable layer files count as not defining the key -
 /// provenance is a display hint, never a gate.
 fn file_defines(path: &Path, key: &str) -> bool {
     let Ok(text) = std::fs::read_to_string(path) else {
@@ -375,7 +375,7 @@ pub fn write_setting(
         .context("empty setting key")?;
     let mut tbl = doc.as_table_mut();
     for part in parts {
-        // entry().or_insert(table()) — never assign a fresh table over an
+        // entry().or_insert(table()) - never assign a fresh table over an
         // existing one (that would clobber sibling keys and their comments);
         // toml_edit::table() makes a NEW section render as a [header] table.
         tbl = tbl
@@ -402,7 +402,7 @@ pub fn write_setting(
         }
         None => {
             // toml_edit stores the comment block above a key as that key's
-            // decor prefix — a plain remove() silently deletes user comments.
+            // decor prefix - a plain remove() silently deletes user comments.
             // Capture the block and re-attach it to the next item in the
             // table (or the document tail when the key was last).
             if let Some(orphan) = remove_preserving_comments(tbl, leaf) {
@@ -430,7 +430,7 @@ fn remove_preserving_comments(tbl: &mut toml_edit::Table, leaf: &str) -> Option<
         .to_string();
     tbl.remove(leaf);
     if !prefix.contains('#') {
-        return None; // pure whitespace — nothing worth rescuing
+        return None; // pure whitespace - nothing worth rescuing
     }
     if let Some(next) = keys.get(idx + 1) {
         // Header tables keep their comment block in the table decor; plain
@@ -489,7 +489,7 @@ mod tests {
 # Layered: defaults <- ~/.config/ritual/config.toml <- this file <- env.
 
 # The F-apply batch fix reads the whole plan + spec and answers every queued
-# finding in ONE run — the $1 default was killing real batches mid-work
+# finding in ONE run - the $1 default was killing real batches mid-work
 # (two runs died at $1.13 and $1.26). Cap the RUN, not each finding.
 budget_finding_fix_usd = 3.0
 ";

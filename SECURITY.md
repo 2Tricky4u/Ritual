@@ -3,7 +3,7 @@
 ## Supported versions
 
 ritual ships from `main`; the **latest tagged release** receives security
-fixes. Older tags are not maintained — upgrade to the newest version.
+fixes. Older tags are not maintained - upgrade to the newest version.
 
 ## Reporting a vulnerability
 
@@ -32,7 +32,7 @@ A few things worth knowing when assessing risk:
 
 - **Redaction** scrubs secret-shaped strings (keys, tokens, PEM blocks) from
   archives, streams, and reports before they are written (`redaction = true`
-  by default). It is a safety net, not a guarantee — review artifacts before
+  by default). It is a safety net, not a guarantee - review artifacts before
   sharing them.
 - **The run archive is tamper-evident**: each run's metadata is hash-chained,
   and `ritual verify-log` walks the chain. Treat a failed verification as a

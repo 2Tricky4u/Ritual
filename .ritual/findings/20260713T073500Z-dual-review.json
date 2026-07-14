@@ -1,0 +1,55 @@
+{
+  "ritual_findings": 1,
+  "stage": "dual-review",
+  "branch": "test/pr-comment-validation",
+  "generated_at": "2026-07-13T07:35:00Z",
+  "source_models": {"claude": "claude-opus-4-8", "codex": "gpt-5-codex"},
+  "findings": [
+    {
+      "id": 1,
+      "severity": "major",
+      "title": "Synthetic finding A (both models) — inline anchor validation",
+      "file": "docs/pr-comment-validation.md",
+      "line": 8,
+      "snippet": "- anchor A — a synthetic \"confirmed\" dual-review finding is anchored to this line.",
+      "scenario": "Synthetic finding used only to validate that ritual pr-comment --inline posts an anchored review comment at file:line on a real PR head commit.",
+      "sources": ["claude", "codex"],
+      "verdict": "confirmed",
+      "action": ""
+    },
+    {
+      "id": 2,
+      "severity": "minor",
+      "title": "Synthetic finding B (single model) — second inline anchor",
+      "file": "docs/pr-comment-validation.md",
+      "line": 9,
+      "snippet": "- anchor B — a second synthetic finding is anchored to this line to prove multiple inline posts.",
+      "scenario": "Second synthetic finding; proves multiple inline comments post in one run and that the single-source (single) marker renders.",
+      "sources": ["claude"],
+      "verdict": "confirmed",
+      "action": ""
+    },
+    {
+      "id": 3,
+      "severity": "critical",
+      "title": "Dismissed finding — must NOT reach the PR",
+      "file": "docs/pr-comment-validation.md",
+      "line": 3,
+      "scenario": "Resolved (dismissed) findings are excluded from both the summary table and inline comments; its absence on the PR is the assertion.",
+      "sources": ["claude", "codex"],
+      "verdict": "confirmed",
+      "action": "dismissed"
+    },
+    {
+      "id": 4,
+      "severity": "major",
+      "title": "Unconfirmed finding — must NOT reach the PR",
+      "file": "docs/pr-comment-validation.md",
+      "line": 4,
+      "scenario": "Only cross-model confirmed findings are posted; an unconfirmed verdict is filtered out.",
+      "sources": ["codex"],
+      "verdict": "unconfirmed",
+      "action": ""
+    }
+  ]
+}

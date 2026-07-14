@@ -3,7 +3,7 @@
 *(revised after /plan-review, 2026-07-11)*
 
 ## Context
-`.ritual/runs/` grows without bound — up to four files per run: `.jsonl`,
+`.ritual/runs/` grows without bound - up to four files per run: `.jsonl`,
 `.meta.json`, `.request.json`, `.status`. Add a `clean` subcommand that prunes
 old run artifacts safely.
 
@@ -14,7 +14,7 @@ old run artifacts safely.
    silently skips malformed metas, so those runs (and orphan sidecars from
    crashed launches) would be invisible to cleanup and the directory would keep
    growing. Run ids for deletion come ONLY from discovered filenames, never
-   from `RunMeta.run_id` (untrusted JSON — `"run_id": "../../x"` must not
+   from `RunMeta.run_id` (untrusted JSON - `"run_id": "../../x"` must not
    escape the runs dir); assert every deletion target resolves inside
    `runs_dir`.
 3. Classify each group with `runner::run_state()`:
@@ -28,7 +28,7 @@ old run artifacts safely.
    protect nothing, but print a notice. Document these semantics in the CLI
    help text.
 5. Chained runs: if any prune candidate has `meta.chain`, refuse (with an
-   explanation that `verify-log` would break PERMANENTLY — the oldest retained
+   explanation that `verify-log` would break PERMANENTLY - the oldest retained
    link no longer chains from GENESIS, and future runs chain onto the retained
    head) unless `--allow-chain-break` is passed. `--dry-run` exercises the same
    refusal/warning path.
@@ -59,4 +59,4 @@ old run artifacts safely.
   deleted runs). Default behavior refuses; `--allow-chain-break` overrides
   after an explicit warning. A checkpoint/rebased-chain design for
   `verify_log` would lift this limitation but is out of scope for this
-  feature — user to decide whether to pursue it separately.
+  feature - user to decide whether to pursue it separately.

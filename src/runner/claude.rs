@@ -135,7 +135,7 @@ fn parse_result(value: &Value) -> Vec<AgentEvent> {
         ok: !is_error,
         result_text: str_field(value, "result"),
         // The failure class ("error_max_budget_usd", …) lives in `subtype`;
-        // only meaningful on error — success subtypes are just "success".
+        // only meaningful on error - success subtypes are just "success".
         error_subtype: is_error.then(|| str_field(value, "subtype")).flatten(),
         total_cost_usd: value.get("total_cost_usd").and_then(Value::as_f64),
         usage,

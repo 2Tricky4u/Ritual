@@ -1,7 +1,7 @@
 ---
 name: dual-review
-description: Independent two-model review of the current diff — Claude's code-reviewer subagent and OpenAI Codex review the same changes without seeing each other's findings, then results are merged and only confirmed findings are fixed. Use before committing significant changes.
-argument-hint: "[base ref, e.g. main — omit to review uncommitted changes]"
+description: Independent two-model review of the current diff - Claude's code-reviewer subagent and OpenAI Codex review the same changes without seeing each other's findings, then results are merged and only confirmed findings are fixed. Use before committing significant changes.
+argument-hint: "[base ref, e.g. main - omit to review uncommitted changes]"
 ---
 
 # Dual-model review gate
@@ -12,7 +12,7 @@ Two reviewers from different vendors have decorrelated blind spots. The independ
 
 1. **Scope the diff.** Uncommitted changes by default; if a base ref argument was given, use `git diff <base>...HEAD`.
 
-2. **Run both reviews independently — in parallel, same input:**
+2. **Run both reviews independently - in parallel, same input:**
    - **Claude side:** launch the `code-reviewer` subagent on the diff.
    - **Codex side:** call the `codex` MCP tool with the diff and instructions equivalent to the code-reviewer's (real defects only, file:line + severity + concrete failure scenario, no style nits, verify before reporting). `/codex:review` is the interactive equivalent if the user prefers running it themselves.
    - Do not include either reviewer's output in the other's prompt.
@@ -20,8 +20,8 @@ Two reviewers from different vendors have decorrelated blind spots. The independ
 3. **Merge and dedup** by file/line/defect (same defect described differently = one finding).
 
 4. **Triage each unique finding:**
-   - **Confirmed** = reported by BOTH models, or verifiable by reproduction (write/run a failing test, run the command, trace the code yourself). Fix confirmed findings now — unless the fix expands scope, in which case ask the user first.
-   - **Unconfirmed** (one model, not reproducible cheaply): do NOT auto-fix — reviewers hallucinate defects too. Present to the user with your own one-line assessment.
+   - **Confirmed** = reported by BOTH models, or verifiable by reproduction (write/run a failing test, run the command, trace the code yourself). Fix confirmed findings now - unless the fix expands scope, in which case ask the user first.
+   - **Unconfirmed** (one model, not reproducible cheaply): do NOT auto-fix - reviewers hallucinate defects too. Present to the user with your own one-line assessment.
 
 5. **After fixes:** re-run `./check.sh` (or the test suite); confirm nothing regressed.
 
@@ -33,16 +33,16 @@ If `${RITUAL_INVARIANTS_FILE:-.ritual/invariants.md}` exists and contains bullet
 
 ## Review memory (ritual)
 
-If `.ritual/lessons.md` exists, Read it before reviewing. Items under "Known noise" were already reviewed and dismissed by a human — do not re-report them unless the evidence is materially new. Use "Confirmed real-bug areas" to direct extra scrutiny at the code regions where real bugs actually lived.
+If `.ritual/lessons.md` exists, Read it before reviewing. Items under "Known noise" were already reviewed and dismissed by a human - do not re-report them unless the evidence is materially new. Use "Confirmed real-bug areas" to direct extra scrutiny at the code regions where real bugs actually lived.
 
 ## Third reviewer (ritual)
 
-If a fresh `*-coderabbit.json` file exists in `${RITUAL_FINDINGS_DIR:-.ritual/findings}` (generated within the last hour), Read it: those are single-source, unconfirmed comments from an independent third reviewer. Verify or refute each against the actual diff — for ones you confirm, add `"coderabbit"` to your own finding's `sources` (three sources = strongest signal); ignore the rest silently. Never copy them unverified.
+If a fresh `*-coderabbit.json` file exists in `${RITUAL_FINDINGS_DIR:-.ritual/findings}` (generated within the last hour), Read it: those are single-source, unconfirmed comments from an independent third reviewer. Verify or refute each against the actual diff - for ones you confirm, add `"coderabbit"` to your own finding's `sources` (three sources = strongest signal); ignore the rest silently. Never copy them unverified.
 
 ## Guardrails
 
 - If the `codex` tool fails with an auth error, tell the user to run `! codex login`; offer the single-model review rather than silently degrading.
-- If the `codex` tool fails because the MODEL is unavailable (model-not-found / unsupported model — NOT an auth error), retry the same call ONCE with `model: "gpt-5.5"` (verified fallback) and note the downgrade in your report. Codex's default is deliberately unpinned so it tracks the newest model (gpt-5.6 today); this keeps the cross-model gate alive when that default isn't available on the account.
+- If the `codex` tool fails because the MODEL is unavailable (model-not-found / unsupported model - NOT an auth error), retry the same call ONCE with `model: "gpt-5.5"` (verified fallback) and note the downgrade in your report. Codex's default is deliberately unpinned so it tracks the newest model (gpt-5.6 today); this keeps the cross-model gate alive when that default isn't available on the account.
 - Severity comes from the failure scenario, not from reviewer confidence.
 
 ## Machine-readable findings (ritual)

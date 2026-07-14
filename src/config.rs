@@ -22,7 +22,7 @@ pub struct FileConfig {
     /// Per-message ceiling for a spec/plan chat edit (one small Edit each).
     pub budget_doc_chat_usd: Option<f64>,
     /// Ceiling for ONE batch plan-fix run (F-apply answers all queued
-    /// findings in a single run — per run, not per finding).
+    /// findings in a single run - per run, not per finding).
     pub budget_finding_fix_usd: Option<f64>,
     /// `[keys]` table: action name -> chord ("check-full = \"F\"").
     pub keys: Option<HashMap<String, String>>,
@@ -40,7 +40,7 @@ pub struct FileConfig {
     pub effort: Option<HashMap<String, String>>,
     /// Fallback model(s) for headless claude runs and the interactive `plan`
     /// stage, comma-separated. Retryable API errors (overload) switch instead
-    /// of failing the run — the Opus safety net under a pinned planning model.
+    /// of failing the run - the Opus safety net under a pinned planning model.
     pub fallback_model: Option<String>,
     /// Hard ceiling on any check.sh invocation (hung boards, wedged builds).
     pub check_timeout_secs: Option<u64>,

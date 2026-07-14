@@ -80,10 +80,10 @@ pub struct RateLimitInfo {
     pub status: Option<String>,
 }
 
-/// One human line for a failed run — the best reason the meta actually
+/// One human line for a failed run - the best reason the meta actually
 /// records, instead of the bare "agent reported failure". Headline priority:
 /// the budget subtype (names the exact knob to raise), permission denials
-/// (the tool lock said no — and to what), the raw error text, the exit code.
+/// (the tool lock said no - and to what), the raw error text, the exit code.
 /// Deliberately short: it rides the one-line statusline; the archive
 /// (`ritual attach <id>`) has the rest.
 pub fn decode_failure(meta: &RunMeta) -> String {
@@ -99,7 +99,7 @@ pub fn decode_failure(meta: &RunMeta) -> String {
                 .map(|c| format!(" (${c:.2} spent)"))
                 .unwrap_or_default();
             parts.push(format!(
-                "budget cap hit{turns}{spent} — raise {}",
+                "budget cap hit{turns}{spent} - raise {}",
                 budget_knob(&meta.stage)
             ));
         }

@@ -137,7 +137,7 @@ pub struct TriageConfirm {
     pub needs_you: usize,
 }
 
-/// The `d` dismiss prompt: identity captured at open (by PATH — a background
+/// The `d` dismiss prompt: identity captured at open (by PATH - a background
 /// reload must not retarget the write), plus the reason being typed.
 pub struct DismissPrompt {
     pub findings_path: std::path::PathBuf,
@@ -245,7 +245,7 @@ pub struct SettingsState {
     pub selected: usize,
     pub edit: Option<SettingsEdit>,
     /// Per-catalog-row source tags (default/user/project/flag), refreshed on
-    /// open and after every write — cheap to cache, wasteful per frame.
+    /// open and after every write - cheap to cache, wasteful per frame.
     pub sources: Vec<&'static str>,
 }
 
@@ -546,7 +546,7 @@ impl App {
     /// Re-resolve every open plan finding's step against the CURRENT plan.
     /// Any edit (batch fix, chat, undo, external) can move or delete a step;
     /// findings whose anchor no longer locates get an explicit ⚓ marker
-    /// instead of silently mis-anchoring. Runs on every artifact reload —
+    /// instead of silently mis-anchoring. Runs on every artifact reload -
     /// the funnel every edit path already goes through.
     fn recompute_anchors(&mut self) {
         let mut plans: std::collections::HashMap<String, String> = std::collections::HashMap::new();
@@ -2187,7 +2187,7 @@ impl App {
                 self.status_msg = Some(if ok {
                     "implement prompt copied to clipboard".into()
                 } else {
-                    "couldn't reach a clipboard — select the prompt manually".into()
+                    "couldn't reach a clipboard - select the prompt manually".into()
                 });
             }
             _ => {
@@ -2360,7 +2360,7 @@ impl App {
     }
 
     /// One settings write, transactionally: write the project config, re-run
-    /// the full layered Config::load with the stashed CLI flags, swap it in —
+    /// the full layered Config::load with the stashed CLI flags, swap it in -
     /// or restore the previous bytes. The file on disk always passes
     /// Config::load.
     fn apply_setting(&mut self, idx: usize, value: Option<crate::settings::SettingValue>) {
@@ -2395,7 +2395,7 @@ impl App {
                 if (def.key == "theme" && self.theme_flag.is_some())
                     || (def.key == "icons" && self.ascii_flag)
                 {
-                    msg.push_str(" — a CLI flag overrides this session");
+                    msg.push_str(" - a CLI flag overrides this session");
                 }
                 if let Some(s) = self.settings.as_mut() {
                     s.sources = sources;
@@ -2467,7 +2467,7 @@ impl App {
                 ) {
                     Ok(()) => {
                         self.status_msg = Some(match reason {
-                            Some(r) => format!("{}: dismissed — {r}", p.title),
+                            Some(r) => format!("{}: dismissed - {r}", p.title),
                             None => format!("{}: dismissed", p.title),
                         });
                     }
@@ -2491,7 +2491,7 @@ impl App {
     }
 
     /// `m`: toggle the "I'll fix this myself" answer on any open finding
-    /// (code findings are the canonical manual case — `Q` routes them).
+    /// (code findings are the canonical manual case - `Q` routes them).
     fn finding_toggle_manual(&mut self) {
         if self.tab != Tab::Findings {
             self.status_msg = Some("m works on the findings tab (2)".into());
@@ -2594,7 +2594,7 @@ impl App {
             .partition(|af| self.finding_slug(af.file_idx) == self.slug);
         if mine.is_empty() {
             self.status_msg = Some(if other.is_empty() {
-                "no queued answers — F queues a plan finding for claude".into()
+                "no queued answers - F queues a plan finding for claude".into()
             } else {
                 format!(
                     "{} queued on other features; switch with [ ] to apply them",
@@ -2604,7 +2604,7 @@ impl App {
             return;
         }
         // Anchor health against the CURRENT plan: unlocatable steps degrade
-        // the gate to whole-doc for the whole batch — say so up front.
+        // the gate to whole-doc for the whole batch - say so up front.
         let plan_text =
             std::fs::read_to_string(self.dirs.plan_file(&self.slug)).unwrap_or_default();
         let anchor_lost = mine
@@ -2800,7 +2800,7 @@ impl App {
     }
 
     /// `t`: compute the recommended disposition for every VISIBLE open
-    /// finding (filter + hidden-resolved honored — exactly what the user
+    /// finding (filter + hidden-resolved honored - exactly what the user
     /// sees) and stage them behind a confirm modal. Dispositions only:
     /// the plan itself still changes exclusively through F-apply.
     fn open_triage_confirm(&mut self) {
@@ -2829,7 +2829,7 @@ impl App {
         }
         if items.is_empty() {
             self.status_msg = Some(if needs_you > 0 {
-                format!("nothing to auto-triage — {needs_you} need your judgment")
+                format!("nothing to auto-triage - {needs_you} need your judgment")
             } else {
                 "nothing to triage".into()
             });
@@ -2981,7 +2981,7 @@ impl App {
                 },
             ));
         }
-        // Prompt-level scope: the deduped section names — unless any anchor
+        // Prompt-level scope: the deduped section names - unless any anchor
         // was lost, in which case the honest scope is the whole plan.
         let mut section_names: Vec<&str> = Vec::new();
         let mut any_lost = false;
@@ -3075,7 +3075,7 @@ impl App {
 
     /// Follow a plan-fix run to completion. Events are not streamed to the
     /// UI, but the tail watches for the final `Completed` event and carries
-    /// its result text home — that is where the ANSWERS block lives. The
+    /// its result text home - that is where the ANSWERS block lives. The
     /// sender drops when tail_run returns, ending the watcher loop; the
     /// archive (incl. the result line) is fully flushed before that.
     fn attach_fix_tail(
@@ -3116,7 +3116,7 @@ impl App {
     }
 
     /// The batch fix finished: enforce the union gate, then honor the
-    /// per-finding ANSWERS verdicts — FIXED auto-marks, DECLINED returns the
+    /// per-finding ANSWERS verdicts - FIXED auto-marks, DECLINED returns the
     /// finding to triage with the reason. A leak reverts EVERYTHING and the
     /// whole queue survives.
     fn on_fix_exited(
@@ -3155,7 +3155,7 @@ impl App {
                     let _ = crate::undo::undo(&self.dirs, &ctx.slug, plan_label, &ctx.plan_path);
                     self.reload_artifacts();
                     self.status_msg =
-                        Some(format!("plan-fix failed mid-edit; reverted — {reason}"));
+                        Some(format!("plan-fix failed mid-edit; reverted - {reason}"));
                 } else {
                     self.status_msg = Some(format!(
                         "plan-fix failed: {reason} · ritual attach {run_id}"
@@ -3299,7 +3299,7 @@ impl App {
         }
     }
 
-    /// `u`: revert the last APPLIED batch — one undo restores the plan, its
+    /// `u`: revert the last APPLIED batch - one undo restores the plan, its
     /// FIXED findings reopen and requeue (⚑A) for another round.
     fn doc_undo(&mut self) {
         if self.fix_running() || self.chat_running() {
@@ -3353,7 +3353,7 @@ impl App {
 /// Best-effort 1-based line in `plan` for a plan-review finding's free-text
 /// `step`. Tries, in order: the whole step text, a leading headline like
 /// "Step 2", and the ordered-list item ("2." / "2)") that plans number their
-/// steps with. None when nothing matches — the caller opens the plan at the top.
+/// steps with. None when nothing matches - the caller opens the plan at the top.
 fn locate_plan_step(plan: &str, step: &str) -> Option<u32> {
     let needle = step.trim().to_lowercase();
     if needle.is_empty() {
@@ -3618,7 +3618,7 @@ mod tests {
 
     #[test]
     fn locate_plan_step_prefers_whole_then_headline_then_none() {
-        let plan = "# Plan\n\n### Step 1 — scaffold\ndo thing\n\n### Step 2 — delete\nmore\n";
+        let plan = "# Plan\n\n### Step 1 - scaffold\ndo thing\n\n### Step 2 - delete\nmore\n";
         // Whole-text substring match.
         assert_eq!(locate_plan_step(plan, "do thing"), Some(4));
         // Headline fallback: "Step 2" extracted from "Step 2 (delete via x)".
@@ -4394,7 +4394,7 @@ mod tests {
         let (_cmd, ctx) = app.prepare_findings_apply(&slug).unwrap();
         let plan_path = ctx.plan_path.clone();
         app.fix_ctx = Some(ctx);
-        // The "agent" edits the locked title line between nothing — a leak.
+        // The "agent" edits the locked title line between nothing - a leak.
         std::fs::write(&plan_path, FIX_PLAN.replace("# Plan", "# Plan v2")).unwrap();
         app.on_fix_exited(
             fix_outcome(true, 0.08),
@@ -4530,7 +4530,7 @@ mod tests {
         let (_cmd, ctx) = app.prepare_findings_apply(&slug).unwrap();
         app.fix_ctx = Some(ctx);
         app.current_fix_run_id = Some("20260713T115537337Z-64f67-0-plan-fix".into());
-        // A budget-killed run with denials — today's real failure shape.
+        // A budget-killed run with denials - today's real failure shape.
         let outcome = Ok(RunOutcome {
             meta: RunMeta {
                 ok: false,
@@ -4703,7 +4703,7 @@ mod tests {
         std::fs::create_dir_all(plan.parent().unwrap()).unwrap();
         std::fs::write(
             &plan,
-            "# Plan\n\n## Phases\n\n### Step 2 — delete via load_all\nbody\n",
+            "# Plan\n\n## Phases\n\n### Step 2 - delete via load_all\nbody\n",
         )
         .unwrap();
 

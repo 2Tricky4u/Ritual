@@ -1,0 +1,8 @@
+{
+  "ritual_findings": 1,
+  "stage": "dual-review",
+  "branch": "test/pr-comment-validation",
+  "generated_at": "2026-07-13T07:26:28Z",
+  "source_models": {"claude": "claude-fable-5", "codex": null},
+  "findings": []
+}

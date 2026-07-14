@@ -1514,7 +1514,7 @@ fn draw_finding_detail(f: &mut Frame, app: &App) {
     }
     if app.is_anchor_lost(&af) {
         lines.push(Line::from(Span::styled(
-            "⚓ anchor lost — step no longer found in plan.md",
+            "⚓ anchor lost - step no longer found in plan.md",
             Style::default().fg(t.warn()),
         )));
     }
@@ -1524,11 +1524,11 @@ fn draw_finding_detail(f: &mut Frame, app: &App) {
     {
         use crate::findings::Recommendation as R;
         let text = match rec {
-            R::QueueAuto => "recommended: queue for claude — confirmed plan finding",
-            R::QueueManual => "recommended: fix manually — confirmed code finding",
-            R::Archive => "recommended: archive — resolution already recorded in action",
-            R::Dismiss(_) => "recommended: dismiss — withdrawn/refuted by review",
-            R::NeedsYou => "recommended: your judgment — no safe default",
+            R::QueueAuto => "recommended: queue for claude - confirmed plan finding",
+            R::QueueManual => "recommended: fix manually - confirmed code finding",
+            R::Archive => "recommended: archive - resolution already recorded in action",
+            R::Dismiss(_) => "recommended: dismiss - withdrawn/refuted by review",
+            R::NeedsYou => "recommended: your judgment - no safe default",
         };
         lines.push(Line::from(Span::styled(
             text,
@@ -1745,7 +1745,7 @@ fn draw_settings(f: &mut Frame, app: &App) {
         66.min(f.area().width.saturating_sub(2)).max(1),
         want_h.min(f.area().height.saturating_sub(2)).max(1),
     );
-    let inner = float_panel(f, t, area, "settings — project config");
+    let inner = float_panel(f, t, area, "settings - project config");
     if inner.width == 0 || inner.height == 0 {
         return;
     }
@@ -1795,7 +1795,7 @@ fn draw_settings(f: &mut Frame, app: &App) {
                 };
                 let left = vec![Span::styled(format!("  {}", def.label), label_style)];
                 let chip = vec![
-                    Span::styled(value.unwrap_or_else(|| "—".into()), value_style),
+                    Span::styled(value.unwrap_or_else(|| "-".into()), value_style),
                     Span::styled(
                         format!(" ({tag}) "),
                         Style::default()
@@ -1844,13 +1844,13 @@ fn draw_settings(f: &mut Frame, app: &App) {
 fn setting_hint(def: &crate::settings::SettingDef) -> String {
     use crate::settings::SettingKind::*;
     match def.kind {
-        F64 => format!("{} — number > 0", def.doc),
-        OptF64 => format!("{} — number > 0, empty = unset", def.doc),
-        U64 => format!("{} — whole number ≥ 1", def.doc),
+        F64 => format!("{} - number > 0", def.doc),
+        OptF64 => format!("{} - number > 0, empty = unset", def.doc),
+        U64 => format!("{} - whole number ≥ 1", def.doc),
         Bool | Text => def.doc.to_string(),
-        OptText => format!("{} — empty = unset", def.doc),
-        Enum(vs) => format!("{} — {}", def.doc, vs.join("/")),
-        OptEnum(vs) => format!("{} — {}, empty = unset", def.doc, vs.join("/")),
+        OptText => format!("{} - empty = unset", def.doc),
+        Enum(vs) => format!("{} - {}", def.doc, vs.join("/")),
+        OptEnum(vs) => format!("{} - {}, empty = unset", def.doc, vs.join("/")),
     }
 }
 
@@ -1867,7 +1867,7 @@ fn draw_implement_hint(f: &mut Frame, app: &App) {
         66.min(f.area().width.saturating_sub(2)).max(1),
         13.min(f.area().height.saturating_sub(2)).max(1),
     );
-    let inner = float_panel(f, t, area, "implement — resume + paste to start");
+    let inner = float_panel(f, t, area, "implement - resume + paste to start");
     if inner.width == 0 || inner.height == 0 {
         return;
     }
@@ -1892,7 +1892,7 @@ fn draw_implement_hint(f: &mut Frame, app: &App) {
     };
     let dim = |s: &str| Span::styled(s.to_string(), Style::default().fg(t.muted()));
     if hint.copied {
-        // Copied — DON'T render the prompt: a mouse-drag over it grabs the
+        // Copied - DON'T render the prompt: a mouse-drag over it grabs the
         // float border + sidebar behind it, and copy-on-select would clobber
         // the clean clipboard. Nothing to select, so paste just works.
         lines.push(Line::from(Span::styled(
@@ -1917,7 +1917,7 @@ fn draw_implement_hint(f: &mut Frame, app: &App) {
             dim(" cancel"),
         ]));
     } else {
-        // Clipboard unreachable — fall back to showing the prompt to copy by
+        // Clipboard unreachable - fall back to showing the prompt to copy by
         // hand (press c to retry the clipboard).
         lines.push(Line::from(dim(
             "  Couldn't reach a clipboard. Copy this and paste it in:",
@@ -1943,7 +1943,7 @@ fn draw_implement_hint(f: &mut Frame, app: &App) {
     );
 }
 
-/// The `t` triage confirm: what one `y` stages — dispositions only, the
+/// The `t` triage confirm: what one `y` stages - dispositions only, the
 /// plan still mutates exclusively through F-apply.
 fn draw_triage_confirm(f: &mut Frame, app: &App) {
     let t = &app.cfg.theme;
@@ -1971,7 +1971,7 @@ fn draw_triage_confirm(f: &mut Frame, app: &App) {
     )));
     if c.needs_you > 0 {
         lines.push(Line::from(Span::styled(
-            format!("{} need your judgment — untouched", c.needs_you),
+            format!("{} need your judgment - untouched", c.needs_you),
             Style::default().fg(t.warn()),
         )));
     }
@@ -1999,7 +1999,7 @@ fn draw_apply_confirm(f: &mut Frame, app: &App) {
         return;
     }
     let mut lines = vec![Line::from(Span::styled(
-        format!("apply {} answer(s) via claude — ONE run?", c.count),
+        format!("apply {} answer(s) via claude - ONE run?", c.count),
         Style::default().fg(t.fg()).add_modifier(Modifier::BOLD),
     ))];
     if c.skipped_other_features > 0 || c.anchor_lost > 0 {
@@ -2039,7 +2039,7 @@ fn draw_dismiss_prompt(f: &mut Frame, app: &App) {
         64.min(f.area().width.saturating_sub(2)).max(1),
         4.min(f.area().height.saturating_sub(2)).max(1),
     );
-    let inner = float_panel(f, t, area, "dismiss — reason (enter = none · esc = cancel)");
+    let inner = float_panel(f, t, area, "dismiss - reason (enter = none · esc = cancel)");
     if inner.height == 0 {
         return;
     }
@@ -2105,7 +2105,7 @@ mod tests {
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "abcde XY");
 
-        // Tight: the CHIP wins — content truncates with an ellipsis.
+        // Tight: the CHIP wins - content truncates with an ellipsis.
         let line = fill_row_chip(spans.clone(), chip.clone(), 7, Color::Reset);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "abc… XY");

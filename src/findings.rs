@@ -52,7 +52,7 @@ pub struct Finding {
     #[serde(default)]
     pub action: String,
     /// Triage answer for a still-open finding: "auto" (queued for the claude
-    /// batch fix) or "manual" (the user will fix it). Never blocks CI —
+    /// batch fix) or "manual" (the user will fix it). Never blocks CI -
     /// answered findings stay unresolved until actually fixed/dismissed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,
@@ -252,12 +252,12 @@ pub enum Recommendation {
     Archive,
     /// Dismiss with the given reason: the review itself retracted it.
     Dismiss(String),
-    /// No safe default — the human decides (shown, never auto-applied).
+    /// No safe default - the human decides (shown, never auto-applied).
     NeedsYou,
 }
 
 /// The deterministic recommended disposition for a finding, or None when it
-/// is already handled (resolved, triaged, or declined by a batch run — a
+/// is already handled (resolved, triaged, or declined by a batch run - a
 /// declined finding must NOT be auto-requeued, that would loop).
 pub fn recommend(f: &Finding) -> Option<Recommendation> {
     if f.resolved() || f.answer.is_some() {
@@ -287,7 +287,7 @@ pub fn recommend(f: &Finding) -> Option<Recommendation> {
 }
 
 /// Set (or clear) a finding's triage answer and reason: plain assignment,
-/// no toggle — toggle policy lives with the caller. Same atomic rewrite.
+/// no toggle - toggle policy lives with the caller. Same atomic rewrite.
 pub fn set_answer(
     loaded: &mut [LoadedFindings],
     file_idx: usize,

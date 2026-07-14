@@ -6,7 +6,7 @@
 
 ## Linked issue
 
-<!-- Closes #NNN — or "n/a" -->
+<!-- Closes #NNN - or "n/a" -->
 
 ## Checklist
 

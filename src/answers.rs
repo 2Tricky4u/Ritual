@@ -7,7 +7,7 @@
 //! #2: DECLINED needs a spec change first
 //! ```
 //!
-//! Pure and deliberately tolerant — model output drifts, the parser must not.
+//! Pure and deliberately tolerant - model output drifts, the parser must not.
 
 use std::collections::HashMap;
 
@@ -56,7 +56,7 @@ fn parse_line(line: &str) -> Option<(u32, AnswerVerdict)> {
     if let Some(tail) = lower.strip_prefix("declined") {
         // Take the reason from the ORIGINAL casing, same offset.
         let reason = rest[rest.len() - tail.len()..]
-            .trim_start_matches([':', '-', '—', ' '])
+            .trim_start_matches([':', '-', '-', ' '])
             .trim();
         let reason = if reason.is_empty() {
             "no reason given".to_string()
@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn tolerates_case_junk_and_surrounding_text() {
-        let text = "preamble\nanswers:\n  #3 : fixed (rewrote the retention rule)\nsome commentary\n#10: Declined — overlaps finding 3\ntrailing prose\n";
+        let text = "preamble\nanswers:\n  #3 : fixed (rewrote the retention rule)\nsome commentary\n#10: Declined - overlaps finding 3\ntrailing prose\n";
         let v = parse_answers(text);
         assert_eq!(v[&3], AnswerVerdict::Fixed);
         assert_eq!(v[&10], AnswerVerdict::Declined("overlaps finding 3".into()));

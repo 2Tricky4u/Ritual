@@ -1,8 +1,8 @@
 //! Best-effort system clipboard write for the TUI. Selecting text inside a
 //! float panel with the mouse grabs whole terminal rows (sidebar and all), so
 //! anything worth copying (the implement prompt) is put on the clipboard
-//! directly instead. Tries the common CLI tools first — reliable and
-//! verifiable — then falls back to an OSC 52 escape sequence (terminal-native,
+//! directly instead. Tries the common CLI tools first - reliable and
+//! verifiable - then falls back to an OSC 52 escape sequence (terminal-native,
 //! works over SSH or when no tool is installed).
 
 use std::io::Write;
@@ -46,7 +46,7 @@ pub fn copy(text: &str) -> bool {
 }
 
 /// Under `cargo test`, never spawn a clipboard tool or clobber the dev's
-/// clipboard — the caller only needs a truthy result.
+/// clipboard - the caller only needs a truthy result.
 #[cfg(test)]
 pub fn copy(_text: &str) -> bool {
     true

@@ -192,7 +192,7 @@ pub struct FindingBrief<'a> {
 /// anchor). Same tool lock and routing as `finding_fix_command`; the REQUEST
 /// carries every finding numbered plus the ANSWERS contract the caller
 /// parses back per finding (`crate::answers::parse_answers`). `sections` is
-/// prompt-level scoping only — the caller enforces the union mechanically
+/// prompt-level scoping only - the caller enforces the union mechanically
 /// (`spec::edits_confined_multi`). Budget: `budget_finding_fix_usd` caps the
 /// whole RUN, not each finding.
 pub fn findings_batch_fix_command(
@@ -249,7 +249,7 @@ pub fn findings_batch_fix_command(
          {spec_line}{inv_line}{scope_line}\n\n\
          {findings_block}\
          REQUEST:\n\
-         Fix the plan so these findings no longer apply. They may interact — \
+         Fix the plan so these findings no longer apply. They may interact - \
          resolve them coherently in ONE pass. Read the whole plan, the spec, \
          and the invariants for consistency, but EDIT ONLY the scoped \
          sections. For any finding whose correct fix requires changes outside \
@@ -303,7 +303,7 @@ pub fn findings_batch_fix_command(
 /// (plan path for plan-review, base ref for dual-review). `model_override`
 /// (retry-with-model, `run --model`) beats the `[models]` routing table.
 /// Suggested first message for `implement`, shown in the launch overlay for
-/// the user to copy/paste — an interactive `claude --resume` can't be handed a
+/// the user to copy/paste - an interactive `claude --resume` can't be handed a
 /// prompt, so ritual surfaces it instead of auto-sending it.
 pub const IMPLEMENT_PROMPT: &str = "Implement the code to make the failing tests from the tests-red step pass. Follow the plan and run ./check.sh before finishing.";
 
@@ -317,7 +317,7 @@ pub fn build(
     // The claude session to pin/resume. For `tests-red` this becomes
     // `--session-id <sid>` (ritual owns the id); for `implement`, `--resume
     // <sid>`. `None` on implement opens the `--resume` picker so the user
-    // chooses — never the fragile `--continue` ("most recent in cwd").
+    // chooses - never the fragile `--continue` ("most recent in cwd").
     session: Option<&str>,
 ) -> Result<StageCommand> {
     let claude = cfg.claude_cmd.clone();
@@ -624,7 +624,7 @@ mod tests {
         let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None, None).unwrap();
         assert!(!cmd.argv.contains(&"--effort".to_string()));
 
-        // Local `spec` has no CLI (empty argv) — never gains the flag even if set.
+        // Local `spec` has no CLI (empty argv) - never gains the flag even if set.
         cfg.effort.insert("spec".into(), "xhigh".into());
         let cmd = build(StageId::Spec, &cfg, &dirs, "s", None, None, None).unwrap();
         assert!(cmd.argv.is_empty());
@@ -889,7 +889,7 @@ mod tests {
         let bare = build(StageId::TestsRed, &cfg, &dirs, "s", None, None, None).unwrap();
         assert!(!bare.argv.iter().any(|a| a == "--session-id"));
 
-        // implement resumes that exact session (no prompt — the CLI ignores a
+        // implement resumes that exact session (no prompt - the CLI ignores a
         // positional on interactive resume; ritual surfaces it for paste).
         let cmd = build(StageId::Implement, &cfg, &dirs, "s", None, None, Some(sid)).unwrap();
         assert_eq!(cmd.argv, vec!["claude", "--resume", sid]);

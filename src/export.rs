@@ -178,7 +178,7 @@ fn canonical(v: &serde_json::Value) -> String {
 }
 
 /// A fresh, unused UUIDv4-formatted id for pinning a claude session
-/// (`--session-id`). Not cryptographic — uniqueness (not unpredictability) is
+/// (`--session-id`). Not cryptographic - uniqueness (not unpredictability) is
 /// what `--session-id` needs, so we seed the deterministic hasher with the
 /// same time+pid+counter ingredients as `runner::new_run_id`, which are unique
 /// per invocation on this machine.
