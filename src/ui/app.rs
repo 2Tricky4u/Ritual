@@ -2646,6 +2646,10 @@ impl App {
         crate::findings::aggregate(&self.findings, false)
             .into_iter()
             .filter(|af| af.finding.answer.as_deref() == Some("auto"))
+            // An anchorless finding (no file AND no plan_step) has nothing to
+            // fix; a hand-edited `answer:"auto"` on one would inflate the apply
+            // count and then dead-end. Neither batch would select it.
+            .filter(|af| af.finding.file.is_some() || af.finding.plan_step.is_some())
             .collect()
     }
 
@@ -6622,6 +6626,19 @@ mod tests {
         let c = app.apply_confirm.as_ref().expect("modal open");
         assert_eq!(c.plan_count, 1);
         assert_eq!(c.code_count, 1);
+    }
+
+    #[test]
+    fn queued_auto_excludes_anchorless_findings() {
+        let (_t, mut app, _tx, _rx) = test_app();
+        // A hand-edited answer:"auto" on a finding with neither file nor
+        // plan_step: nothing to fix, so it must not inflate the queue.
+        seed_findings(
+            &mut app,
+            r#"{"stage":"dual-review","findings":[
+                {"id":1,"title":"floating","verdict":"confirmed","action":"pending","answer":"auto"}]}"#,
+        );
+        assert_eq!(app.queued_auto().len(), 0);
     }
 
     #[test]

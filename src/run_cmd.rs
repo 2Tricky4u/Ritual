@@ -43,7 +43,18 @@ pub fn execute(
         .map(|f| f.title.clone())
         .unwrap_or_default();
 
-    let cmd = stages::build(stage, cfg, dirs, &slug, arg, model, None)?;
+    // Session parity with the TUI: pin a fresh id for tests-red so a later
+    // `run implement` can resume THAT session (never the fragile `--continue`).
+    let session: Option<String> = match stage {
+        StageId::TestsRed => {
+            let sid = crate::export::fresh_session_id();
+            st.set_stage_session_id(&slug, StageId::TestsRed, Some(sid.clone()));
+            Some(sid)
+        }
+        StageId::Implement => st.stage_session_id(&slug, StageId::TestsRed),
+        _ => None,
+    };
+    let cmd = stages::build(stage, cfg, dirs, &slug, arg, model, session.as_deref())?;
 
     if cmd.needs_codex && !cfg.offline && !stages::codex_ready(cfg) {
         anyhow::bail!(
@@ -54,7 +65,7 @@ pub fn execute(
 
     match cmd.mode {
         Mode::Local => run_spec_stage(dirs, &slug, &title, &mut st, &branch),
-        Mode::Interactive => run_interactive(dirs, stage, cmd.argv, &mut st, &branch),
+        Mode::Interactive => run_interactive(cfg, dirs, stage, cmd.argv, &mut st, &branch),
         Mode::Headless => run_headless(cfg, dirs, stage, cmd, &mut st, &branch, &title, ci),
     }
 }
@@ -231,6 +242,7 @@ fn run_spec_stage(
 }
 
 fn run_interactive(
+    cfg: &Config,
     dirs: &RitualDirs,
     stage: StageId,
     argv: Vec<String>,
@@ -242,6 +254,17 @@ fn run_interactive(
 
     set_stage(st, branch, stage, StageStatus::Running, None);
     st.save(dirs)?;
+
+    // Interactive `--resume` ignores a positional prompt, so hand the user the
+    // kick-off prompt (clipboard, like the TUI) instead of silently launching.
+    if stage == StageId::Implement {
+        let copied = crate::clipboard::copy(stages::IMPLEMENT_PROMPT);
+        println!(
+            "kick-off prompt{}:\n  {}",
+            if copied { " (copied to clipboard)" } else { "" },
+            stages::IMPLEMENT_PROMPT
+        );
+    }
 
     let (bin, args) = argv.split_first().context("empty argv")?;
     let status = std::process::Command::new(bin)
@@ -264,18 +287,20 @@ fn run_interactive(
             }
         }
         StageId::TestsRed => {
-            if check_green(&dirs.work_root) {
-                // /tdd went all the way to green: tests-red AND implement done.
+            // /tdd writes failing tests then implements in one session. Only
+            // auto-advance Implement to Done when the session ran to completion
+            // AND the tree is green; a bailed session with a coincidentally
+            // green tree must not silently mark implement done.
+            if status.success() && check_green(&dirs.work_root, cfg.check_timeout_secs) {
                 set_stage(st, branch, StageId::Implement, StageStatus::Done, None);
                 println!("check.sh green: tests-red and implement both done");
-                StageStatus::Done
             } else {
-                println!("check.sh red: failing tests in place, ready to implement");
-                StageStatus::Done
+                println!("failing tests in place, ready to implement");
             }
+            StageStatus::Done
         }
         StageId::Implement => {
-            if check_green(&dirs.work_root) {
+            if check_green(&dirs.work_root, cfg.check_timeout_secs) {
                 StageStatus::Done
             } else {
                 println!("check.sh still red: implement stays needs-attention");
@@ -531,7 +556,7 @@ fn mtime(p: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(p).and_then(|m| m.modified()).ok()
 }
 
-fn check_green(work_root: &Path) -> bool {
+fn check_green(work_root: &Path, timeout_secs: u64) -> bool {
     let check = work_root.join("check.sh");
     if !check.exists() {
         return false;
@@ -540,7 +565,7 @@ fn check_green(work_root: &Path) -> bool {
     cmd.current_dir(work_root)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    run_with_timeout(cmd, Config::default().check_timeout_secs)
+    run_with_timeout(cmd, timeout_secs)
         .map(|s| s.success())
         .unwrap_or(false)
 }

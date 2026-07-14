@@ -158,6 +158,7 @@ fn budget_knob(stage: &str) -> &'static str {
         "plan-fix" => "budget_finding_fix_usd",
         "plan-review" => "budget_plan_review_usd",
         "dual-review" => "budget_dual_review_usd",
+        "code-fix" | "code-fix-review" => "budget_code_fix_usd",
         s if s.ends_with("-chat") => "budget_doc_chat_usd",
         _ => "the stage budget cap",
     }
@@ -346,6 +347,9 @@ mod tests {
         let mut m3 = meta("spec-chat");
         m3.error_subtype = Some("error_max_budget_usd".into());
         assert!(decode_failure(&m3).contains("budget_doc_chat_usd"));
+        let mut m4 = meta("code-fix");
+        m4.error_subtype = Some("error_max_budget_usd".into());
+        assert!(decode_failure(&m4).contains("budget_code_fix_usd"));
 
         // Denials: live shape (tool_name + tool_input.file_path).
         let mut m = meta("plan-fix");
