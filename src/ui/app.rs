@@ -921,7 +921,7 @@ impl App {
             },
             Action::Follow => self.stream_scroll = None,
             Action::Confirm => self.on_enter(tx),
-            Action::Cancel => self.cancel_run(),
+            Action::Cancel => self.cancel_run(tx),
             Action::CheckFast => self.run_check(tx, true),
             Action::CheckFull => self.run_check(tx, false),
             Action::Refresh => self.refresh(tx),
@@ -1033,7 +1033,7 @@ impl App {
             }
             return;
         }
-        if self.running.is_some() || self.chat_running() {
+        if self.running.is_some() || self.chat_running() || self.fix_running() {
             self.status_msg = Some("a run is already active; press x to cancel".into());
             return;
         }
@@ -2045,13 +2045,54 @@ impl App {
         self.reload_artifacts();
     }
 
-    fn cancel_run(&mut self) {
+    fn cancel_run(&mut self, tx: &mpsc::Sender<AppMsg>) {
+        // A code-fix in flight: kill the live leg and drop the ctx. The attempt
+        // is LEFT in the working tree (git is the undo); findings stay queued.
+        // A late exit message lands on the now-None ctx and is ignored.
+        if let Some(ctx) = self.code_fix_ctx.take() {
+            if let Some(id) = self.current_code_run_id.take() {
+                runner::kill_run(&self.dirs, &id);
+            }
+            if let Some(task) = self.code_fix_task.take() {
+                task.abort();
+            }
+            self.status_msg = Some(format!(
+                "code-fix cancelled; the attempt is in your working tree ({} stay queued)",
+                ctx.items.len()
+            ));
+            self.drain_pending_chat(tx);
+            return;
+        }
+        // A plan-fix in flight: kill the leg and REVERT the half-written plan.
+        // Plan-fix's whole model is revert-on-failure and git does not cover the
+        // doc edit, so - unlike code-fix - we must restore it here.
+        if let Some(ctx) = self.fix_ctx.take() {
+            if let Some(id) = self.current_fix_run_id.take() {
+                runner::kill_run(&self.dirs, &id);
+            }
+            if let Some(task) = self.fix_task.take() {
+                task.abort();
+            }
+            let _ = crate::undo::undo(
+                &self.dirs,
+                &ctx.slug,
+                stages::DocKind::Plan.label(),
+                &ctx.plan_path,
+            );
+            self.reload_artifacts();
+            self.status_msg = Some(format!(
+                "plan-fix cancelled; plan reverted ({} stay queued)",
+                ctx.items.len()
+            ));
+            self.drain_pending_chat(tx);
+            return;
+        }
+        // Otherwise a pipeline stage: a detached process group, so kill it there
+        // then stop the local tail.
         let Some(run_id) = self.current_run_id.take() else {
             self.status_msg = Some("no active run".into());
             return;
         };
-        // The run is a detached process group, so kill it there, then stop
-        // the local tail.
         let killed = runner::kill_run(&self.dirs, &run_id);
         if let Some(task) = self.run_task.take() {
             task.abort();
@@ -2068,6 +2109,13 @@ impl App {
 
     fn run_check(&mut self, tx: &mpsc::Sender<AppMsg>, fast: bool) {
         if self.check == CheckState::Running {
+            return;
+        }
+        // A fix runs its own check.sh gate in the checkout; a second one here
+        // would fight over the build lock (the idle FileChanged path already
+        // guards this, but the c/C keys and palette reach run_check directly).
+        if self.fix_running() {
+            self.status_msg = Some("a fix is running; check resumes when it finishes".into());
             return;
         }
         if !self.dirs.work_root.join("check.sh").exists() {
@@ -3313,12 +3361,24 @@ impl App {
             }
             Ok(o) => {
                 let cost = o.meta.total_cost_usd.unwrap_or(0.0);
-                let ranges: Vec<std::ops::Range<usize>> =
-                    ctx.items.iter().map(|i| i.range.clone()).collect();
-                // Items with lost anchors carry whole-doc ranges, so the gate
-                // degenerates to always-confined for those batches by design
-                // (the apply confirm said so up front).
-                match crate::spec::edits_confined_multi(&self.fix_doc_before, &content, &ranges) {
+                // Gate the batch by heading structure (closes the decoy bypass
+                // AND reports which queued section actually moved). When an
+                // anchor was lost a finding carries no section, so fall back to
+                // the positional gate (degenerate whole-doc) and the global
+                // `changed` flag, exactly as the apply confirm warned.
+                let any_anchor_lost = ctx.items.iter().any(|i| i.section.is_none());
+                let gate: Option<(usize, usize, Option<Vec<String>>)> = if any_anchor_lost {
+                    let ranges: Vec<std::ops::Range<usize>> =
+                        ctx.items.iter().map(|i| i.range.clone()).collect();
+                    crate::spec::edits_confined_multi(&self.fix_doc_before, &content, &ranges)
+                        .map(|(a, r)| (a, r, None))
+                } else {
+                    let queued: Vec<String> =
+                        ctx.items.iter().filter_map(|i| i.section.clone()).collect();
+                    crate::spec::confine_by_heading(&self.fix_doc_before, &content, &queued)
+                        .map(|rep| (rep.added, rep.removed, Some(rep.changed)))
+                };
+                match gate {
                     None => {
                         let _ =
                             crate::undo::undo(&self.dirs, &ctx.slug, plan_label, &ctx.plan_path);
@@ -3332,7 +3392,7 @@ impl App {
                             &format!("{}: leaked edit rolled back", ctx.branch),
                         );
                     }
-                    Some((added, removed)) => {
+                    Some((added, removed, changed_titles)) => {
                         self.reload_artifacts();
                         let verdicts = tail
                             .result_text
@@ -3362,15 +3422,26 @@ impl App {
                             {
                                 continue;
                             }
-                            // An unchanged plan can't have fixed anything, no
-                            // matter what the ANSWERS block claims.
+                            // A `#n: FIXED` is honored only if the finding's OWN
+                            // section actually moved - not merely that the plan
+                            // changed somewhere - so an over-claim on an
+                            // untouched section is downgraded to declined.
+                            let section_moved = match (&changed_titles, &item.section) {
+                                (Some(titles), Some(t)) => titles.contains(t),
+                                _ => changed, // degenerate / anchor-lost: global flag
+                            };
                             let verdict = match verdicts.get(&item.number) {
-                                Some(crate::answers::AnswerVerdict::Fixed) if changed => {
+                                Some(crate::answers::AnswerVerdict::Fixed) if section_moved => {
                                     crate::answers::AnswerVerdict::Fixed
+                                }
+                                Some(crate::answers::AnswerVerdict::Fixed) if !changed => {
+                                    crate::answers::AnswerVerdict::Declined(
+                                        "claimed fixed but made no edit".into(),
+                                    )
                                 }
                                 Some(crate::answers::AnswerVerdict::Fixed) => {
                                     crate::answers::AnswerVerdict::Declined(
-                                        "claimed fixed but made no edit".into(),
+                                        "claimed fixed but its section was unchanged".into(),
                                     )
                                 }
                                 Some(v) => v.clone(),
@@ -3622,6 +3693,41 @@ impl App {
         );
         match step {
             crate::code_fix::Step::SpawnCheck => {
+                // Fail fast, before spending a full check.sh run: the fixer must
+                // not have moved HEAD (a rogue commit/reset the guardrail
+                // forbids), and it must have produced an OBSERVABLE change -
+                // content-hashed, so an edit to an untracked target still
+                // counts. This restores the "changed nothing" guard v0.10.1 had
+                // to drop, now correct on untracked code.
+                if crate::git::head_moved(&ctx.run_cwd, &ctx.snap) {
+                    self.fail_code_batch(
+                        ctx,
+                        "the fix agent moved HEAD (commit/reset/checkout); inspect with git reflog",
+                        Some(&run_id),
+                        tx,
+                    );
+                    return;
+                }
+                let no_change = crate::git::observed_change(&ctx.run_cwd, &ctx.snap)
+                    .map(|c| c.is_empty())
+                    .unwrap_or(false);
+                if no_change {
+                    self.fail_code_batch(
+                        ctx,
+                        "fix produced no observable change",
+                        Some(&run_id),
+                        tx,
+                    );
+                    return;
+                }
+                if !ctx.run_cwd.join("check.sh").exists() {
+                    let reason = format!(
+                        "no check.sh in {}; the code-fix gate needs one",
+                        ctx.run_cwd.display()
+                    );
+                    self.fail_code_batch(ctx, &reason, None, tx);
+                    return;
+                }
                 ctx.phase = crate::code_fix::CodePhase::Checking;
                 let run_cwd = ctx.run_cwd.clone();
                 self.status_msg = Some("code fix applied; verifying with check.sh…".into());
@@ -3699,7 +3805,11 @@ impl App {
         match step {
             crate::code_fix::Step::SpawnReview => {
                 ctx.phase = crate::code_fix::CodePhase::Reviewing;
-                let diff = crate::git::diff_since(&ctx.run_cwd, &ctx.snap).unwrap_or_default();
+                // The real change set (content-hashed), so the reviewer sees
+                // actual edits even when the target code is untracked in git.
+                let diff = crate::git::observed_change(&ctx.run_cwd, &ctx.snap)
+                    .map(|c| c.render())
+                    .unwrap_or_default();
                 let cmd = {
                     let briefs: Vec<(u32, stages::CodeFindingBrief)> = ctx
                         .briefs
@@ -3772,13 +3882,18 @@ impl App {
         let Some(ctx) = self.code_fix_ctx.take() else {
             return;
         };
+        // Parse the verdict once so the accept path can annotate the findings
+        // it does NOT accept with the reviewer's reason.
+        let review = match &outcome {
+            Ok(o) if o.meta.ok => tail
+                .result_text
+                .as_deref()
+                .map(crate::review::parse_review)
+                .unwrap_or_default(),
+            _ => crate::review::ReviewVerdict::default(),
+        };
         let event = match &outcome {
-            Ok(o) if o.meta.ok => crate::code_fix::GateEvent::ReviewOk(
-                tail.result_text
-                    .as_deref()
-                    .map(crate::review::parse_review)
-                    .unwrap_or_default(),
-            ),
+            Ok(o) if o.meta.ok => crate::code_fix::GateEvent::ReviewOk(review.clone()),
             Ok(o) => {
                 crate::code_fix::GateEvent::ReviewFailed(crate::history::decode_failure(&o.meta))
             }
@@ -3792,7 +3907,7 @@ impl App {
             &ctx.answers,
         );
         match step {
-            crate::code_fix::Step::Accept(nums) => self.accept_code_batch(ctx, &nums, tx),
+            crate::code_fix::Step::Accept(nums) => self.accept_code_batch(ctx, &nums, &review, tx),
             crate::code_fix::Step::Revert(reason) => {
                 self.fail_code_batch(ctx, &reason, Some(&run_id), tx)
             }
@@ -3801,13 +3916,17 @@ impl App {
     }
 
     /// Both gates passed: mark the fixed findings, leave the diff in the tree.
-    fn accept_code_batch(&mut self, ctx: CodeFixCtx, nums: &[u32], tx: &mpsc::Sender<AppMsg>) {
+    fn accept_code_batch(
+        &mut self,
+        ctx: CodeFixCtx,
+        nums: &[u32],
+        review: &crate::review::ReviewVerdict,
+        tx: &mpsc::Sender<AppMsg>,
+    ) {
         self.reload_artifacts();
         let mut fixed = 0usize;
+        let mut requeued = 0usize;
         for item in &ctx.items {
-            if !nums.contains(&item.number) {
-                continue;
-            }
             let Some(i) = self
                 .findings
                 .iter()
@@ -3824,19 +3943,40 @@ impl App {
             {
                 continue;
             }
-            let _ = crate::findings::set_action(&mut self.findings, i, item.pos, "fixed");
-            let _ = crate::findings::set_answer(&mut self.findings, i, item.pos, None, None);
-            fixed += 1;
+            if nums.contains(&item.number) {
+                let _ = crate::findings::set_action(&mut self.findings, i, item.pos, "fixed");
+                let _ = crate::findings::set_answer(&mut self.findings, i, item.pos, None, None);
+                fixed += 1;
+            } else {
+                // Not confirmed resolved for THIS finding: it stays queued (⚑A,
+                // re-runs on the next apply over the same left-in-tree diff) with
+                // the reviewer's reason attached so the user knows why.
+                let reason = match review.per_finding.get(&item.number) {
+                    Some(crate::review::FindingReview::Unresolved(r)) => r.clone(),
+                    _ => match ctx.answers.get(&item.number) {
+                        Some(crate::answers::AnswerVerdict::Declined(r)) => r.clone(),
+                        _ => "not confirmed resolved".to_string(),
+                    },
+                };
+                let _ = crate::findings::set_answer(
+                    &mut self.findings,
+                    i,
+                    item.pos,
+                    Some("auto"),
+                    Some(&reason),
+                );
+                requeued += 1;
+            }
         }
         self.clamp_selected_finding();
         self.status_msg = Some(format!(
-            "✓ {fixed} code finding(s) fixed; changes are in your working tree - review with git"
+            "✓ {fixed} code finding(s) fixed, {requeued} requeued; changes are in your working tree - review with git"
         ));
         crate::notify::notify(
             self.cfg.notifications,
             "ritual: code-fix done",
             &format!(
-                "{}: {fixed} fixed (check.sh + re-review passed)",
+                "{}: {fixed} fixed, {requeued} requeued (check.sh + re-review passed)",
                 ctx.branch
             ),
         );
@@ -5400,7 +5540,7 @@ mod tests {
         std::fs::create_dir_all(app.dirs.runs_dir()).unwrap();
 
         // No active run: a notice, not a panic.
-        app.cancel_run();
+        app.cancel_run(&_tx);
         assert!(app.status_msg.as_deref().unwrap().contains("no active run"));
 
         // A live own-group child stands in for the detached daemon.
@@ -5420,7 +5560,7 @@ mod tests {
         app.current_run_id = Some("r-cancel".into());
         app.running = Some(StageId::DualReview);
 
-        app.cancel_run();
+        app.cancel_run(&_tx);
         assert!(!child.wait().unwrap().success(), "SIGTERM delivered");
         assert!(app.running.is_none());
         assert!(app.current_run_id.is_none());
@@ -6574,6 +6714,185 @@ mod tests {
         );
         assert!(app.fix_label().unwrap().starts_with("code-fix:"));
         let _ = root;
+    }
+
+    #[test]
+    fn fixed_verdict_downgraded_when_its_own_section_is_untouched() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_fixable(&mut app);
+        let slug = app.slug.clone();
+        let (_cmd, ctx) = app.prepare_findings_apply(&slug).unwrap();
+        let plan_path = ctx.plan_path.clone();
+        app.fix_ctx = Some(ctx);
+        // The agent edits ONLY the Steps section but over-claims BOTH fixed.
+        std::fs::write(
+            &plan_path,
+            FIX_PLAN.replace("2. second", "2. second, hardened"),
+        )
+        .unwrap();
+        app.on_fix_exited(
+            fix_outcome(true, 0.05),
+            FixTail {
+                result_text: Some("ANSWERS:\n#1: FIXED\n#2: FIXED".into()),
+                ..Default::default()
+            },
+            &tx,
+        );
+        let json = seeded_json(&app);
+        // #1 (Steps) really moved -> fixed. #2 (Risks) untouched -> declined,
+        // even though the plan changed elsewhere.
+        assert_eq!(json.matches(r#""action": "fixed""#).count(), 1, "{json}");
+        assert!(json.contains("its section was unchanged"), "{json}");
+        assert!(
+            app.status_msg
+                .as_deref()
+                .unwrap()
+                .contains("1 fixed · 1 declined")
+        );
+    }
+
+    #[test]
+    fn code_fix_partial_accept_marks_resolved_and_requeues_the_rest() {
+        let (_t, mut app, tx, _rx) = test_app();
+        let root = app.dirs.work_root.clone();
+        git(&root, &["init", "-q"]);
+        git(&root, &["config", "user.email", "t@t"]);
+        git(&root, &["config", "user.name", "t"]);
+        std::fs::write(root.join("x.rs"), "fn x() {}\n").unwrap();
+        git(&root, &["add", "x.rs"]);
+        git(&root, &["commit", "-qm", "init"]);
+        seed_findings(
+            &mut app,
+            r#"{"stage":"dual-review","findings":[
+                {"id":1,"title":"bug1","file":"x.rs","line":1,"severity":"major","verdict":"confirmed","action":"pending","answer":"auto"},
+                {"id":2,"title":"bug2","file":"x.rs","line":2,"severity":"major","verdict":"confirmed","action":"pending","answer":"auto"}]}"#,
+        );
+        let slug = app.slug.clone();
+        let (_cmd, mut ctx) = app.prepare_code_fix_apply(&slug).unwrap();
+        ctx.phase = crate::code_fix::CodePhase::Reviewing;
+        ctx.answers.insert(1, crate::answers::AnswerVerdict::Fixed);
+        ctx.answers.insert(2, crate::answers::AnswerVerdict::Fixed);
+        app.code_fix_ctx = Some(ctx);
+        std::fs::write(root.join("x.rs"), "fn x() { /* fixed */ }\n").unwrap();
+        let tail = FixTail {
+            result_text: Some(
+                "REVIEW:\n#1: RESOLVED\n#2: UNRESOLVED still leaks\nREGRESSIONS: NONE".into(),
+            ),
+            last_text: None,
+        };
+        app.on_code_review_exited(ok_outcome(), tail, &tx);
+        assert!(app.code_fix_ctx.is_none());
+        let json = seeded_json(&app);
+        assert_eq!(
+            json.matches(r#""action": "fixed""#).count(),
+            1,
+            "only #1: {json}"
+        );
+        assert!(
+            json.contains("still leaks"),
+            "requeue reason attached: {json}"
+        );
+        assert_eq!(app.queued_auto().len(), 1, "#2 stays queued");
+        assert!(
+            app.status_msg
+                .as_deref()
+                .unwrap()
+                .contains("1 code finding(s) fixed, 1 requeued")
+        );
+    }
+
+    #[test]
+    fn code_fix_fails_closed_on_no_observable_change() {
+        let (_t, mut app, tx, _rx) = test_app();
+        let _root = seed_code_repo(&mut app);
+        let slug = app.slug.clone();
+        let (_cmd, ctx) = app.prepare_code_fix_apply(&slug).unwrap();
+        app.code_fix_ctx = Some(ctx); // phase Fixing
+        // The run claims FIXED but never edits anything.
+        app.on_code_fix_exited(
+            ok_outcome(),
+            FixTail {
+                result_text: Some("ANSWERS:\n#1: FIXED".into()),
+                last_text: None,
+            },
+            &tx,
+        );
+        assert!(app.code_fix_ctx.is_none(), "batch cleared");
+        assert!(!seeded_json(&app).contains(r#""action": "fixed""#));
+        assert_eq!(app.queued_auto().len(), 1, "finding stays queued");
+        assert!(
+            app.status_msg
+                .as_deref()
+                .unwrap()
+                .contains("no observable change")
+        );
+    }
+
+    #[test]
+    fn code_fix_aborts_when_the_agent_moves_head() {
+        let (_t, mut app, tx, _rx) = test_app();
+        let root = seed_code_repo(&mut app);
+        let slug = app.slug.clone();
+        let (_cmd, ctx) = app.prepare_code_fix_apply(&slug).unwrap();
+        app.code_fix_ctx = Some(ctx);
+        // The fixer commits (forbidden) - HEAD moves.
+        std::fs::write(root.join("x.rs"), "fn x() { fixed }\n").unwrap();
+        git(&root, &["add", "x.rs"]);
+        git(&root, &["commit", "-qm", "rogue"]);
+        app.on_code_fix_exited(
+            ok_outcome(),
+            FixTail {
+                result_text: Some("ANSWERS:\n#1: FIXED".into()),
+                last_text: None,
+            },
+            &tx,
+        );
+        assert!(app.code_fix_ctx.is_none());
+        assert!(app.status_msg.as_deref().unwrap().contains("moved HEAD"));
+        assert_eq!(app.queued_auto().len(), 1, "finding stays queued");
+    }
+
+    #[test]
+    fn cancel_leaves_a_code_fix_in_the_tree() {
+        let (_t, mut app, tx, _rx) = test_app();
+        let root = seed_code_repo(&mut app);
+        let slug = app.slug.clone();
+        let (_cmd, ctx) = app.prepare_code_fix_apply(&slug).unwrap();
+        std::fs::write(root.join("x.rs"), "fn x() { half done }\n").unwrap();
+        app.code_fix_ctx = Some(ctx);
+        app.cancel_run(&tx);
+        assert!(app.code_fix_ctx.is_none(), "ctx cleared");
+        assert_eq!(
+            std::fs::read_to_string(root.join("x.rs")).unwrap(),
+            "fn x() { half done }\n",
+            "the attempt is LEFT in the tree",
+        );
+        assert_eq!(app.queued_auto().len(), 1, "finding stays queued");
+        let msg = app.status_msg.as_deref().unwrap();
+        assert!(
+            msg.contains("cancelled") && msg.contains("working tree"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn cancel_reverts_a_plan_fix() {
+        let (_t, mut app, tx, _rx) = test_app();
+        seed_fixable(&mut app);
+        let slug = app.slug.clone();
+        let (_cmd, ctx) = app.prepare_findings_apply(&slug).unwrap();
+        let plan_path = ctx.plan_path.clone();
+        app.fix_ctx = Some(ctx);
+        // The agent half-wrote the plan; cancelling restores it.
+        std::fs::write(&plan_path, FIX_PLAN.replace("2. second", "2. HALF")).unwrap();
+        app.cancel_run(&tx);
+        assert!(app.fix_ctx.is_none(), "ctx cleared");
+        assert_eq!(
+            std::fs::read_to_string(&plan_path).unwrap(),
+            FIX_PLAN,
+            "plan reverted on cancel",
+        );
+        assert!(app.status_msg.as_deref().unwrap().contains("plan reverted"));
     }
 
     #[test]
