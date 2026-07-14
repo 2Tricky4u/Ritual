@@ -418,6 +418,7 @@ fn budget_check(cfg: &Config) -> CheckResult {
         ("dual-review", cfg.budget_dual_review_usd),
         ("doc-chat", cfg.budget_doc_chat_usd),
         ("finding-fix", cfg.budget_finding_fix_usd),
+        ("code-fix", cfg.budget_code_fix_usd),
     ] {
         if per_run > daily {
             over.push(format!("{name} (${per_run})"));
@@ -453,6 +454,11 @@ mod tests {
 
         cfg.budget_daily_usd = Some(100.0);
         assert_eq!(budget_check(&cfg).status, CheckStatus::Pass);
+        // The code-fix cap participates in the same daily-ceiling check.
+        cfg.budget_daily_usd = Some(4.0); // below the 5.0 code-fix default
+        let r = budget_check(&cfg);
+        assert_eq!(r.status, CheckStatus::Warn);
+        assert!(r.detail.contains("code-fix"));
         cfg.budget_daily_usd = None;
         assert_eq!(budget_check(&cfg).status, CheckStatus::Pass);
     }

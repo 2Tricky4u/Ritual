@@ -24,6 +24,9 @@ pub struct FileConfig {
     /// Ceiling for ONE batch plan-fix run (F-apply answers all queued
     /// findings in a single run - per run, not per finding).
     pub budget_finding_fix_usd: Option<f64>,
+    /// Ceiling for ONE batch code-fix run (the LLM fixes all queued code
+    /// findings in a single run, then re-reviews - per run, not per finding).
+    pub budget_code_fix_usd: Option<f64>,
     /// `[keys]` table: action name -> chord ("check-full = \"F\"").
     pub keys: Option<HashMap<String, String>>,
     /// Redact secrets from archives/streams/reports (default true).
@@ -138,6 +141,7 @@ pub struct Config {
     pub budget_dual_review_usd: f64,
     pub budget_doc_chat_usd: f64,
     pub budget_finding_fix_usd: f64,
+    pub budget_code_fix_usd: f64,
     pub keymap: Keymap,
     pub redaction: bool,
     pub budget_daily_usd: Option<f64>,
@@ -175,6 +179,7 @@ impl Default for Config {
             budget_dual_review_usd: 10.0,
             budget_doc_chat_usd: 0.50,
             budget_finding_fix_usd: 1.0,
+            budget_code_fix_usd: 5.0,
             keymap: Keymap::default(),
             redaction: true,
             budget_daily_usd: None,
@@ -258,6 +263,9 @@ impl Config {
             }
             if let Some(b) = fc.budget_finding_fix_usd {
                 cfg.budget_finding_fix_usd = b;
+            }
+            if let Some(b) = fc.budget_code_fix_usd {
+                cfg.budget_code_fix_usd = b;
             }
             if let Some(keys) = fc.keys {
                 key_overrides.extend(keys); // later layers win per-action
@@ -403,6 +411,7 @@ mod tests {
         assert_eq!(cfg.theme_name, "eldritch");
         assert_eq!(cfg.claude_cmd, vec!["claude"]);
         assert!(!cfg.consensus_enabled, "consensus ships dark");
+        assert_eq!(cfg.budget_code_fix_usd, 5.0, "code-fix cap default");
     }
 
     #[test]
@@ -458,6 +467,7 @@ mod tests {
             r#"
 fallback_model = "claude-sonnet-5"
 budget_finding_fix_usd = 2.5
+budget_code_fix_usd = 7.0
 
 [keys]
 check-full = "F"
@@ -500,6 +510,7 @@ alpha = "echo a"
         let cfg = Config::load(tmp.path(), None, false).unwrap();
         assert_eq!(cfg.fallback_model.as_deref(), Some("claude-sonnet-5"));
         assert_eq!(cfg.budget_finding_fix_usd, 2.5);
+        assert_eq!(cfg.budget_code_fix_usd, 7.0);
         assert_eq!(cfg.models["plan-review"], "opus");
         assert_eq!(cfg.effort["plan"], "xhigh");
         assert_eq!(cfg.retry_models, vec!["claude-opus-4-8", "claude-sonnet-5"]);

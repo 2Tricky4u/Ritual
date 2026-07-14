@@ -80,6 +80,14 @@ pub static CATALOG: &[SettingDef] = &[
         get: |c| Some(c.budget_finding_fix_usd.to_string()),
     },
     SettingDef {
+        key: "budget_code_fix_usd",
+        label: "code fix (per run)",
+        doc: "USD cap for ONE code-fix batch run (fix + re-review)",
+        group: "budgets",
+        kind: SettingKind::F64,
+        get: |c| Some(c.budget_code_fix_usd.to_string()),
+    },
+    SettingDef {
         key: "budget_daily_usd",
         label: "daily ceiling",
         doc: "daily spend across all runs (empty = unlimited)",
@@ -649,6 +657,7 @@ budget_finding_fix_usd = 3.0
         cfg.models.insert("plan".into(), "fable-5".into());
         cfg.effort.insert("plan".into(), "xhigh".into());
         assert_eq!(get("budget_finding_fix_usd", &cfg), Some("3".into()));
+        assert_eq!(get("budget_code_fix_usd", &cfg), Some("5".into()));
         assert_eq!(get("budget_daily_usd", &cfg), None);
         assert_eq!(get("models.plan", &cfg), Some("fable-5".into()));
         assert_eq!(get("models.plan-review", &cfg), None);
