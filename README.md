@@ -101,17 +101,17 @@
 ```
 ╭ feature title ─────────────╮╭ ritual ──────────────────────────────────────╮
 │ ▸ ! feat-auth              ││ live · findings · history · plan             │
-│    main                    ││ 󰚩 claude-fable-5                              │
-│ ───────────────────────────││ ▸ mcp__codex__codex {"prompt":"critique …"}   │
-│ ▸  spec                   ││   ↳ Finding 1 (major): missing rollback step │
+│    main                    ││ 󰚩 claude-fable-5                             │
+│ ───────────────────────────││ ▸ mcp__codex__codex {"prompt":"critique …"}  │
+│ ▸  spec                    ││   ↳ Finding 1 (major): missing rollback step │
 │   ⠹ plan-review            ││  $0.31 4 turns 92.3s                         │
-│   ○ tests-red              ││                                               │
-│                            ││                                               │
-│   feat/auth               ││                                               │
-│ 󰚩 claude ok (max)          ││                                               │
-│ 󰚩 codex ok · bridge ok     ││                                               │
-│  check green              ││                                               │
-╰────────────────────────────╯╰───────────────────────────────────────────────╯
+│   ○ tests-red              ││                                              │
+│                            ││                                              │
+│   feat/auth                ││                                              │
+│ 󰚩 claude ok (max)          ││                                              │
+│ 󰚩 codex ok · bridge ok     ││                                              │
+│  check green               ││                                              │
+╰────────────────────────────╯╰──────────────────────────────────────────────╯
  enter run · : commands · j/k move · ? help          $1.42/$5.00  ⠹ plan-review
 ```
 
@@ -310,7 +310,7 @@ All rebindable via `[keys]`:
 - [x] **v0.7**: findings triage → batch-apply — answer every finding (⚑A claude / ⚑M manual / dismiss+reason), ONE run fixes them all against one plan snapshot with a union gate + per-finding ANSWERS verdicts, atomic batch revert, ⚓ anchor-lost markers, Q manual pass
 - [x] **v0.8**: decoded failure reasons (budget knob / tool-lock denials / `ritual attach` hint), right-aligned triage state chips + recommendation ghosts, `t` one-touch recommended triage, prose resolutions preserved as reasons, subdir-launch root canonicalization fix
 - [x] **v0.9**: in-TUI settings editor (`S`) — effective values + source tags over the practical knobs, comment-preserving project-config writes (toml_edit), transactional live-apply with byte-exact revert
-- [x] **v0.9.1–.4**: deterministic tests-red → implement handoff — ritual pins the tests-red session (`--session-id`) and implement resumes it by id, immune to concurrent Claude sessions; since interactive `--resume` can't be handed an opening message, ritual copies a ready implement prompt to the system clipboard (wl-copy/xclip/xsel/pbcopy, OSC 52 fallback) and shows a launch overlay (bare `--resume` picker fallback); `a` takeover works for interactive stages
+- [x] **v0.9.1–.5**: deterministic tests-red → implement handoff — ritual pins the tests-red session (`--session-id`) and implement resumes it by id, immune to concurrent Claude sessions; since interactive `--resume` can't be handed an opening message, ritual copies a ready implement prompt to the system clipboard AND primary selection (wl-copy/xclip/xsel/pbcopy, OSC 52 fallback) and shows a launch overlay with no selectable text to drag over (bare `--resume` picker fallback); `a` takeover works for interactive stages
 - [ ] **Deferred**: steerable runs (Agent SDK), `ritual mcp-server`, SQLite/fuzzy history, chat fork-at-turn, container worktrees, OTLP receiver + in-TUI span waterfall, tree-sitter repo map
 
 See the full [ROADMAP.md][roadmap-url] for the design rationale behind each item, and the non-goals.
@@ -379,7 +379,7 @@ conditions.
 <!-- MARKDOWN LINKS & IMAGES -->
 [ci-shield]: https://github.com/2Tricky4u/Ritual/actions/workflows/ci.yml/badge.svg
 [ci-url]: https://github.com/2Tricky4u/Ritual/actions/workflows/ci.yml
-[version-shield]: https://img.shields.io/badge/version-0.9.4-9d7cd8?style=for-the-badge
+[version-shield]: https://img.shields.io/badge/version-0.9.5-9d7cd8?style=for-the-badge
 [license-shield]: https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-a9b665?style=for-the-badge
 [license-url]: #license
 [tests-shield]: https://img.shields.io/badge/cargo_tests-386_passing-73daca?style=for-the-badge

@@ -8,22 +8,37 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-/// argv for the clipboard writers, in preference order. `wl-copy` (Wayland)
-/// first, then the X11 tools, then macOS.
+/// argv for the clipboard writers, in preference order: `(bin, clipboard-args,
+/// primary-args)`. `wl-copy` (Wayland) first, then the X11 tools, then macOS.
+/// Empty `primary-args` = the tool has no separate primary selection. We set
+/// BOTH selections so paste works whether the user hits Ctrl+Shift+V
+/// (clipboard) or middle-clicks (primary).
 #[cfg_attr(test, allow(dead_code))]
-const CLI_TOOLS: &[(&str, &[&str])] = &[
-    ("wl-copy", &[]),
-    ("xclip", &["-selection", "clipboard"]),
-    ("xsel", &["--clipboard", "--input"]),
-    ("pbcopy", &[]),
+const CLI_TOOLS: &[(&str, &[&str], &[&str])] = &[
+    ("wl-copy", &[], &["--primary"]),
+    (
+        "xclip",
+        &["-selection", "clipboard"],
+        &["-selection", "primary"],
+    ),
+    (
+        "xsel",
+        &["--clipboard", "--input"],
+        &["--primary", "--input"],
+    ),
+    ("pbcopy", &[], &[]),
 ];
 
-/// Copy `text` to the system clipboard. Returns true if a method reported (or,
-/// for OSC 52, plausibly achieved) success.
+/// Copy `text` to the system clipboard (and primary selection where the tool
+/// supports it). Returns true if a method reported (or, for OSC 52, plausibly
+/// achieved) success.
 #[cfg(not(test))]
 pub fn copy(text: &str) -> bool {
-    for (bin, args) in CLI_TOOLS {
-        if try_tool(bin, args, text) {
+    for (bin, clip_args, primary_args) in CLI_TOOLS {
+        if try_tool(bin, clip_args, text) {
+            if !primary_args.is_empty() {
+                let _ = try_tool(bin, primary_args, text); // best-effort primary
+            }
             return true;
         }
     }

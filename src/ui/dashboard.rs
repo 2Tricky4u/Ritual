@@ -1876,51 +1876,67 @@ fn draw_implement_hint(f: &mut Frame, app: &App) {
     } else {
         "Pick the tests-red session from the list that opens."
     };
-    let copy_line = if hint.copied {
-        Span::styled(
-            "  ✓ prompt copied to your clipboard — paste it once it opens:",
-            Style::default().fg(t.ok()),
-        )
-    } else {
-        Span::styled(
-            "  Claude won't start on its own — copy this and paste it in:",
-            Style::default().fg(t.muted()),
-        )
-    };
-    let mut keys = vec![
-        Span::styled(
-            "  [enter]",
-            Style::default().fg(t.accent()).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" open the session    ", Style::default().fg(t.muted())),
-    ];
-    if !hint.copied {
-        keys.push(Span::styled(
-            "[c]",
-            Style::default().fg(t.accent()).add_modifier(Modifier::BOLD),
-        ));
-        keys.push(Span::styled(" copy    ", Style::default().fg(t.muted())));
-    }
-    keys.push(Span::styled(
-        "[esc]",
-        Style::default().fg(t.accent()).add_modifier(Modifier::BOLD),
-    ));
-    keys.push(Span::styled(" cancel", Style::default().fg(t.muted())));
-    let lines = vec![
+    let mut lines = vec![
         Line::default(),
         Line::from(Span::styled(
             format!("  {lead}"),
             Style::default().fg(t.muted()),
         )),
-        Line::from(copy_line),
-        Line::default(),
-        Line::from(Span::styled(
+    ];
+    // Keys line, assembled to match whichever branch we render.
+    let key = |k: &str| {
+        Span::styled(
+            k.to_string(),
+            Style::default().fg(t.accent()).add_modifier(Modifier::BOLD),
+        )
+    };
+    let dim = |s: &str| Span::styled(s.to_string(), Style::default().fg(t.muted()));
+    if hint.copied {
+        // Copied — DON'T render the prompt: a mouse-drag over it grabs the
+        // float border + sidebar behind it, and copy-on-select would clobber
+        // the clean clipboard. Nothing to select, so paste just works.
+        lines.push(Line::from(Span::styled(
+            "  ✓ the implement instruction is on your clipboard.",
+            Style::default().fg(t.ok()),
+        )));
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            dim("  Press "),
+            key("[enter]"),
+            dim(" to open it, then paste ("),
+            Span::styled("Ctrl+Shift+V", Style::default().fg(t.highlight())),
+            dim(" / middle-click)."),
+        ]));
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            key("  [enter]"),
+            dim(" open    "),
+            key("[c]"),
+            dim(" copy again    "),
+            key("[esc]"),
+            dim(" cancel"),
+        ]));
+    } else {
+        // Clipboard unreachable — fall back to showing the prompt to copy by
+        // hand (press c to retry the clipboard).
+        lines.push(Line::from(dim(
+            "  Couldn't reach a clipboard. Copy this and paste it in:",
+        )));
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
             crate::stages::IMPLEMENT_PROMPT,
             Style::default().fg(t.highlight()),
-        )),
-        Line::default(),
-        Line::from(keys),
-    ];
+        )));
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            key("  [enter]"),
+            dim(" open    "),
+            key("[c]"),
+            dim(" retry copy    "),
+            key("[esc]"),
+            dim(" cancel"),
+        ]));
+    }
     f.render_widget(
         Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
         inner,
