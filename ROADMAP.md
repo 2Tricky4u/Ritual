@@ -1,11 +1,14 @@
 # ritual roadmap
 
-> **Status (v0.10.0, 2026-07-14)**: v0.10 extended the findings-fix loop to
+> **Status (2026-07-14)**: v0.10 extended the findings-fix loop to
 > dual-review CODE findings - `F`/`A` queue them, one headless broad-edit run
 > fixes them all, and the fix is verified against the global context by
-> `./check.sh` plus an independent re-review of the diff before it is accepted
-> (a passing fix stays in the working tree for git; any gate failure
-> git-reverts the batch). Earlier detail below.
+> `./check.sh` plus an independent read-only re-review before it is accepted.
+> The gate is **content-hash verified** (never blind on code the repo does not
+> track) and **fails closed** on a no-op change or a stray `git commit`; accept
+> is **per finding** (the rest stay queued with the reviewer's reason, a
+> regression fails the batch); the attempt is always left in the working tree -
+> git is the undo, never an auto-revert. Earlier detail below.
 >
 > **Status (v0.9.1, 2026-07-13)**: v0.6–v0.9 shipped the findings-triage
 > cycle - finding detail overlay, claude-scoped plan fix (`F`) with a

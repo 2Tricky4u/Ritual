@@ -146,18 +146,22 @@ the one document you targeted (enforced at the permission layer).
    `⟨F⟩` queues it (⚑A), or `⟨A⟩` queues EVERY confirmed code finding on
    the feature at once ("fix all"). `⟨F⟩`/apply then runs ONE headless
    pass that fixes them all, and verifies against the **global context**:
-   it runs `./check.sh` (full), then an independent read-only **re-review**
-   of the diff confirms each finding is resolved and nothing regressed.
-   Only a fix that passes BOTH is accepted (the findings are marked fixed).
-   **Whether it passes or fails, the attempt is LEFT in your working tree** -
-   ritual never deletes the work; git is the undo. A failure **names why**
-   (and offers `ritual attach <id>` to replay the run) and leaves the
-   findings queued; review the attempt with `git diff`, keep the good parts,
-   or discard with `git restore .` / `git stash`. (Code that lives in a
-   directory not tracked by this git repo can't be diffed cleanly - the
-   re-review reads the files directly, and nothing is ever auto-deleted.)
-   Prefer to fix by hand instead? `⟨m⟩` flags a finding ⚑M and `Q` sends
-   the manual queue to nvim's quickfix; work through them and `⟨f⟩` each.
+   it runs `./check.sh` (full), then an independent, strictly read-only
+   **re-review** confirms each finding is resolved and nothing regressed.
+   ritual detects the change by **content hash**, so the re-review sees the
+   real edits even when the code lives in a directory this git repo does
+   not track; a fix that changes nothing observable - or that moves HEAD (a
+   stray commit/reset) - **fails closed**. Accept is **per finding**: each
+   finding confirmed resolved is marked fixed, the rest stay queued with the
+   reviewer's reason (a reported REGRESSION fails the whole batch, since the
+   one diff can't be split). **Pass or fail, the attempt is LEFT in your
+   working tree** - ritual never deletes the work; git is the undo. A
+   failure **names why** (and offers `ritual attach <id>`); review with
+   `git diff`, keep the good parts, or discard with `git restore .` /
+   `git stash`. Press `⟨x⟩` to cancel an in-flight fix (the attempt stays in
+   the tree; a cancelled plan-fix is reverted instead). Prefer to fix by
+   hand? `⟨m⟩` flags a finding ⚑M and `Q` sends the manual queue to nvim's
+   quickfix; work through them and `⟨f⟩` each.
 7. Fix code findings, re-run `C`, then **close the loop**: `⟨f⟩` marks
    the selected finding fixed, `⟨d⟩` dismisses it (either toggles back
    on re-press), writing into the findings JSON. Resolved findings
