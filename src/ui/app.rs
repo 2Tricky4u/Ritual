@@ -1969,6 +1969,16 @@ impl App {
                     .collect();
                 let status = if !out.meta.ok {
                     StageStatus::Failed
+                } else if stage == StageId::Coverage {
+                    // Coverage is Done ONLY at zero gaps + a real deliverables
+                    // checklist (shared, print-free finalizer - never write to
+                    // the alt-screen); route its message to the status line.
+                    let (st, msgs) =
+                        crate::coverage::finalize(&self.dirs, &self.branch, &new_findings);
+                    if let Some(m) = msgs.into_iter().next_back() {
+                        self.status_msg = Some(m);
+                    }
+                    st
                 } else if new_findings.is_empty() {
                     StageStatus::NeedsAttention
                 } else {

@@ -929,74 +929,11 @@ fn coverage_files(dir: &Path) -> std::collections::HashSet<String> {
 }
 
 fn finalize_coverage(dirs: &RitualDirs, branch: &str, new_findings: &[String]) -> StageStatus {
-    let slug = state::branch_slug(branch);
-    let Some(name) = new_findings.iter().find(|f| f.ends_with("-coverage.json")) else {
-        println!("coverage run wrote no coverage findings; needs attention");
-        return StageStatus::NeedsAttention;
-    };
-    let ff = match std::fs::read_to_string(dirs.findings_dir().join(name))
-        .ok()
-        .and_then(|t| serde_json::from_str::<crate::findings::FindingsFile>(&t).ok())
-    {
-        Some(ff) => ff,
-        None => return StageStatus::NeedsAttention,
-    };
-    let report = crate::coverage::parse_report(&ff);
-
-    // Supersede: keep only the file we just read; delete older coverage files so
-    // stale gaps don't accumulate or pollute the findings browser / CI counts.
-    if let Ok(rd) = std::fs::read_dir(dirs.findings_dir()) {
-        for e in rd.flatten() {
-            let fname = e.file_name();
-            let fname = fname.to_string_lossy();
-            if fname.ends_with("-coverage.json") && fname != name.as_str() {
-                let _ = std::fs::remove_file(e.path());
-            }
-        }
+    let (status, msgs) = crate::coverage::finalize(dirs, branch, new_findings);
+    for m in msgs {
+        println!("{m}");
     }
-
-    // Tick satisfied deliverables (never one that is also flagged a gap) into
-    // the plan, confined to the `## Deliverables` section and undo-pushed.
-    let gap_ids: std::collections::HashSet<&str> =
-        report.gaps.iter().map(|g| g.deliverable.as_str()).collect();
-    let satisfied: Vec<&str> = report
-        .satisfied
-        .iter()
-        .map(String::as_str)
-        .filter(|id| !gap_ids.contains(id))
-        .collect();
-    if !satisfied.is_empty()
-        && let Ok(before) = std::fs::read_to_string(dirs.plan_file(&slug))
-    {
-        let after = crate::spec::tick(&before, &satisfied);
-        let deliverables = ["Deliverables".to_string()];
-        if after != before
-            && crate::spec::confine_by_heading(&before, &after, &deliverables).is_some()
-        {
-            let _ = crate::undo::push(dirs, &slug, stages::DocKind::Plan.label(), &before);
-            let _ = std::fs::write(dirs.plan_file(&slug), &after);
-        }
-    }
-
-    // Deterministic backstop: a plan with no real `## Deliverables` checklist is
-    // never "complete", no matter how empty the gap list is.
-    let deliverables_ok = std::fs::read_to_string(dirs.plan_file(&slug))
-        .map(|t| crate::spec::deliverables_gate(&t).is_ok())
-        .unwrap_or(false);
-
-    if report.gaps.is_empty() && deliverables_ok {
-        println!("coverage: all deliverables satisfied - feature complete");
-        StageStatus::Done
-    } else if report.gaps.is_empty() {
-        println!("coverage: no `## Deliverables` checklist to verify against; needs attention");
-        StageStatus::NeedsAttention
-    } else {
-        println!(
-            "coverage: {} deliverable gap(s) remain; needs attention",
-            report.gaps.len()
-        );
-        StageStatus::NeedsAttention
-    }
+    status
 }
 
 fn check_green(work_root: &Path, timeout_secs: u64) -> bool {
