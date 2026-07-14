@@ -174,6 +174,77 @@ pub fn attach(cfg: &Config, dirs: &RitualDirs, run_id: &str, kill: bool) -> Resu
     }
 }
 
+/// `ritual complete [--check]`. With `--check`, evaluate the CURRENT
+/// completeness state (token-free) and return whether the feature is done - the
+/// CI gate. Without it, run one fresh coverage judge pass first (P7 wraps the
+/// bounded auto-fix loop around this), then evaluate. Returns `is_complete`.
+pub fn complete(cfg: &Config, dirs: &RitualDirs, check: bool) -> Result<bool> {
+    anyhow::ensure!(dirs.exists(), "no .ritual/ here; run `ritual init` first");
+    let branch = state::current_branch(&dirs.work_root).unwrap_or_else(|| "detached".to_string());
+    let slug = state::branch_slug(&branch);
+
+    if !check {
+        if let Some((spent, budget)) = budget_exceeded(cfg, dirs) {
+            anyhow::bail!(
+                "daily budget reached: ${spent:.2} of ${budget:.2}; use --check to evaluate without running"
+            );
+        }
+        let mut st = State::load(dirs)?;
+        st.feature_for_branch_mut(&branch);
+        let title = st
+            .features
+            .get(&slug)
+            .map(|f| f.title.clone())
+            .unwrap_or_default();
+        let cmd = stages::build(StageId::Coverage, cfg, dirs, &slug, None, None, None)?;
+        run_headless(
+            cfg,
+            dirs,
+            StageId::Coverage,
+            cmd,
+            &mut st,
+            &branch,
+            &title,
+            false,
+        )?;
+    }
+
+    let st = State::load(dirs)?;
+    let findings = crate::findings::load_all(&dirs.findings_dir())?;
+    let feature = st.features.get(&slug);
+    let cov_done = feature.is_some_and(|f| f.stage(StageId::Coverage).status == StageStatus::Done);
+    let no_open = !crate::findings::has_open_confirmed(&findings);
+    // Only spend a check.sh run once coverage has passed - otherwise the feature
+    // is incomplete regardless of the tree's colour.
+    let green = cov_done && check_green(&dirs.work_root, cfg.check_timeout_secs);
+    let done = cov_done && green && no_open;
+
+    if done {
+        println!(
+            "✓ complete: all deliverables satisfied, check.sh green, no open confirmed findings"
+        );
+    } else {
+        println!("✗ not complete:");
+        if !cov_done {
+            let rep = crate::coverage::latest_report(&dirs.findings_dir());
+            let n = rep.as_ref().map(|r| r.gaps.len()).unwrap_or(0);
+            println!("  coverage: {n} deliverable gap(s) (run `ritual complete` to judge/fix)");
+            if let Some(rep) = rep {
+                for g in rep.gaps.iter().take(20) {
+                    println!("    - {}: {}", g.deliverable, g.finding.title);
+                }
+            }
+        }
+        if cov_done && !green {
+            println!("  check.sh: red");
+        }
+        if !no_open {
+            println!("  findings: open confirmed finding(s) remain");
+        }
+    }
+    Ok(done)
+}
+
 /// Some((spent, budget)) when the daily ceiling is hit.
 pub fn budget_exceeded(cfg: &Config, dirs: &RitualDirs) -> Option<(f64, f64)> {
     let budget = cfg.budget_daily_usd?;

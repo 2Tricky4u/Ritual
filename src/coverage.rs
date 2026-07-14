@@ -5,7 +5,10 @@
 //! `satisfied` array of deliverable ids it confirmed done, plus one open finding
 //! per gap (each carrying `extra.deliverable` and a `file` or `plan_step` route).
 
-use crate::findings::{Finding, FindingsFile};
+use std::path::Path;
+
+use crate::findings::{Finding, FindingsFile, LoadedFindings};
+use crate::state::{Feature, StageId, StageStatus};
 
 /// One unmet deliverable the coverage judge flagged.
 #[derive(Debug, Clone)]
@@ -60,6 +63,34 @@ pub fn is_complete(ff: &FindingsFile) -> bool {
     parse_report(ff).gaps.is_empty()
 }
 
+/// The newest `-coverage.json` report in the findings dir (files are
+/// UTC-timestamp prefixed, so lexical sort = chronological), or None.
+pub fn latest_report(findings_dir: &Path) -> Option<CoverageReport> {
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(findings_dir)
+        .ok()?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with("-coverage.json"))
+        })
+        .collect();
+    files.sort();
+    let text = std::fs::read_to_string(files.last()?).ok()?;
+    serde_json::from_str::<FindingsFile>(&text)
+        .ok()
+        .map(|ff| parse_report(&ff))
+}
+
+/// The real "project is done" signal (the missing gate): the coverage stage
+/// judged it complete (== Done, i.e. zero gaps), the tree passes `check.sh`, AND
+/// no confirmed finding is still open. Green tests alone are never enough.
+pub fn feature_complete(feature: &Feature, findings: &[LoadedFindings], check_green: bool) -> bool {
+    feature.stage(StageId::Coverage).status == StageStatus::Done
+        && check_green
+        && !crate::findings::has_open_confirmed(findings)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,6 +123,21 @@ mod tests {
             serde_json::from_str(r#"{"stage":"coverage","satisfied":["D1"],"findings":[]}"#)
                 .unwrap();
         assert!(is_complete(&ff));
+    }
+
+    #[test]
+    fn feature_complete_requires_coverage_done_and_green() {
+        let mut feat = Feature::new("main", "x");
+        assert!(
+            !feature_complete(&feat, &[], true),
+            "coverage pending -> not complete even when green"
+        );
+        feat.stages.get_mut(&StageId::Coverage).unwrap().status = StageStatus::Done;
+        assert!(feature_complete(&feat, &[], true), "done + green + clean");
+        assert!(
+            !feature_complete(&feat, &[], false),
+            "a red check.sh blocks completion"
+        );
     }
 
     #[test]

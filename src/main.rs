@@ -67,6 +67,11 @@ fn main() -> Result<()> {
                 output::render_status(&cfg, &features, branch.as_deref());
             }
         }
+        Some(Command::Complete { check }) => {
+            if !run_cmd::complete(&cfg, &dirs, check)? {
+                std::process::exit(1);
+            }
+        }
         Some(Command::Findings { json, all }) => {
             let loaded = findings::load_all(&dirs.findings_dir())?;
             output::render_findings(&cfg, &loaded, json, all);

@@ -38,6 +38,15 @@ pub enum Command {
         #[arg(long)]
         skills: bool,
     },
+    /// Drive the plan's `## Deliverables` to completion: judge coverage, then
+    /// auto-fix each gap in bounded rounds until nothing is missing. `--check`
+    /// only evaluates the current state (CI gate: exit 0 when complete, 1 when
+    /// gaps remain) without running the judge or any fix.
+    Complete {
+        /// Only check completeness and exit 0/1; do not run coverage or fixes
+        #[arg(long)]
+        check: bool,
+    },
     /// Browse recorded findings
     Findings {
         /// Emit raw JSON instead of styled output

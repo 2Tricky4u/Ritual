@@ -613,6 +613,19 @@ fn status_json_is_machine_readable() {
 }
 
 #[test]
+fn complete_check_exits_nonzero_until_coverage_passes() {
+    let tmp = setup_project();
+    // Fresh project: coverage never ran, so `complete --check` is a CI red.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["complete", "--check"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("not complete"));
+}
+
+#[test]
 fn findings_exit_code_contract() {
     let tmp = setup_project();
     // Non-blocking finding: exit 0.
