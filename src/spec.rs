@@ -151,6 +151,129 @@ pub fn edits_confined_multi(
     Some((added, removed))
 }
 
+/// The verdict of the heading-structured confinement gate: the line delta over
+/// the allowed regions, plus which queued sections actually changed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConfineReport {
+    pub added: usize,
+    pub removed: usize,
+    /// Headings (as `sections()` reports them) of QUEUED sections whose body
+    /// changed. `on_fix_exited` uses this to downgrade a `#n: FIXED` claim whose
+    /// own section never moved.
+    pub changed: Vec<String>,
+}
+
+/// Heading-structured scope gate for a batch plan-fix: did the edit stay inside
+/// the sections named in `queued`? Unlike `edits_confined_multi` (which matches
+/// locked blocks by CONTENT SEARCH and so can be fooled by a planted verbatim
+/// copy of a locked section), this keys identity on the heading. Every LOCKED
+/// section (a `##` heading present in `before` whose title is not in `queued`)
+/// must survive with an identical body-multiset in `after`, and the preamble
+/// before the first `##` must be byte-identical. Queued sections may be freely
+/// rewritten, renamed, or removed, and brand-new sections may appear.
+///
+/// `None` = a locked section (or the preamble) was altered/removed/duplicated:
+/// the edit leaked. `Some(report)` = confined; `report.changed` names the queued
+/// sections whose body actually moved. Duplicate locked headings are compared as
+/// a multiset; any count mismatch is conservatively treated as a leak.
+pub fn confine_by_heading(before: &str, after: &str, queued: &[String]) -> Option<ConfineReport> {
+    let (pre_b, secs_b) = split_doc(before);
+    let (pre_a, secs_a) = split_doc(after);
+    if pre_b != pre_a {
+        return None; // the preamble (title + intro) is locked
+    }
+    let queued: std::collections::HashSet<&str> = queued.iter().map(String::as_str).collect();
+
+    // Group section bodies by heading for both revisions.
+    let map_b = group_by_title(&secs_b);
+    let map_a = group_by_title(&secs_a);
+
+    let mut changed = Vec::new();
+    for (title, bodies_b) in &map_b {
+        if queued.contains(title.as_str()) {
+            // A queued section: allowed to change; record whether it did.
+            let moved = map_a
+                .get(title)
+                .is_none_or(|bodies_a| !eq_multiset(bodies_a, bodies_b));
+            if moved {
+                changed.push(title.clone());
+            }
+        } else {
+            // A locked section: its body-multiset must be identical in `after`.
+            match map_a.get(title) {
+                Some(bodies_a) if eq_multiset(bodies_a, bodies_b) => {}
+                _ => return None,
+            }
+        }
+    }
+
+    let (added, removed) = line_delta(before, after);
+    Some(ConfineReport {
+        added,
+        removed,
+        changed,
+    })
+}
+
+/// Split a document into its preamble (lines before the first `##`) and its
+/// `##` sections as `(title, body)` pairs, the body being the heading line
+/// through the line before the next `##`/`#`.
+fn split_doc(text: &str) -> (String, Vec<(String, String)>) {
+    let lines: Vec<&str> = text.lines().collect();
+    let secs = sections(text);
+    let first = secs.first().map(|(_, r)| r.start).unwrap_or(lines.len());
+    // `trim_end` normalizes trailing blank lines: a section's captured body
+    // gains a blank separator when a new section is appended after it, which is
+    // not a real edit to a locked section.
+    let preamble = lines[..first].join("\n").trim_end().to_string();
+    let items = secs
+        .iter()
+        .map(|(t, r)| {
+            (
+                t.clone(),
+                lines[r.clone()].join("\n").trim_end().to_string(),
+            )
+        })
+        .collect();
+    (preamble, items)
+}
+
+fn group_by_title(secs: &[(String, String)]) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut map: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for (title, body) in secs {
+        map.entry(title.clone()).or_default().push(body.clone());
+    }
+    map
+}
+
+fn eq_multiset(a: &[String], b: &[String]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut a: Vec<&String> = a.iter().collect();
+    let mut b: Vec<&String> = b.iter().collect();
+    a.sort();
+    b.sort();
+    a == b
+}
+
+/// Line-multiset delta between two documents: (# lines that appeared, # that
+/// vanished). On a confined edit the locked regions cancel, so this equals the
+/// delta over the allowed regions.
+fn line_delta(before: &str, after: &str) -> (usize, usize) {
+    let mut counts: std::collections::HashMap<&str, i64> = std::collections::HashMap::new();
+    for l in after.lines() {
+        *counts.entry(l).or_default() += 1;
+    }
+    for l in before.lines() {
+        *counts.entry(l).or_default() -= 1;
+    }
+    let added = counts.values().filter(|v| **v > 0).sum::<i64>() as usize;
+    let removed = -counts.values().filter(|v| **v < 0).sum::<i64>() as usize;
+    (added, removed)
+}
+
 /// Clamp to `len`, drop empties, sort, merge overlapping AND adjacent ranges.
 fn merge_ranges(ranges: &[Range<usize>], len: usize) -> Vec<Range<usize>> {
     let mut rs: Vec<Range<usize>> = ranges
@@ -436,6 +559,81 @@ mod tests {
         );
         // Out-of-bounds range clamps instead of panicking.
         assert_eq!(edits_confined("a\n", "a\n", &(5..9)), Some((0, 0)));
+    }
+
+    // before: preamble "# Plan", locked B, queued A and C.
+    const DECOY_BEFORE: &str = "# Plan\n\n## A\na1\n\n## B\nb1\n\n## C\nc1\n";
+
+    #[test]
+    fn confine_by_heading_accepts_a_confined_edit_and_names_the_changed_section() {
+        let queued = vec!["A".to_string()];
+        let after = "# Plan\n\n## A\na1\na2\na3\n\n## B\nb1\n";
+        let rep = confine_by_heading(GATE_DOC, after, &queued).expect("confined");
+        assert_eq!(rep.changed, vec!["A".to_string()]);
+        assert_eq!((rep.added, rep.removed), (1, 0));
+    }
+
+    #[test]
+    fn confine_by_heading_reports_only_the_sections_that_moved() {
+        // Both A and B queued, but only A is edited: B must NOT be in `changed`,
+        // so an over-claimed `#B: FIXED` can be downgraded.
+        let queued = vec!["A".to_string(), "B".to_string()];
+        let after = "# Plan\n\n## A\na1\na2\nextra\n\n## B\nb1\n";
+        let rep = confine_by_heading(GATE_DOC, after, &queued).expect("confined");
+        assert_eq!(rep.changed, vec!["A".to_string()]);
+    }
+
+    #[test]
+    fn confine_by_heading_rejects_editing_a_locked_section() {
+        let queued = vec!["A".to_string()];
+        let after = "# Plan\n\n## A\na1\na2\n\n## B\nb1 leaked\n";
+        assert_eq!(confine_by_heading(GATE_DOC, after, &queued), None);
+    }
+
+    #[test]
+    fn confine_by_heading_closes_the_decoy_bypass() {
+        // The attack: plant a verbatim copy of locked B inside allowed A, then
+        // rewrite the REAL B. The positional gate is fooled (the locked block
+        // is found at the decoy) - documents the bug we are fixing.
+        let queued_ranges = [2..5usize, 8..10usize]; // A, C on DECOY_BEFORE
+        let decoy = "# Plan\n\n## A\na1\n## B\nb1\n\n## B\nHACKED\n\n## C\nc1\n";
+        assert!(
+            edits_confined_multi(DECOY_BEFORE, decoy, &queued_ranges).is_some(),
+            "positional gate is fooled by the decoy",
+        );
+        // The heading-structured gate keys on the heading, so the duplicated
+        // locked B breaks the multiset and the batch is rejected.
+        let queued = vec!["A".to_string(), "C".to_string()];
+        assert_eq!(confine_by_heading(DECOY_BEFORE, decoy, &queued), None);
+    }
+
+    #[test]
+    fn confine_by_heading_locks_the_preamble() {
+        let queued = vec!["A".to_string(), "B".to_string()];
+        // Every `##` section is queued, but the title line is rewritten.
+        let after = "# Plan (rewritten)\n\n## A\na1\na2\n\n## B\nb1\n";
+        assert_eq!(confine_by_heading(GATE_DOC, after, &queued), None);
+    }
+
+    #[test]
+    fn confine_by_heading_allows_new_sections_and_renamed_queued_headings() {
+        // A queued section may be renamed (its old title vanishes, a new one
+        // appears) and a brand-new section may be added; B stays locked+intact.
+        let queued = vec!["A".to_string()];
+        let after = "# Plan\n\n## A renamed\na1\na2\n\n## B\nb1\n\n## Notes\nnew\n";
+        assert!(confine_by_heading(GATE_DOC, after, &queued).is_some());
+    }
+
+    #[test]
+    fn confine_by_heading_treats_duplicate_locked_headings_as_a_multiset() {
+        let before = "# Plan\n\n## Dup\nx\n\n## Dup\ny\n\n## A\na1\n";
+        let queued = vec!["A".to_string()];
+        // Editing one of the two locked `## Dup` bodies leaks.
+        let after = "# Plan\n\n## Dup\nx changed\n\n## Dup\ny\n\n## A\na1\n";
+        assert_eq!(confine_by_heading(before, after, &queued), None);
+        // Leaving both `## Dup` intact and editing only A is confined.
+        let after_ok = "# Plan\n\n## Dup\nx\n\n## Dup\ny\n\n## A\na1\nmore\n";
+        assert!(confine_by_heading(before, after_ok, &queued).is_some());
     }
 
     #[test]
