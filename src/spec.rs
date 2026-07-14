@@ -351,6 +351,150 @@ pub fn has_meaningful_content(text: &str) -> bool {
     false
 }
 
+/// Where a coverage gap routes: a source file (-> code-fix) or a plan section
+/// (-> plan-fix).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Route {
+    File(String),
+    Section(String),
+}
+
+/// One `## Deliverables` checklist item: the project's machine-checkable
+/// definition of done. `id` is a stable token (e.g. `D1`) independent of step
+/// numbers, so renumbering `## Steps` never breaks deliverable identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deliverable {
+    pub id: String,
+    pub checked: bool,
+    pub description: String,
+    pub acceptance: Option<String>,
+    pub route: Option<Route>,
+    pub line: usize,
+}
+
+/// Case-insensitive byte index of `needle` in `hay` (ASCII needles only, so
+/// `to_ascii_lowercase` preserves byte offsets).
+fn find_ci(hay: &str, needle: &str) -> Option<usize> {
+    hay.to_ascii_lowercase().find(needle)
+}
+
+fn parse_route(s: &str) -> Option<Route> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(rest) = s.strip_prefix('§') {
+        return Some(Route::Section(rest.trim().to_string()));
+    }
+    if let Some(rest) = find_ci(s, "plan:").and_then(|i| (i == 0).then(|| &s[5..])) {
+        return Some(Route::Section(rest.trim().to_string()));
+    }
+    Some(Route::File(s.to_string()))
+}
+
+/// Parse one checklist line `- [ |x] <ID>: <desc> [- accept: <c>] [- route: <r>]`.
+/// Drift-tolerant (mirrors `answers.rs`): tolerates `-`/`:` separators and any
+/// casing of the `accept:`/`route:` markers.
+fn parse_deliverable(line: &str, idx: usize) -> Option<Deliverable> {
+    let rest = line.trim_start().strip_prefix("- [")?;
+    let close = rest.find(']')?;
+    let checked = rest[..close].trim().eq_ignore_ascii_case("x");
+    let (id, mut body) = rest[close + 1..].trim().split_once(':')?;
+    let id = id.trim().to_string();
+    if id.is_empty() {
+        return None;
+    }
+    let mut route = None;
+    if let Some(pos) = find_ci(body, "route:") {
+        route = parse_route(&body[pos + "route:".len()..]);
+        body = body[..pos].trim_end().trim_end_matches('-').trim_end();
+    }
+    let mut acceptance = None;
+    if let Some(pos) = find_ci(body, "accept:") {
+        let a = body[pos + "accept:".len()..].trim();
+        if !a.is_empty() {
+            acceptance = Some(a.to_string());
+        }
+        body = body[..pos].trim_end().trim_end_matches('-').trim_end();
+    }
+    let description = body.trim().to_string();
+    Some(Deliverable {
+        id,
+        checked,
+        description,
+        acceptance,
+        route,
+        line: idx,
+    })
+}
+
+/// The line range of the `## Deliverables` section, if present.
+fn deliverables_range(text: &str) -> Option<Range<usize>> {
+    sections(text)
+        .into_iter()
+        .find(|(t, _)| t.eq_ignore_ascii_case("deliverables"))
+        .map(|(_, r)| r)
+}
+
+/// Parse the plan's `## Deliverables` checklist (empty if the section is absent).
+pub fn deliverables(text: &str) -> Vec<Deliverable> {
+    let Some(range) = deliverables_range(text) else {
+        return Vec::new();
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    range
+        .filter_map(|i| parse_deliverable(lines[i], i))
+        .collect()
+}
+
+/// Enforce that the plan declares a usable checklist: the section exists, has
+/// at least one item, and every item is concrete (a description AND an
+/// `accept:` criterion). Returns the item count or a human-readable failure.
+pub fn deliverables_gate(text: &str) -> Result<usize, String> {
+    if deliverables_range(text).is_none() {
+        return Err("plan has no `## Deliverables` section".into());
+    }
+    let ds = deliverables(text);
+    if ds.is_empty() {
+        return Err("`## Deliverables` has no checklist items".into());
+    }
+    for d in &ds {
+        if d.description.is_empty() {
+            return Err(format!("deliverable {} has no description", d.id));
+        }
+        if d.acceptance.as_deref().unwrap_or("").is_empty() {
+            return Err(format!(
+                "deliverable {} has no `accept:` (measurable, pass/fail) criterion",
+                d.id
+            ));
+        }
+    }
+    Ok(ds.len())
+}
+
+/// Mark the given deliverable IDs done: flip `- [ ]` to `- [x]` for those items,
+/// only inside the `## Deliverables` section, leaving everything else byte-exact.
+pub fn tick(text: &str, ids: &[&str]) -> String {
+    let want: std::collections::HashSet<&str> = ids.iter().copied().collect();
+    let Some(range) = deliverables_range(text) else {
+        return text.to_string();
+    };
+    let mut lines: Vec<String> = text.lines().map(String::from).collect();
+    for i in range {
+        if let Some(d) = parse_deliverable(&lines[i], i)
+            && !d.checked
+            && want.contains(d.id.as_str())
+        {
+            lines[i] = lines[i].replacen("[ ]", "[x]", 1);
+        }
+    }
+    let mut out = lines.join("\n");
+    if text.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,6 +790,58 @@ mod tests {
         let queued = vec!["A".to_string()];
         let after = "# Plan\n\n## A\na1 fixed\n\n## B\nb2\nb1\n"; // B (locked) reordered
         assert_eq!(confine_by_heading(before, after, &queued), None);
+    }
+
+    const DELIV_PLAN: &str = "# Plan\n\n## Context\nstuff\n\n## Deliverables\n\
+        - [x] D1: media stack - accept: stacks/media renders - route: stacks/media/compose.yml\n\
+        - [ ] D2: cloud sync - accept: nextcloud reachable - route: §Cloud\n\
+        - [ ] D3: no criterion here\n\n## Steps\n1. do it\n";
+
+    #[test]
+    fn deliverables_parses_items_with_route_and_acceptance() {
+        let ds = deliverables(DELIV_PLAN);
+        assert_eq!(ds.len(), 3);
+        assert_eq!(ds[0].id, "D1");
+        assert!(ds[0].checked);
+        assert_eq!(ds[0].description, "media stack");
+        assert_eq!(ds[0].acceptance.as_deref(), Some("stacks/media renders"));
+        assert_eq!(
+            ds[0].route,
+            Some(Route::File("stacks/media/compose.yml".into()))
+        );
+        assert!(!ds[1].checked);
+        assert_eq!(ds[1].route, Some(Route::Section("Cloud".into())));
+        assert_eq!(ds[2].id, "D3");
+        assert_eq!(ds[2].acceptance, None);
+        assert_eq!(ds[2].route, None);
+    }
+
+    #[test]
+    fn deliverables_gate_requires_a_section_and_concrete_items() {
+        assert!(deliverables_gate("# Plan\n\n## Steps\n1. x\n").is_err()); // no section
+        assert!(deliverables_gate("# Plan\n\n## Deliverables\n").is_err()); // empty
+        assert!(deliverables_gate(DELIV_PLAN).is_err()); // D3 lacks accept:
+        let ok = "# Plan\n\n## Deliverables\n- [ ] D1: x - accept: y is true\n";
+        assert_eq!(deliverables_gate(ok).unwrap(), 1);
+    }
+
+    #[test]
+    fn tick_marks_only_named_ids_inside_the_section() {
+        let out = tick(DELIV_PLAN, &["D2"]);
+        let ds = deliverables(&out);
+        assert!(ds[0].checked, "D1 stays checked");
+        assert!(ds[1].checked, "D2 now checked");
+        assert!(!ds[2].checked, "D3 untouched");
+        // A `- [ ]` outside the section is never touched (there are none here);
+        // and un-named ids stay as-is.
+        assert!(out.contains("## Steps"));
+    }
+
+    #[test]
+    fn deliverables_absent_section_is_empty_and_tick_is_a_noop() {
+        let plain = "# Plan\n\n## Steps\n- [ ] not a deliverable\n";
+        assert!(deliverables(plain).is_empty());
+        assert_eq!(tick(plain, &["D1"]), plain);
     }
 
     #[test]
