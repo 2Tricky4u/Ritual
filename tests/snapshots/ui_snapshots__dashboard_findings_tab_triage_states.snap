@@ -10,16 +10,16 @@ expression: render(&app)
 "  ○ tests-red               │                                                             "
 "  ○ implement               │   MAJR  ◇single ⚓ Step 2 queued for the claud… ⚑A queued " Hidden by multi-width symbols: [(49, " ")]
 "  ○ dual-review             │    s1 [plan-review:confirmed]                               "
-"                            │                                                             "
-" 󰚩 AGENTS ───────────────── │   MAJR  ◇single src/a.rs:3 yours to fix by ha… ⚑M manual  "
-"  󰚩 claude …                │    s2 [plan-review:confirmed]                               "
-"  󰚩 codex …                 │                                                             "
-"  󱘖 bridge …                │   MAJR   ◆both  ⚓ Step 5 resolution recorded by th… →✓ " Hidden by multi-width symbols: [(51, " ")]
-"   nvim …                   │    s4 [plan-review:accepted]                                "
-"   check ?                  │                                                             "
-"                            │   minr  ◇single ⚓ Step 4 declined by the las… ✗ declined " Hidden by multi-width symbols: [(49, " ")]
-"   detached                 │    s3 [plan-review:confirmed]                               "
-"                            │                                                             "
+"  ○ coverage                │                                                             "
+"                            │   MAJR  ◇single src/a.rs:3 yours to fix by ha… ⚑M manual  "
+" 󰚩 AGENTS ───────────────── │    s2 [plan-review:confirmed]                               "
+"  󰚩 claude …                │                                                             "
+"  󰚩 codex …                 │   MAJR   ◆both  ⚓ Step 5 resolution recorded by th… →✓ " Hidden by multi-width symbols: [(51, " ")]
+"  󱘖 bridge …                │    s4 [plan-review:accepted]                                "
+"   nvim …                   │                                                             "
+"   check ?                  │   minr  ◇single ⚓ Step 4 declined by the las… ✗ declined " Hidden by multi-width symbols: [(49, " ")]
+"                            │    s3 [plan-review:confirmed]                               "
+"   detached                 │                                                             "
 "                            │   minr  ◇single ⚓ Step 6 retracted in round 2         →∅ " Hidden by multi-width symbols: [(49, " ")]
 "                            │    s5 [plan-review:refuted]                                 "
 "                            │                                                             "

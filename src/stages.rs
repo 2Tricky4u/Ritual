@@ -60,6 +60,14 @@ fn doc_chat_tools(doc_path: &Path) -> String {
     format!("Read,Edit(/{p}),Write(/{p})")
 }
 
+/// The coverage judge may READ anything (to inspect the built tree) but WRITE
+/// only into the findings dir (its one JSON output) - no source edits, no shell.
+/// `dontAsk` denies everything outside these rules.
+fn coverage_tools(findings_dir: &Path) -> String {
+    let d = findings_dir.display().to_string(); // absolute, starts with '/'
+    format!("Read,Glob,Grep,Write(/{d}/**)")
+}
+
 /// Sandbox argv prefix for a run: only headless runs are wrapped (interactive
 /// stages own the user's terminal; bubblewrap-style isolation would break
 /// them), and only when `[sandbox]` is enabled with a wrapper configured.
@@ -644,6 +652,37 @@ pub fn build(
                 needs_codex: true,
             }
         }
+        StageId::Coverage => {
+            let plan = dirs.plan_file(slug);
+            anyhow::ensure!(
+                std::path::Path::new(&plan).exists(),
+                "plan file not found: {}; run the plan stage first",
+                plan.display()
+            );
+            StageCommand {
+                mode: Mode::Headless,
+                agent: AgentKind::Claude,
+                argv: [
+                    claude,
+                    vec![
+                        "-p".into(),
+                        format!("/coverage {}", plan.display()),
+                        "--output-format".into(),
+                        "stream-json".into(),
+                        "--verbose".into(),
+                        "--permission-mode".into(),
+                        "dontAsk".into(),
+                        "--allowedTools".into(),
+                        coverage_tools(&dirs.findings_dir()),
+                        "--max-budget-usd".into(),
+                        cfg.budget_coverage_usd.to_string(),
+                    ],
+                ]
+                .concat(),
+                env: vec![findings_env],
+                needs_codex: false,
+            }
+        }
     };
     // Per-stage model routing: an explicit override (retry-with-model,
     // `run --model`) beats the [models] config table.
@@ -677,8 +716,10 @@ pub fn build(
     }
     // Both review stages enforce the constitution (skills fall back to the
     // well-known path for interactive stages like tests-red).
-    if matches!(stage, StageId::PlanReview | StageId::DualReview)
-        && let Some(p) = meaningful_invariants(dirs)
+    if matches!(
+        stage,
+        StageId::PlanReview | StageId::DualReview | StageId::Coverage
+    ) && let Some(p) = meaningful_invariants(dirs)
     {
         cmd.env
             .push(("RITUAL_INVARIANTS_FILE".into(), p.display().to_string()));

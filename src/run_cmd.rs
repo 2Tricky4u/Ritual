@@ -22,7 +22,7 @@ pub fn execute(
     model: Option<&str>,
 ) -> Result<()> {
     let stage = StageId::parse(stage_str)
-        .with_context(|| format!("unknown stage '{stage_str}' (spec, plan, plan-review, tests-red, implement, dual-review)"))?;
+        .with_context(|| format!("unknown stage '{stage_str}' (spec, plan, plan-review, tests-red, implement, dual-review, coverage)"))?;
     anyhow::ensure!(dirs.exists(), "no .ritual/ here; run `ritual init` first");
 
     if let Some((spent, budget)) = budget_exceeded(cfg, dirs)
@@ -376,6 +376,10 @@ fn run_headless(
 
     let new_status = if !outcome.meta.ok {
         StageStatus::Failed
+    } else if stage == StageId::Coverage {
+        // Coverage is Done ONLY when the judge reports zero gaps (green tests
+        // are not enough); it also ticks the satisfied deliverables' boxes.
+        finalize_coverage(dirs, branch, &new_findings)
     } else if new_findings.is_empty() {
         // Review stages must leave a findings artifact; an ok run without one
         // means the skill under-delivered (asked a question, hit a wall...).
@@ -554,6 +558,59 @@ pub fn run_doc_chat(
 
 fn mtime(p: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(p).and_then(|m| m.modified()).ok()
+}
+
+/// Finalize a coverage run: parse the judge's report, tick the satisfied
+/// deliverables into `plan.md` (confined to the section, undo-pushed), and
+/// return Done iff zero gaps remain, else NeedsAttention.
+fn finalize_coverage(dirs: &RitualDirs, branch: &str, new_findings: &[String]) -> StageStatus {
+    let slug = state::branch_slug(branch);
+    let Some(name) = new_findings.iter().find(|f| f.ends_with("-coverage.json")) else {
+        println!("coverage run wrote no coverage findings; needs attention");
+        return StageStatus::NeedsAttention;
+    };
+    let ff = match std::fs::read_to_string(dirs.findings_dir().join(name))
+        .ok()
+        .and_then(|t| serde_json::from_str::<crate::findings::FindingsFile>(&t).ok())
+    {
+        Some(ff) => ff,
+        None => return StageStatus::NeedsAttention,
+    };
+    let report = crate::coverage::parse_report(&ff);
+
+    // Tick satisfied deliverables (never one that is also flagged a gap) into
+    // the plan, confined to the `## Deliverables` section and undo-pushed.
+    let gap_ids: std::collections::HashSet<&str> =
+        report.gaps.iter().map(|g| g.deliverable.as_str()).collect();
+    let satisfied: Vec<&str> = report
+        .satisfied
+        .iter()
+        .map(String::as_str)
+        .filter(|id| !gap_ids.contains(id))
+        .collect();
+    if !satisfied.is_empty()
+        && let Ok(before) = std::fs::read_to_string(dirs.plan_file(&slug))
+    {
+        let after = crate::spec::tick(&before, &satisfied);
+        let deliverables = ["Deliverables".to_string()];
+        if after != before
+            && crate::spec::confine_by_heading(&before, &after, &deliverables).is_some()
+        {
+            let _ = crate::undo::push(dirs, &slug, stages::DocKind::Plan.label(), &before);
+            let _ = std::fs::write(dirs.plan_file(&slug), &after);
+        }
+    }
+
+    if report.gaps.is_empty() {
+        println!("coverage: all deliverables satisfied - feature complete");
+        StageStatus::Done
+    } else {
+        println!(
+            "coverage: {} deliverable gap(s) remain; needs attention",
+            report.gaps.len()
+        );
+        StageStatus::NeedsAttention
+    }
 }
 
 fn check_green(work_root: &Path, timeout_secs: u64) -> bool {

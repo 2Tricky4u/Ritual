@@ -13,6 +13,7 @@ pub const PIPELINE: &[StageId] = &[
     StageId::TestsRed,
     StageId::Implement,
     StageId::DualReview,
+    StageId::Coverage,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -24,6 +25,7 @@ pub enum StageId {
     TestsRed,
     Implement,
     DualReview,
+    Coverage,
 }
 
 impl StageId {
@@ -35,6 +37,7 @@ impl StageId {
             StageId::TestsRed => "tests-red",
             StageId::Implement => "implement",
             StageId::DualReview => "dual-review",
+            StageId::Coverage => "coverage",
         }
     }
 
@@ -47,6 +50,7 @@ impl StageId {
             "tests-red" | "tests_red" | "tdd" => Some(StageId::TestsRed),
             "implement" => Some(StageId::Implement),
             "dual-review" | "dual_review" => Some(StageId::DualReview),
+            "coverage" => Some(StageId::Coverage),
             _ => None,
         }
     }
