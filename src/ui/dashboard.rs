@@ -255,6 +255,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.confirm_quit {
         draw_confirm_quit(f, t);
     }
+    if app.reset_plan_confirm {
+        draw_reset_confirm(f, t);
+    }
 }
 
 fn draw_divider(f: &mut Frame, t: &Theme, area: Rect) {
@@ -2102,6 +2105,23 @@ fn draw_confirm_quit(f: &mut Frame, t: &Theme) {
             "a run is active; quit anyway? (y/n)",
             Style::default().fg(t.attention()),
         ))
+        .alignment(Alignment::Center),
+        inner,
+    );
+}
+
+fn draw_reset_confirm(f: &mut Frame, t: &Theme) {
+    let area = centered_rect(f.area(), 64, 5);
+    let inner = float_panel(f, t, area, "reset plan");
+    f.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                "reset the plan back to the spec? (y/n)",
+                Style::default().fg(t.attention()),
+            )),
+            Line::from("deletes plan.md, resets plan..coverage, clears plan findings"),
+            Line::from("your code and git history are untouched"),
+        ])
         .alignment(Alignment::Center),
         inner,
     );

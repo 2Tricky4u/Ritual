@@ -232,6 +232,8 @@ pub struct App {
     pub show_help: bool,
     pub status_msg: Option<String>,
     pub confirm_quit: bool,
+    /// A `reset-plan` (palette) is awaiting y/n confirmation.
+    pub reset_plan_confirm: bool,
     pub quit: bool,
     pub palette: Option<PaletteState>,
     pub plan_scroll: usize,
@@ -423,6 +425,7 @@ impl App {
             show_help: false,
             status_msg: None,
             confirm_quit: false,
+            reset_plan_confirm: false,
             quit: false,
             palette: None,
             plan_scroll: 0,
@@ -728,6 +731,13 @@ impl App {
             }
             return;
         }
+        if self.reset_plan_confirm {
+            match key.code {
+                KeyCode::Char('y') => self.do_reset_plan(),
+                _ => self.reset_plan_confirm = false,
+            }
+            return;
+        }
         if self.dismiss_prompt.is_some() {
             self.dismiss_input(key.code);
             return;
@@ -948,6 +958,13 @@ impl App {
             Action::QueueAllCode => self.queue_all_code(),
             Action::DocUndo => self.doc_undo(),
             Action::Settings => self.toggle_settings(),
+            Action::ResetPlan => {
+                if self.fix_running() || self.chat_running() {
+                    self.status_msg = Some("a fix/chat is running; wait before resetting".into());
+                } else {
+                    self.reset_plan_confirm = true;
+                }
+            }
             Action::ToggleResolved => {
                 if self.tab == Tab::Findings {
                     self.show_resolved = !self.show_resolved;
@@ -4043,6 +4060,28 @@ impl App {
 
     /// `u`: revert the last APPLIED batch - one undo restores the plan, its
     /// FIXED findings reopen and requeue (⚑A) for another round.
+    /// `reset-plan` confirmed: delete plan.md, reset the plan-derived stages,
+    /// and clear the plan-review/coverage findings + plan undo stack. Code and
+    /// git untouched; re-run the plan stage to start fresh from the spec.
+    fn do_reset_plan(&mut self) {
+        self.reset_plan_confirm = false;
+        let sum = crate::reset::reset_plan(&self.dirs, &mut self.state, &self.branch);
+        let _ = self.state.save(&self.dirs);
+        self.last_fix = None; // its plan snapshot is gone
+        self.reload_artifacts();
+        self.clamp_selected_finding();
+        self.status_msg = Some(format!(
+            "plan reset to spec: plan.md {}, {} stage(s) reset, {} plan finding(s) cleared - re-run plan",
+            if sum.plan_deleted {
+                "deleted"
+            } else {
+                "absent"
+            },
+            sum.stages_reset,
+            sum.findings_removed,
+        ));
+    }
+
     fn doc_undo(&mut self) {
         if self.fix_running() || self.chat_running() {
             self.status_msg = Some("busy: wait for the running edit to finish".into());
@@ -6921,6 +6960,40 @@ mod tests {
             "plan reverted on cancel",
         );
         assert!(app.status_msg.as_deref().unwrap().contains("plan reverted"));
+    }
+
+    #[test]
+    fn reset_plan_action_confirms_then_wipes_the_plan() {
+        let (_t, mut app, tx, _rx) = test_app();
+        let slug = app.slug.clone();
+        std::fs::create_dir_all(app.dirs.feature_dir(&slug)).unwrap();
+        std::fs::write(app.dirs.plan_file(&slug), "# Plan\n").unwrap();
+        crate::run_cmd::set_stage(
+            &mut app.state,
+            &app.branch,
+            StageId::Plan,
+            StageStatus::Done,
+            None,
+        );
+
+        // The palette action opens a confirm, changes nothing yet.
+        app.dispatch(Action::ResetPlan, &tx);
+        assert!(app.reset_plan_confirm);
+        assert!(app.dirs.plan_file(&slug).exists());
+
+        // Confirming wipes plan.md and resets the plan stage to Pending.
+        app.do_reset_plan();
+        assert!(!app.reset_plan_confirm);
+        assert!(!app.dirs.plan_file(&slug).exists());
+        assert_eq!(
+            app.state
+                .features
+                .get(&slug)
+                .unwrap()
+                .stage(StageId::Plan)
+                .status,
+            StageStatus::Pending
+        );
     }
 
     #[test]

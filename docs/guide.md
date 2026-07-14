@@ -351,6 +351,10 @@ or pin one: `nvim_server = "/path/to/socket"`, or launch with
 - `ritual pr-comment [N]`: findings → GitHub PR (`--inline`)
 - `ritual report [--pdf]`: feature report from all artifacts
 - `ritual new [--worktree B]`: name/create a feature
+- `ritual reset-plan [--force]`: re-plan from the spec - delete plan.md, reset
+  the plan..coverage stages, clear plan-review/coverage findings + the plan undo
+  stack (spec + code untouched). Dry-run without `--force`; palette `reset-plan`
+  in the TUI (confirm y/n)
 - `ritual clean`: prune old runs safely (`--keep N`, `--dry-run`)
 - `ritual verify-log`: check the tamper-evident chain
 - `ritual repro <run-id>`: reproducibility bundle + env diff

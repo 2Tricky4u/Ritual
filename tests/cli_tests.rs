@@ -625,6 +625,45 @@ fn complete_check_exits_nonzero_until_coverage_passes() {
         .stdout(predicate::str::contains("not complete"));
 }
 
+#[test]
+fn reset_plan_dry_run_then_force_wipes_the_plan() {
+    let tmp = setup_project();
+    let root = tmp.path();
+    let feat = root.join(".ritual/features/main");
+    std::fs::create_dir_all(&feat).unwrap();
+    std::fs::write(feat.join("plan.md"), "# Plan\n").unwrap();
+    std::fs::write(
+        root.join(".ritual/findings/20260101T000000Z-plan-review.json"),
+        r#"{"stage":"plan-review","branch":"main","findings":[]}"#,
+    )
+    .unwrap();
+
+    // Dry run: reports but changes nothing.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(root)
+        .arg("reset-plan")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("dry run"));
+    assert!(feat.join("plan.md").exists(), "dry run kept plan.md");
+
+    // --force: actually resets.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(root)
+        .args(["reset-plan", "--force"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reset plan"));
+    assert!(!feat.join("plan.md").exists(), "plan.md deleted");
+    assert!(
+        !root
+            .join(".ritual/findings/20260101T000000Z-plan-review.json")
+            .exists()
+    );
+}
+
 fn complete_agent() -> String {
     format!(
         "{}/tests/fixtures/complete_agent.sh",

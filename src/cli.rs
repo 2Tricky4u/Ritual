@@ -47,6 +47,15 @@ pub enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// Reset the plan back to the spec: delete plan.md, reset the plan-derived
+    /// stages (plan..coverage) to pending, clear the plan-review + coverage
+    /// findings and the plan undo stack. spec.md and git-tracked code are
+    /// untouched. Without --force it prints a dry run of what would change.
+    ResetPlan {
+        /// Actually perform the reset (otherwise print a dry run)
+        #[arg(long)]
+        force: bool,
+    },
     /// Browse recorded findings
     Findings {
         /// Emit raw JSON instead of styled output

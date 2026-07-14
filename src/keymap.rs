@@ -47,6 +47,7 @@ pub enum Action {
     DocUndo,
     ToggleResolved,
     Settings,
+    ResetPlan,
     RunStage(StageId),
     /// Re-run a failed stage with `[retry] models[i]` (palette-only, dynamic).
     RetryStage(StageId, usize),
@@ -128,6 +129,11 @@ pub const ACTIONS: &[(&str, Action, &str)] = &[
         "findings: show/hide resolved",
     ),
     ("settings", Action::Settings, "settings: edit config"),
+    (
+        "reset-plan",
+        Action::ResetPlan,
+        "reset plan back to the spec (palette-only)",
+    ),
 ];
 
 pub fn action_by_name(name: &str) -> Option<Action> {

@@ -58,6 +58,15 @@ fn migrate_legacy(dirs: &RitualDirs, slug: &str, doc_label: &str) {
     }
 }
 
+/// Drop the entire undo+redo history for a document (used by `reset-plan`,
+/// which deletes the doc so its snapshots are meaningless). Also removes the
+/// pre-0.5 legacy single-file snapshot. Best-effort: missing dirs are fine.
+pub fn clear(dirs: &RitualDirs, slug: &str, doc_label: &str) {
+    let _ = std::fs::remove_dir_all(undo_dir(dirs, slug, doc_label));
+    let _ = std::fs::remove_dir_all(redo_dir(dirs, slug, doc_label));
+    let _ = std::fs::remove_file(dirs.feature_dir(slug).join(format!(".{doc_label}.md.undo")));
+}
+
 /// Record the pre-edit state (called before every chat edit). A new edit
 /// invalidates the redo branch, standard editor semantics.
 pub fn push(dirs: &RitualDirs, slug: &str, doc_label: &str, content: &str) -> Result<()> {

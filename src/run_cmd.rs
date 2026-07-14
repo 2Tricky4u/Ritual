@@ -422,6 +422,42 @@ fn run_fix(
     Ok(())
 }
 
+/// `ritual reset-plan [--force]`: re-plan from the spec. Without `--force`, print
+/// what WOULD change; with it, delete plan.md, reset the plan-derived stages to
+/// pending, and clear the plan findings + plan undo stack. Never touches code.
+pub fn reset_plan(dirs: &RitualDirs, force: bool) -> Result<()> {
+    anyhow::ensure!(dirs.exists(), "no .ritual/ here; run `ritual init` first");
+    let branch = state::current_branch(&dirs.work_root).unwrap_or_else(|| "detached".to_string());
+    let slug = state::branch_slug(&branch);
+    let mut st = State::load(dirs)?;
+
+    if !force {
+        let p = crate::reset::preview(dirs, &st, &branch);
+        println!(
+            "reset-plan (dry run) for '{slug}': would delete plan.md ({}), reset {} stage(s) to pending, remove {} plan finding file(s), and clear the plan undo stack.",
+            if p.plan_deleted { "present" } else { "absent" },
+            p.stages_reset,
+            p.findings_removed,
+        );
+        println!("spec.md and git-tracked code are untouched. Re-run with --force to apply.");
+        return Ok(());
+    }
+
+    let sum = crate::reset::reset_plan(dirs, &mut st, &branch);
+    st.save(dirs)?;
+    println!(
+        "reset plan for '{slug}': plan.md {}, {} stage(s) reset, {} plan finding file(s) removed. Re-run the plan stage to start fresh.",
+        if sum.plan_deleted {
+            "deleted"
+        } else {
+            "already absent"
+        },
+        sum.stages_reset,
+        sum.findings_removed,
+    );
+    Ok(())
+}
+
 /// Some((spent, budget)) when the daily ceiling is hit.
 pub fn budget_exceeded(cfg: &Config, dirs: &RitualDirs) -> Option<(f64, f64)> {
     let budget = cfg.budget_daily_usd?;

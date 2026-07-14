@@ -72,6 +72,9 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Some(Command::ResetPlan { force }) => {
+            run_cmd::reset_plan(&dirs, force)?;
+        }
         Some(Command::Findings { json, all }) => {
             let loaded = findings::load_all(&dirs.findings_dir())?;
             output::render_findings(&cfg, &loaded, json, all);
