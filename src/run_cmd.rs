@@ -184,29 +184,87 @@ pub fn complete(cfg: &Config, dirs: &RitualDirs, check: bool) -> Result<bool> {
     let slug = state::branch_slug(&branch);
 
     if !check {
-        if let Some((spent, budget)) = budget_exceeded(cfg, dirs) {
-            anyhow::bail!(
-                "daily budget reached: ${spent:.2} of ${budget:.2}; use --check to evaluate without running"
-            );
+        let title = {
+            let mut st = State::load(dirs)?;
+            st.feature_for_branch_mut(&branch);
+            st.features
+                .get(&slug)
+                .map(|f| f.title.clone())
+                .unwrap_or_default()
+        };
+        let bounds = crate::complete::Bounds {
+            max_rounds: cfg.complete_max_rounds,
+            clean_rounds: cfg.complete_clean_rounds,
+            round_scope: cfg.complete_round_scope,
+            max_attempts: cfg.complete_max_attempts_per_item,
+        };
+        let start_spend = crate::history::today_spend(&dirs.runs_dir());
+        let mut ds = crate::complete::DriveState::default();
+        loop {
+            let spent = crate::history::today_spend(&dirs.runs_dir()) - start_spend;
+            if budget_exceeded(cfg, dirs).is_some() {
+                println!("daily budget reached; stopping the complete loop");
+                break;
+            }
+            if cfg.budget_complete_usd > 0.0 && spent >= cfg.budget_complete_usd {
+                println!(
+                    "complete budget (${:.2}) exhausted after ${spent:.2}; stopping",
+                    cfg.budget_complete_usd
+                );
+                break;
+            }
+            // One coverage judge pass (ticks satisfied boxes, sets the stage).
+            {
+                let mut st = State::load(dirs)?;
+                st.feature_for_branch_mut(&branch);
+                let cmd = stages::build(StageId::Coverage, cfg, dirs, &slug, None, None, None)?;
+                run_headless(
+                    cfg,
+                    dirs,
+                    StageId::Coverage,
+                    cmd,
+                    &mut st,
+                    &branch,
+                    &title,
+                    false,
+                )?;
+            }
+            let report = crate::coverage::latest_report(&dirs.findings_dir()).unwrap_or_default();
+            match crate::complete::plan_round(&mut ds, &report, &bounds) {
+                crate::complete::RoundAction::Done => {
+                    println!("✓ coverage clean; all deliverables satisfied");
+                    break;
+                }
+                crate::complete::RoundAction::MaxRounds => {
+                    println!("stopped: reached the {}-round cap", bounds.max_rounds);
+                    break;
+                }
+                crate::complete::RoundAction::Stuck(ids) => {
+                    println!(
+                        "stopped: {} deliverable(s) unresolved after {} attempts each: {}",
+                        ids.len(),
+                        bounds.max_attempts,
+                        ids.join(", ")
+                    );
+                    break;
+                }
+                crate::complete::RoundAction::Drive(ids) if ids.is_empty() => continue,
+                crate::complete::RoundAction::Drive(ids) => {
+                    let gaps: Vec<&crate::coverage::Gap> = report
+                        .gaps
+                        .iter()
+                        .filter(|g| ids.contains(&g.deliverable))
+                        .collect();
+                    println!(
+                        "round {}: building {} deliverable(s): {}",
+                        ds.round,
+                        gaps.len(),
+                        ids.join(", ")
+                    );
+                    drive_gaps(cfg, dirs, &branch, &slug, &title, &gaps)?;
+                }
+            }
         }
-        let mut st = State::load(dirs)?;
-        st.feature_for_branch_mut(&branch);
-        let title = st
-            .features
-            .get(&slug)
-            .map(|f| f.title.clone())
-            .unwrap_or_default();
-        let cmd = stages::build(StageId::Coverage, cfg, dirs, &slug, None, None, None)?;
-        run_headless(
-            cfg,
-            dirs,
-            StageId::Coverage,
-            cmd,
-            &mut st,
-            &branch,
-            &title,
-            false,
-        )?;
     }
 
     let st = State::load(dirs)?;
@@ -243,6 +301,125 @@ pub fn complete(cfg: &Config, dirs: &RitualDirs, check: bool) -> Result<bool> {
         }
     }
     Ok(done)
+}
+
+/// Drive a batch of coverage gaps to fixes: code gaps (a file to build/fix)
+/// through the broad-edit code-fix run, plan gaps (the plan/spec itself)
+/// through the plan-fix run. Each fix agent runs `./check.sh` itself; the next
+/// coverage pass is the verification, so this reuses the command builders and
+/// `follow_run` without re-implementing the 3-leg TUI gate.
+fn drive_gaps(
+    cfg: &Config,
+    dirs: &RitualDirs,
+    branch: &str,
+    slug: &str,
+    title: &str,
+    gaps: &[&crate::coverage::Gap],
+) -> Result<()> {
+    let invariants = stages::meaningful_invariants(dirs);
+
+    let code: Vec<&crate::findings::Finding> = gaps
+        .iter()
+        .map(|g| &g.finding)
+        .filter(|f| f.file.is_some())
+        .collect();
+    if !code.is_empty() {
+        let sev: Vec<String> = code
+            .iter()
+            .map(|f| f.severity.label().to_string())
+            .collect();
+        let briefs: Vec<(u32, stages::CodeFindingBrief)> = code
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                (
+                    i as u32 + 1,
+                    stages::CodeFindingBrief {
+                        title: &f.title,
+                        severity: &sev[i],
+                        scenario: &f.scenario,
+                        file: f.file.as_deref().unwrap_or(""),
+                        line: f.line,
+                        snippet: f.snippet.as_deref(),
+                    },
+                )
+            })
+            .collect();
+        let cmd = stages::findings_code_fix_command(cfg, &briefs, invariants.as_deref());
+        run_fix(cfg, dirs, branch, title, "code-fix", cmd)?;
+    }
+
+    let plan: Vec<&crate::findings::Finding> = gaps
+        .iter()
+        .map(|g| &g.finding)
+        .filter(|f| f.file.is_none() && f.plan_step.is_some())
+        .collect();
+    if !plan.is_empty() {
+        let sev: Vec<String> = plan
+            .iter()
+            .map(|f| f.severity.label().to_string())
+            .collect();
+        let steps: Vec<&str> = plan
+            .iter()
+            .map(|f| f.plan_step.as_deref().unwrap_or(""))
+            .collect();
+        let briefs: Vec<(u32, stages::FindingBrief)> = plan
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                (
+                    i as u32 + 1,
+                    stages::FindingBrief {
+                        title: &f.title,
+                        severity: &sev[i],
+                        scenario: &f.scenario,
+                        plan_step: steps[i],
+                        snippet: f.snippet.as_deref(),
+                    },
+                )
+            })
+            .collect();
+        let plan_path = dirs.plan_file(slug);
+        let spec = dirs.spec_file(slug);
+        let cmd = stages::findings_batch_fix_command(
+            cfg,
+            &plan_path,
+            &steps,
+            &briefs,
+            Some(&spec),
+            invariants.as_deref(),
+        );
+        run_fix(cfg, dirs, branch, title, "plan-fix", cmd)?;
+    }
+    Ok(())
+}
+
+/// Spawn a fix command as a detached run and follow it to completion (no stage
+/// bookkeeping - the completeness loop owns the state).
+fn run_fix(
+    cfg: &Config,
+    dirs: &RitualDirs,
+    branch: &str,
+    title: &str,
+    stage_label: &str,
+    cmd: stages::StageCommand,
+) -> Result<()> {
+    let req = RunRequest {
+        agent: cmd.agent,
+        argv: cmd.argv,
+        env: cmd.env,
+        stage: stage_label.into(),
+        feature: title.into(),
+        branch: branch.into(),
+        redact: cfg.redaction,
+        repro: None,
+        cwd: dirs.work_root.clone(),
+        wrapper: stages::wrapper_argv(cfg, cmd.mode),
+    };
+    let run_id = runner::new_run_id(stage_label);
+    runner::spawn_detached(dirs, &req, &run_id)?;
+    let _ = follow_run(cfg, dirs, req.agent, &run_id)?;
+    Ok(())
 }
 
 /// Some((spent, budget)) when the daily ceiling is hit.

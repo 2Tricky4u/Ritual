@@ -185,15 +185,19 @@ pub fn resolved_count(loaded: &[LoadedFindings]) -> usize {
         .count()
 }
 
-/// Any OPEN (unresolved) finding whose verdict is "confirmed", across all loaded
-/// files. Broader than the critical-only CI gate: a project is not "complete"
-/// while any confirmed finding still stands.
+/// Any OPEN (unresolved) confirmed finding from a NON-coverage stage. Coverage
+/// gaps are excluded because they are tracked authoritatively by the coverage
+/// STAGE status (and each coverage run supersedes the last); this predicate is
+/// about lingering code/plan defects. Broader than the critical-only CI gate: a
+/// project is not "complete" while any such finding stands.
 pub fn has_open_confirmed(loaded: &[LoadedFindings]) -> bool {
     loaded.iter().any(|lf| {
-        lf.file
-            .findings
-            .iter()
-            .any(|f| !f.resolved() && f.verdict.eq_ignore_ascii_case("confirmed"))
+        lf.file.stage != "coverage"
+            && lf
+                .file
+                .findings
+                .iter()
+                .any(|f| !f.resolved() && f.verdict.eq_ignore_ascii_case("confirmed"))
     })
 }
 

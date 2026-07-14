@@ -7,6 +7,7 @@ pub mod cli;
 pub mod clipboard;
 pub mod code_fix;
 pub mod coderabbit;
+pub mod complete;
 pub mod config;
 pub mod coverage;
 pub mod doctor;
