@@ -10,6 +10,7 @@ pub mod config;
 pub mod doctor;
 pub mod export;
 pub mod findings;
+pub mod git;
 pub mod history;
 pub mod keymap;
 pub mod lessons;
