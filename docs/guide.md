@@ -204,6 +204,17 @@ plan was BUILT - so an LLM can green the tests at 40% and stop (the
   checklist - a plan with no real `## Deliverables` can never be "complete", and
   a coverage run that produced no report is never read as "clean". Each run
   supersedes the prior coverage report (only the newest is kept).
+- The judge must account for **every** unchecked deliverable: any it neither
+  confirms (`satisfied`) nor flags (a gap) is treated as an unverified gap and
+  re-driven - a partial or lazy judgment cannot read as "clean".
+- Coverage evidence is scoped **per branch** (a stamped `branch` on each
+  findings file), so another feature's coverage or open findings never affect
+  this one, and one feature's run never supersedes another's report.
+- `--check` is token-free, so it trusts the last coverage judgment for the
+  *code* it saw; it re-checks the plan's deliverable coverage, `check.sh`, and
+  open findings live, but does not re-judge code. After changing code, re-run
+  `ritual complete` to re-judge - a stale judgment is not detected by `--check`
+  alone.
 
 The exit-code contract follows the lifecycle: a confirmed critical
 blocks scripts/CI **until you mark it fixed or dismissed**. In CI:

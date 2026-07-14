@@ -252,7 +252,12 @@ pub fn complete(cfg: &Config, dirs: &RitualDirs, check: bool) -> Result<bool> {
                 println!("stopped: the coverage judge produced no report this round");
                 break;
             }
-            let report = crate::coverage::latest_report(&dirs.findings_dir()).unwrap_or_default();
+            let mut report =
+                crate::coverage::latest_report(&dirs.findings_dir(), &slug).unwrap_or_default();
+            // An unchecked deliverable the judge silently skipped is an unverified
+            // gap, not a pass: drive it like any other gap.
+            let plan_text = std::fs::read_to_string(dirs.plan_file(&slug)).unwrap_or_default();
+            crate::coverage::reconcile_missing(&mut report, &plan_text);
             match crate::complete::plan_round(&mut ds, &report, &bounds) {
                 crate::complete::RoundAction::Done => {
                     println!("✓ coverage clean; all deliverables satisfied");
@@ -294,16 +299,20 @@ pub fn complete(cfg: &Config, dirs: &RitualDirs, check: bool) -> Result<bool> {
     // Completeness is derived from EVIDENCE, never the Coverage stage status:
     // the latest coverage report must be genuinely zero-gap AND the plan must
     // declare a real `## Deliverables` checklist (the deterministic backstop).
-    let report = crate::coverage::latest_report(&dirs.findings_dir());
-    let coverage_clean = report.as_ref().is_some_and(|r| r.gaps.is_empty());
     let plan_text = std::fs::read_to_string(dirs.plan_file(&slug)).unwrap_or_default();
+    let mut report = crate::coverage::latest_report(&dirs.findings_dir(), &slug);
+    // Fold in the deliverables the judge silently dropped BEFORE deciding clean.
+    if let Some(r) = &mut report {
+        crate::coverage::reconcile_missing(r, &plan_text);
+    }
+    let coverage_clean = report.as_ref().is_some_and(|r| r.gaps.is_empty());
     let deliverables = crate::spec::deliverables_gate(&plan_text);
     let deliverables_ok = deliverables.is_ok();
-    let no_open = !crate::findings::has_open_confirmed(&findings);
+    let no_open = !crate::findings::has_open_confirmed(&findings, &slug);
     // Only spend a check.sh run once coverage + deliverables pass.
     let green =
         coverage_clean && deliverables_ok && check_green(&dirs.work_root, cfg.check_timeout_secs);
-    let done = crate::coverage::feature_complete(coverage_clean, deliverables_ok, &findings, green);
+    let done = crate::coverage::feature_complete(coverage_clean, deliverables_ok, no_open, green);
 
     if done {
         println!(
@@ -752,6 +761,11 @@ fn run_headless(
     } else {
         StageStatus::Done
     };
+    // Stamp the real branch onto the files this run produced so completeness
+    // consumers can scope by branch (the skill's `branch` is untrusted). After
+    // the new_status computation so it runs post-`finalize_coverage` (A3's tree
+    // fingerprint, added at this same point, then reflects the post-tick tree).
+    crate::findings::stamp_branch(&dirs.findings_dir(), &new_findings, branch);
     set_stage(
         st,
         branch,

@@ -190,15 +190,40 @@ pub fn resolved_count(loaded: &[LoadedFindings]) -> usize {
 /// STAGE status (and each coverage run supersedes the last); this predicate is
 /// about lingering code/plan defects. Broader than the critical-only CI gate: a
 /// project is not "complete" while any such finding stands.
-pub fn has_open_confirmed(loaded: &[LoadedFindings]) -> bool {
+pub fn has_open_confirmed(loaded: &[LoadedFindings], slug: &str) -> bool {
     loaded.iter().any(|lf| {
-        lf.file.stage != "coverage"
+        // Scope to THIS feature: a file whose branch resolves to another slug is
+        // a different feature's concern. Branch-LESS files stay in scope (a read
+        // gate must not silently drop legitimately branch-less findings).
+        (lf.file.branch.is_empty() || crate::state::branch_slug(&lf.file.branch) == slug)
+            && lf.file.stage != "coverage"
             && lf
                 .file
                 .findings
                 .iter()
                 .any(|f| !f.resolved() && f.verdict.eq_ignore_ascii_case("confirmed"))
     })
+}
+
+/// Stamp `branch` onto the findings files a run just produced, so completeness
+/// consumers can scope by branch reliably - the skill fills `branch` "or empty",
+/// which we cannot trust. Best-effort: a file that vanished or won't parse is
+/// skipped, never fatal (parse failures are already invisible to `load_all`).
+pub fn stamp_branch(findings_dir: &Path, filenames: &[String], branch: &str) {
+    for name in filenames {
+        let path = findings_dir.join(name);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(mut file) = serde_json::from_str::<FindingsFile>(&text) else {
+            continue;
+        };
+        if file.branch == branch {
+            continue;
+        }
+        file.branch = branch.to_string();
+        let _ = rewrite(&LoadedFindings { path, file });
+    }
 }
 
 /// Set a finding's action ("fixed" / "dismissed"), toggling back to
@@ -429,6 +454,62 @@ mod tests {
         assert_eq!(agg[0].finding.title, "open");
         assert_eq!(aggregate(&loaded, true).len(), 2);
         assert_eq!(resolved_count(&loaded), 1);
+    }
+
+    #[test]
+    fn has_open_confirmed_scopes_by_branch() {
+        let mk = |branch: &str| {
+            LoadedFindings {
+            path: format!("/x/{branch}.json").into(),
+            file: serde_json::from_str(&format!(
+                r#"{{"stage":"dual-review","branch":"{branch}","findings":[{{"title":"b","verdict":"confirmed","action":"pending"}}]}}"#
+            ))
+            .unwrap(),
+        }
+        };
+        // Another feature's open confirmed finding must NOT block this one.
+        assert!(!has_open_confirmed(
+            std::slice::from_ref(&mk("feat-b")),
+            "feat-a"
+        ));
+        // This feature's own does; a branch-less one stays in scope (lenient).
+        assert!(has_open_confirmed(
+            std::slice::from_ref(&mk("feat-a")),
+            "feat-a"
+        ));
+        let branchless = LoadedFindings {
+            path: "/x/none.json".into(),
+            file: serde_json::from_str(
+                r#"{"stage":"dual-review","findings":[{"title":"b","verdict":"confirmed","action":"pending"}]}"#,
+            )
+            .unwrap(),
+        };
+        assert!(has_open_confirmed(
+            std::slice::from_ref(&branchless),
+            "feat-a"
+        ));
+    }
+
+    #[test]
+    fn stamp_branch_sets_branch_and_preserves_unknown_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(
+            dir.join("20260101T000000Z-coverage.json"),
+            r#"{"stage":"coverage","satisfied":["D1"],"findings":[]}"#,
+        )
+        .unwrap();
+        stamp_branch(dir, &["20260101T000000Z-coverage.json".into()], "feat-x");
+        let loaded = load_all(dir).unwrap();
+        assert_eq!(loaded[0].file.branch, "feat-x");
+        // The unknown `satisfied` array round-trips through the stamp rewrite.
+        let n = loaded[0]
+            .file
+            .extra
+            .get("satisfied")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len());
+        assert_eq!(n, Some(1), "unknown fields survive the stamp");
     }
 
     #[test]

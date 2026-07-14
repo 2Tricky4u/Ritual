@@ -9,7 +9,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::findings::{Finding, FindingsFile, LoadedFindings};
+use crate::findings::{Finding, FindingsFile};
 use crate::state::{self, RitualDirs, StageStatus};
 
 /// One unmet deliverable the coverage judge flagged.
@@ -65,9 +65,57 @@ pub fn is_complete(ff: &FindingsFile) -> bool {
     parse_report(ff).gaps.is_empty()
 }
 
-/// The newest `-coverage.json` report in the findings dir (files are
-/// UTC-timestamp prefixed, so lexical sort = chronological), or None.
-pub fn latest_report(findings_dir: &Path) -> Option<CoverageReport> {
+/// Augment a parsed report with the deliverables the judge SILENTLY DROPPED: any
+/// UNCHECKED `## Deliverables` item whose id is neither in `satisfied` nor already
+/// a gap becomes an unverified gap. The judge must confirm (satisfied) or flag
+/// (gap) every deliverable - silence is not "done", which is the whole point of
+/// the gate. CHECKED `[x]` items are trusted (a prior round satisfied and ticked
+/// them; the judge deliberately skips them). Synthetic gaps route via the
+/// deliverable's declared `route:` so `drive_gaps` can build them, and carry the
+/// STABLE deliverable id so the driver's attempt/stuck counters converge.
+pub fn reconcile_missing(report: &mut CoverageReport, plan_text: &str) {
+    use crate::findings::Severity;
+    use crate::spec::{self, Route};
+
+    let mut covered: HashSet<String> = report.satisfied.iter().map(|s| spec::norm_id(s)).collect();
+    for g in &report.gaps {
+        covered.insert(spec::norm_id(&g.deliverable));
+    }
+    for d in spec::deliverables(plan_text) {
+        if d.checked || covered.contains(&spec::norm_id(&d.id)) {
+            continue;
+        }
+        let (file, plan_step) = match &d.route {
+            Some(Route::File(p)) => (Some(p.clone()), None),
+            Some(Route::Section(s)) => (None, Some(s.clone())),
+            None => (None, None),
+        };
+        let finding = Finding {
+            severity: Severity::Major,
+            title: format!("{}: not verified by the coverage judge", d.id),
+            scenario:
+                "the coverage judge neither confirmed nor flagged this deliverable; it must be \
+                 verified against the tree"
+                    .to_string(),
+            verdict: "confirmed".to_string(),
+            action: "pending".to_string(),
+            file,
+            plan_step,
+            sources: vec!["coverage".to_string()],
+            ..Default::default()
+        };
+        report.gaps.push(Gap {
+            deliverable: d.id.clone(),
+            finding,
+        });
+    }
+}
+
+/// The newest `-coverage.json` report BELONGING TO `slug` (files are UTC-timestamp
+/// prefixed, so lexical sort = chronological), or None. Scoped so another branch's
+/// newer coverage run can't be mistaken for this feature's; a branch-LESS file
+/// still counts (lenient, like `has_open_confirmed`).
+pub fn latest_report(findings_dir: &Path, slug: &str) -> Option<CoverageReport> {
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(findings_dir)
         .ok()?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -78,10 +126,26 @@ pub fn latest_report(findings_dir: &Path) -> Option<CoverageReport> {
         })
         .collect();
     files.sort();
-    let text = std::fs::read_to_string(files.last()?).ok()?;
-    serde_json::from_str::<FindingsFile>(&text)
-        .ok()
-        .map(|ff| parse_report(&ff))
+    // Newest-first. A report actually STAMPED for this branch always wins, even
+    // over a newer branch-less one - so an ambiguous legacy report can't shadow
+    // this feature's real evidence. A branch-less report is only a fallback used
+    // when no stamped report for this slug exists (backward-compat).
+    let mut branchless_fallback: Option<CoverageReport> = None;
+    for path in files.iter().rev() {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(ff) = serde_json::from_str::<FindingsFile>(&text) else {
+            continue;
+        };
+        if !ff.branch.is_empty() && state::branch_slug(&ff.branch) == slug {
+            return Some(parse_report(&ff));
+        }
+        if ff.branch.is_empty() && branchless_fallback.is_none() {
+            branchless_fallback = Some(parse_report(&ff));
+        }
+    }
+    branchless_fallback
 }
 
 /// The real "project is done" signal (the missing gate). Derived DETERMINISTICALLY
@@ -93,13 +157,10 @@ pub fn latest_report(findings_dir: &Path) -> Option<CoverageReport> {
 pub fn feature_complete(
     coverage_clean: bool,
     deliverables_ok: bool,
-    findings: &[LoadedFindings],
+    no_open: bool,
     check_green: bool,
 ) -> bool {
-    coverage_clean
-        && deliverables_ok
-        && check_green
-        && !crate::findings::has_open_confirmed(findings)
+    coverage_clean && deliverables_ok && check_green && no_open
 }
 
 /// Finalize a coverage run: parse the judge's report, supersede older coverage
@@ -125,26 +186,43 @@ pub fn finalize(
     else {
         return (StageStatus::NeedsAttention, msgs);
     };
-    let report = parse_report(&ff);
+    let mut report = parse_report(&ff);
 
-    // Supersede: keep only the file we just read; delete older coverage files.
+    // Supersede: delete THIS feature's older coverage files (bounds accumulation),
+    // but never another branch's and never an ambiguous branch-less one (mirrors
+    // reset's exact-branch caution). The file we just read is kept (excluded by
+    // name); older same-branch files were stamped in prior rounds.
     if let Ok(rd) = std::fs::read_dir(dirs.findings_dir()) {
         for e in rd.flatten() {
             let fname = e.file_name();
             let fname = fname.to_string_lossy();
-            if fname.ends_with("-coverage.json") && fname != name.as_str() {
+            if !fname.ends_with("-coverage.json") || fname == name.as_str() {
+                continue;
+            }
+            let same_branch = std::fs::read_to_string(e.path())
+                .ok()
+                .and_then(|t| serde_json::from_str::<FindingsFile>(&t).ok())
+                .is_some_and(|ff| !ff.branch.is_empty() && state::branch_slug(&ff.branch) == slug);
+            if same_branch {
                 let _ = std::fs::remove_file(e.path());
             }
         }
     }
 
     // Tick satisfied deliverables (never one also flagged a gap) into the plan.
-    let gap_ids: HashSet<&str> = report.gaps.iter().map(|g| g.deliverable.as_str()).collect();
+    // Normalize ids on both sides (like `tick`), so a case/whitespace-drifted
+    // `satisfied` entry that is ALSO a gap can't slip past this guard and tick a
+    // deliverable the judge flagged (which a later round would then skip as done).
+    let gap_ids: HashSet<String> = report
+        .gaps
+        .iter()
+        .map(|g| crate::spec::norm_id(&g.deliverable))
+        .collect();
     let satisfied: Vec<&str> = report
         .satisfied
         .iter()
         .map(String::as_str)
-        .filter(|id| !gap_ids.contains(id))
+        .filter(|id| !gap_ids.contains(&crate::spec::norm_id(id)))
         .collect();
     if !satisfied.is_empty()
         && let Ok(before) = std::fs::read_to_string(dirs.plan_file(&slug))
@@ -159,11 +237,15 @@ pub fn finalize(
         }
     }
 
+    // Reconcile against the POST-TICK plan: an unchecked deliverable the judge
+    // neither confirmed nor flagged becomes a gap, so a partial/lazy report can't
+    // read as clean. Read the plan once and reuse it for the backstop.
+    let plan_text = std::fs::read_to_string(dirs.plan_file(&slug)).unwrap_or_default();
+    reconcile_missing(&mut report, &plan_text);
+
     // Deterministic backstop: a plan with no real `## Deliverables` checklist is
     // never "complete", no matter how empty the gap list is.
-    let deliverables_ok = std::fs::read_to_string(dirs.plan_file(&slug))
-        .map(|t| crate::spec::deliverables_gate(&t).is_ok())
-        .unwrap_or(false);
+    let deliverables_ok = crate::spec::deliverables_gate(&plan_text).is_ok();
 
     if report.gaps.is_empty() && deliverables_ok {
         msgs.push("coverage: all deliverables satisfied - feature complete".into());
@@ -218,18 +300,22 @@ mod tests {
 
     #[test]
     fn feature_complete_requires_every_deterministic_signal() {
-        // All four must hold: coverage clean, deliverables declared, green, no open.
-        assert!(feature_complete(true, true, &[], true), "all signals true");
+        // All four must hold: coverage clean, deliverables declared, no open, green.
+        assert!(feature_complete(true, true, true, true), "all signals true");
         assert!(
-            !feature_complete(false, true, &[], true),
+            !feature_complete(false, true, true, true),
             "coverage not clean blocks"
         );
         assert!(
-            !feature_complete(true, false, &[], true),
+            !feature_complete(true, false, true, true),
             "no deliverables checklist blocks"
         );
         assert!(
-            !feature_complete(true, true, &[], false),
+            !feature_complete(true, true, false, true),
+            "an open confirmed finding blocks"
+        );
+        assert!(
+            !feature_complete(true, true, true, false),
             "a red check.sh blocks"
         );
     }
@@ -246,9 +332,11 @@ mod tests {
         )
         .unwrap();
         // A coverage report WITH a gap -> NeedsAttention (the TUI-false-Done fix).
+        // Branch-stamped (as ritual stamps post-run) so the same-slug supersede
+        // can later reclaim it.
         std::fs::write(
             dirs.findings_dir().join("20260101T000000Z-coverage.json"),
-            r#"{"stage":"coverage","satisfied":[],"findings":[{"title":"gap","verdict":"confirmed","action":"pending","deliverable":"D1"}]}"#,
+            r#"{"stage":"coverage","branch":"main","satisfied":[],"findings":[{"title":"gap","verdict":"confirmed","action":"pending","deliverable":"D1"}]}"#,
         )
         .unwrap();
         let (st, _) = finalize(&dirs, "main", &["20260101T000000Z-coverage.json".into()]);
@@ -257,7 +345,7 @@ mod tests {
         // A clean report + a real checklist -> Done, and the old file is gone.
         std::fs::write(
             dirs.findings_dir().join("20260101T000001Z-coverage.json"),
-            r#"{"stage":"coverage","satisfied":["D1"],"findings":[]}"#,
+            r#"{"stage":"coverage","branch":"main","satisfied":["D1"],"findings":[]}"#,
         )
         .unwrap();
         let (st, _) = finalize(&dirs, "main", &["20260101T000001Z-coverage.json".into()]);
@@ -294,5 +382,139 @@ mod tests {
         )
         .unwrap();
         assert_eq!(parse_report(&ff).gaps[0].deliverable, "no id here");
+    }
+
+    #[test]
+    fn reconcile_flags_an_unjudged_unchecked_deliverable() {
+        // D1 satisfied, D2 unchecked+unjudged, D3 already ticked.
+        let plan = "# Plan\n\n## Deliverables\n\
+                    - [ ] D1: a - accept: x\n\
+                    - [ ] D2: b - accept: y\n\
+                    - [x] D3: c - accept: z\n";
+        let mut rep = CoverageReport {
+            satisfied: vec!["D1".into()],
+            gaps: Vec::new(),
+        };
+        reconcile_missing(&mut rep, plan);
+        assert_eq!(rep.gaps.len(), 1, "only the unjudged unchecked D2 is a gap");
+        assert_eq!(rep.gaps[0].deliverable, "D2");
+        assert_eq!(rep.gaps[0].finding.verdict, "confirmed");
+        assert_eq!(rep.gaps[0].finding.action, "pending");
+    }
+
+    #[test]
+    fn reconcile_trusts_checked_and_case_insensitive_satisfied() {
+        // A `[x]` item is never flagged; `satisfied` matches ids case-insensitively.
+        let plan = "# Plan\n\n## Deliverables\n\
+                    - [x] D1: a - accept: x\n\
+                    - [ ] D2: b - accept: y\n";
+        let mut rep = CoverageReport {
+            satisfied: vec!["d2".into()], // lowercase still matches D2
+            gaps: Vec::new(),
+        };
+        reconcile_missing(&mut rep, plan);
+        assert!(rep.gaps.is_empty(), "D1 checked, D2 satisfied -> no gaps");
+    }
+
+    #[test]
+    fn reconcile_routes_synthetic_gaps_from_the_declared_route() {
+        let plan = "# Plan\n\n## Deliverables\n\
+                    - [ ] D1: file thing - accept: exists - route: src/a.rs\n\
+                    - [ ] D2: plan thing - accept: ok - route: §Design\n\
+                    - [ ] D3: no route - accept: ok\n";
+        let mut rep = CoverageReport::default();
+        reconcile_missing(&mut rep, plan);
+        assert_eq!(rep.gaps.len(), 3);
+        let d1 = rep.gaps.iter().find(|g| g.deliverable == "D1").unwrap();
+        assert_eq!(
+            d1.finding.file.as_deref(),
+            Some("src/a.rs"),
+            "code-fix route"
+        );
+        assert!(d1.finding.plan_step.is_none());
+        let d2 = rep.gaps.iter().find(|g| g.deliverable == "D2").unwrap();
+        assert_eq!(
+            d2.finding.plan_step.as_deref(),
+            Some("Design"),
+            "plan-fix route"
+        );
+        assert!(d2.finding.file.is_none());
+        let d3 = rep.gaps.iter().find(|g| g.deliverable == "D3").unwrap();
+        assert!(
+            d3.finding.file.is_none() && d3.finding.plan_step.is_none(),
+            "no route -> unroutable (drive_gaps flags it)"
+        );
+    }
+
+    #[test]
+    fn latest_report_is_scoped_to_the_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // feat-a older (a gap), feat-b newer (clean).
+        std::fs::write(
+            dir.join("20260101T000000Z-coverage.json"),
+            r#"{"stage":"coverage","branch":"feat-a","satisfied":[],"findings":[{"title":"gap","verdict":"confirmed","action":"pending","deliverable":"D1"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("20260101T000001Z-coverage.json"),
+            r#"{"stage":"coverage","branch":"feat-b","satisfied":[],"findings":[]}"#,
+        )
+        .unwrap();
+        // feat-a sees ITS gap, never feat-b's newer clean report.
+        assert_eq!(latest_report(dir, "feat-a").unwrap().gaps.len(), 1);
+        assert!(latest_report(dir, "feat-b").unwrap().gaps.is_empty());
+    }
+
+    #[test]
+    fn latest_report_prefers_a_stamped_report_over_a_newer_branchless_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // Older report stamped for feat-a (a gap); NEWER branch-less clean report.
+        std::fs::write(
+            dir.join("20260101T000000Z-coverage.json"),
+            r#"{"stage":"coverage","branch":"feat-a","satisfied":[],"findings":[{"title":"gap","verdict":"confirmed","action":"pending","deliverable":"D1"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("20260101T000002Z-coverage.json"),
+            r#"{"stage":"coverage","satisfied":[],"findings":[]}"#,
+        )
+        .unwrap();
+        // feat-a's real (gap) report wins over the newer branch-less clean one.
+        assert_eq!(latest_report(dir, "feat-a").unwrap().gaps.len(), 1);
+        // A branch with no stamped report still falls back to the branch-less one.
+        assert!(latest_report(dir, "feat-c").unwrap().gaps.is_empty());
+    }
+
+    #[test]
+    fn finalize_supersede_leaves_other_branches_coverage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        std::fs::create_dir_all(dirs.findings_dir()).unwrap();
+        std::fs::create_dir_all(dirs.feature_dir("main")).unwrap();
+        std::fs::write(
+            dirs.plan_file("main"),
+            "# Plan\n\n## Deliverables\n- [ ] D1: x - accept: y\n",
+        )
+        .unwrap();
+        // Another feature's coverage file must survive main's finalize sweep.
+        std::fs::write(
+            dirs.findings_dir().join("20260101T000000Z-coverage.json"),
+            r#"{"stage":"coverage","branch":"feat-b","satisfied":[],"findings":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dirs.findings_dir().join("20260101T000001Z-coverage.json"),
+            r#"{"stage":"coverage","branch":"main","satisfied":["D1"],"findings":[]}"#,
+        )
+        .unwrap();
+        let _ = finalize(&dirs, "main", &["20260101T000001Z-coverage.json".into()]);
+        assert!(
+            dirs.findings_dir()
+                .join("20260101T000000Z-coverage.json")
+                .exists(),
+            "feat-b's coverage is not superseded by main's run"
+        );
     }
 }

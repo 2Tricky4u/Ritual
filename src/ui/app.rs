@@ -2033,6 +2033,14 @@ impl App {
                 } else {
                     StageStatus::Done
                 };
+                // Stamp the real branch onto this run's findings so completeness
+                // consumers scope by branch (parity with the CLI; after finalize
+                // so A3's fingerprint reflects the post-tick tree, before reload).
+                crate::findings::stamp_branch(
+                    &self.dirs.findings_dir(),
+                    &new_findings,
+                    &self.branch,
+                );
                 crate::notify::notify(
                     self.cfg.notifications,
                     &format!(

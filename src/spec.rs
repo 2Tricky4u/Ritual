@@ -472,10 +472,18 @@ pub fn deliverables_gate(text: &str) -> Result<usize, String> {
     Ok(ds.len())
 }
 
+/// Normalize a deliverable id for matching (trim + lowercase) so the coverage
+/// judge's `satisfied`/`deliverable` ids match the plan's parsed ids even under
+/// trivial casing/whitespace drift. Shared by `tick` and `coverage::reconcile_missing`
+/// so both sides agree on identity.
+pub fn norm_id(s: &str) -> String {
+    s.trim().to_ascii_lowercase()
+}
+
 /// Mark the given deliverable IDs done: flip `- [ ]` to `- [x]` for those items,
 /// only inside the `## Deliverables` section, leaving everything else byte-exact.
 pub fn tick(text: &str, ids: &[&str]) -> String {
-    let want: std::collections::HashSet<&str> = ids.iter().copied().collect();
+    let want: std::collections::HashSet<String> = ids.iter().map(|s| norm_id(s)).collect();
     let Some(range) = deliverables_range(text) else {
         return text.to_string();
     };
@@ -483,7 +491,7 @@ pub fn tick(text: &str, ids: &[&str]) -> String {
     for i in range {
         if let Some(d) = parse_deliverable(&lines[i], i)
             && !d.checked
-            && want.contains(d.id.as_str())
+            && want.contains(&norm_id(&d.id))
         {
             lines[i] = lines[i].replacen("[ ]", "[x]", 1);
         }

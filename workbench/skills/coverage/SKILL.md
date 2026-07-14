@@ -48,5 +48,6 @@ Routing (load-bearing - it decides which fixer builds the gap):
 - **Plan gap** (the plan/spec itself is wrong or incomplete): set `plan_step` to the deliverable's `route:` `§Section` (or the section name); leave `file` null. Routes to the plan-fix editor.
 - Always honor the deliverable's explicit `route:` over a guess.
 - Put the deliverable id in `deliverable`. `satisfied` lists the ids you confirmed done (ritual ticks their boxes). Every verdict is `confirmed` (you verified against the tree) with `action: pending`.
+- COVER EVERY unchecked deliverable: each must appear in `satisfied` (you confirmed it) OR as a gap finding (you flagged it). Ritual treats any unchecked deliverable that is in neither as an unverified gap and will re-drive it - silence is not "done". Do not omit or skim.
 
 An empty `findings: []` with the full `satisfied` list means the project is COMPLETE. If `.ritual/` does not exist, skip this JSON section entirely.
