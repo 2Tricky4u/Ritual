@@ -704,6 +704,37 @@ fn complete_agent() -> String {
 }
 
 #[test]
+fn complete_stops_when_the_coverage_judge_writes_no_report() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = setup_project();
+    let root = tmp.path();
+    std::fs::write(root.join("check.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(
+        root.join("check.sh"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let feat = root.join(".ritual/features/main");
+    std::fs::create_dir_all(&feat).unwrap();
+    std::fs::write(
+        feat.join("plan.md"),
+        "# Plan\n\n## Deliverables\n- [ ] D1: x - accept: y exists - route: media.txt\n",
+    )
+    .unwrap();
+    // The judge writes no report -> the loop must NOT declare "clean"; exit 1.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(root)
+        .env("RITUAL_CLAUDE_CMD", complete_agent())
+        .env("RITUAL_CODEX_CMD", complete_agent())
+        .env("COMPLETE_AGENT_NO_REPORT", "1")
+        .args(["complete"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("no report"));
+}
+
+#[test]
 fn complete_drives_the_deliverable_loop_to_done() {
     use std::os::unix::fs::PermissionsExt;
     let tmp = setup_project();

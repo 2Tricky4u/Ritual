@@ -26,6 +26,9 @@ ts="$(date -u +%Y%m%dT%H%M%S%N)Z"
 
 case "$prompt" in
   */coverage*)
+    if [ -n "${COMPLETE_AGENT_NO_REPORT:-}" ]; then
+      exit 0   # simulate a judge that produced no coverage report this round
+    fi
     mkdir -p "$fdir"
     if [ -f "media.txt" ]; then
       printf '{"ritual_findings":1,"stage":"coverage","satisfied":["D1"],"findings":[]}\n' \

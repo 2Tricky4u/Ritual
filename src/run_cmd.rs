@@ -227,6 +227,7 @@ pub fn complete(cfg: &Config, dirs: &RitualDirs, check: bool) -> Result<bool> {
                 break;
             }
             // One coverage judge pass (ticks satisfied boxes, sets the stage).
+            let cov_before = coverage_files(&dirs.findings_dir());
             {
                 let mut st = State::load(dirs)?;
                 st.feature_for_branch_mut(&branch);
@@ -241,6 +242,15 @@ pub fn complete(cfg: &Config, dirs: &RitualDirs, check: bool) -> Result<bool> {
                     &title,
                     false,
                 )?;
+            }
+            // A judge that wrote NO new report produced nothing to trust; an
+            // empty `latest_report` would otherwise read as a false "clean".
+            // Set-difference (not a count) so it composes with the supersede
+            // sweep that deletes the OLD coverage files during the run.
+            let cov_after = coverage_files(&dirs.findings_dir());
+            if cov_after.difference(&cov_before).next().is_none() {
+                println!("stopped: the coverage judge produced no report this round");
+                break;
             }
             let report = crate::coverage::latest_report(&dirs.findings_dir()).unwrap_or_default();
             match crate::complete::plan_round(&mut ds, &report, &bounds) {
@@ -904,6 +914,20 @@ fn mtime(p: &Path) -> Option<std::time::SystemTime> {
 /// Finalize a coverage run: parse the judge's report, tick the satisfied
 /// deliverables into `plan.md` (confined to the section, undo-pushed), and
 /// return Done iff zero gaps remain, else NeedsAttention.
+/// The set of `-coverage.json` filenames currently in the findings dir.
+fn coverage_files(dir: &Path) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if n.ends_with("-coverage.json") {
+                out.insert(n);
+            }
+        }
+    }
+    out
+}
+
 fn finalize_coverage(dirs: &RitualDirs, branch: &str, new_findings: &[String]) -> StageStatus {
     let slug = state::branch_slug(branch);
     let Some(name) = new_findings.iter().find(|f| f.ends_with("-coverage.json")) else {
