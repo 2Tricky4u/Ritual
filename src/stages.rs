@@ -29,6 +29,12 @@ const PLAN_REVIEW_TOOLS: &str =
     "Read Glob Grep Edit Write Bash(git *) mcp__codex__codex mcp__codex__codex-reply";
 const DUAL_REVIEW_TOOLS: &str =
     "Task Read Glob Grep Edit Write Bash mcp__codex__codex mcp__codex__codex-reply";
+/// The code-fix batch edits source broadly and runs check.sh, so it needs the
+/// full edit + shell grant (like dual-review, minus codex; plus MultiEdit).
+const CODE_FIX_TOOLS: &str = "Task Read Glob Grep Edit Write MultiEdit Bash";
+/// The re-review is READ-ONLY: it inspects the diff and confirms, it must never
+/// edit (so it can't paper over its own verdict).
+const CODE_REVIEW_TOOLS: &str = "Read Glob Grep Bash(git *)";
 
 /// plan-review's tool grant, plus the third-model consensus tool when the
 /// (dark-by-default) escalation tier is enabled; the skill only escalates
@@ -291,6 +297,183 @@ pub fn findings_batch_fix_command(
     if let Some(effort) = cfg.effort.get("plan-fix") {
         cmd.argv.push("--effort".into());
         cmd.argv.push(effort.clone());
+    }
+    if let Some(fb) = &cfg.fallback_model {
+        cmd.argv.push("--fallback-model".into());
+        cmd.argv.push(fb.clone());
+    }
+    cmd
+}
+
+/// The slice of a dual-review CODE finding that rides in a code-fix prompt.
+pub struct CodeFindingBrief<'a> {
+    pub title: &'a str,
+    pub severity: &'a str,
+    pub scenario: &'a str,
+    pub file: &'a str,
+    pub line: Option<u32>,
+    pub snippet: Option<&'a str>,
+}
+
+impl CodeFindingBrief<'_> {
+    fn location(&self) -> String {
+        match self.line {
+            Some(l) => format!("{}:{l}", self.file),
+            None => self.file.to_string(),
+        }
+    }
+}
+
+fn code_findings_block(briefs: &[(u32, CodeFindingBrief)]) -> String {
+    let mut block = String::new();
+    for (n, f) in briefs {
+        let snippet = match f.snippet {
+            Some(s) => format!("snippet:\n{s}\n"),
+            None => String::new(),
+        };
+        block.push_str(&format!(
+            "FINDING #{n}:\n\
+             severity: {}\n\
+             title: {}\n\
+             location: {}\n\
+             scenario: {}\n\
+             {snippet}\n",
+            f.severity,
+            f.title,
+            f.location(),
+            f.scenario,
+        ));
+    }
+    block
+}
+
+/// Build the headless command for the BATCH code fix: an LLM edits source to
+/// resolve all queued CODE findings in ONE pass, then the caller verifies with
+/// `./check.sh` + an independent re-review (a passing fix is left in the
+/// worktree for git; a failing one is auto-reverted). Broad edit grant (unlike
+/// the plan-fix, which is locked to plan.md). `budget_code_fix_usd` caps the
+/// whole RUN. Same ANSWERS contract (`crate::answers::parse_answers`).
+pub fn findings_code_fix_command(
+    cfg: &Config,
+    briefs: &[(u32, CodeFindingBrief)],
+    invariants: Option<&Path>,
+) -> StageCommand {
+    let inv_line = match invariants {
+        Some(p) => format!(
+            "INVARIANTS_FILE: {} (non-negotiable constraints; never write code that contradicts them)\n",
+            p.display()
+        ),
+        None => String::new(),
+    };
+    let prompt = format!(
+        "Fix these code review findings in the current repository.\n\n\
+         {inv_line}\
+         {}\
+         REQUEST:\n\
+         Fix the code so these findings no longer apply. They may interact - \
+         resolve them coherently in ONE pass. Read broadly for global context \
+         and integration; make the MINIMAL changes needed. Do NOT commit, push, \
+         reset, rebase, or run any destructive command (no `rm -rf`, no `git \
+         clean`). Run `./check.sh` yourself and make it pass before finishing. \
+         For any finding you cannot fix cleanly, make NO edit for it and decline \
+         it instead (still fix the others). END your final message with exactly \
+         this block, one line per finding, every number present:\n\
+         ANSWERS:\n\
+         #<n>: FIXED\n\
+         #<n>: DECLINED <one-line reason>",
+        code_findings_block(briefs),
+    );
+    let mut cmd = StageCommand {
+        mode: Mode::Headless,
+        agent: AgentKind::Claude,
+        argv: [
+            cfg.claude_cmd.clone(),
+            vec![
+                "-p".into(),
+                prompt,
+                "--output-format".into(),
+                "stream-json".into(),
+                "--verbose".into(),
+                "--permission-mode".into(),
+                "acceptEdits".into(),
+                "--allowedTools".into(),
+                CODE_FIX_TOOLS.into(),
+                "--max-budget-usd".into(),
+                cfg.budget_code_fix_usd.to_string(),
+            ],
+        ]
+        .concat(),
+        env: vec![],
+        needs_codex: false,
+    };
+    if let Some(model) = cfg.models.get("code") {
+        cmd.argv.push("--model".into());
+        cmd.argv.push(model.clone());
+    }
+    if let Some(effort) = cfg.effort.get("code-fix") {
+        cmd.argv.push("--effort".into());
+        cmd.argv.push(effort.clone());
+    }
+    if let Some(fb) = &cfg.fallback_model {
+        cmd.argv.push("--fallback-model".into());
+        cmd.argv.push(fb.clone());
+    }
+    cmd
+}
+
+/// Build the headless READ-ONLY re-review of a code fix: given the fix's diff
+/// and the findings it targeted, an independent agent confirms each finding is
+/// actually resolved and that nothing new broke. Verdict parsed by
+/// `crate::review::parse_review`.
+pub fn code_fix_review_command(
+    cfg: &Config,
+    diff: &str,
+    briefs: &[(u32, CodeFindingBrief)],
+) -> StageCommand {
+    let prompt = format!(
+        "Review this code change for correctness and completeness.\n\n\
+         {}\
+         The following diff was made to resolve the findings above:\n\n\
+         ```diff\n{diff}\n```\n\n\
+         REQUEST:\n\
+         For EACH finding, decide from the diff (read the surrounding code if \
+         needed - you are READ-ONLY, do not edit) whether it is genuinely \
+         resolved. Then judge whether the change introduces any regression, \
+         breakage, or new problem in the wider codebase. END your final message \
+         with exactly this block, every finding number present:\n\
+         REVIEW:\n\
+         #<n>: RESOLVED\n\
+         #<n>: UNRESOLVED <one-line reason>\n\
+         REGRESSIONS: NONE\n\
+         (or) REGRESSIONS: <one-line description of what breaks>",
+        code_findings_block(briefs),
+    );
+    let mut cmd = StageCommand {
+        mode: Mode::Headless,
+        agent: AgentKind::Claude,
+        argv: [
+            cfg.claude_cmd.clone(),
+            vec![
+                "-p".into(),
+                prompt,
+                "--output-format".into(),
+                "stream-json".into(),
+                "--verbose".into(),
+                "--permission-mode".into(),
+                "dontAsk".into(),
+                "--allowedTools".into(),
+                CODE_REVIEW_TOOLS.into(),
+                "--max-budget-usd".into(),
+                cfg.budget_code_fix_usd.to_string(),
+            ],
+        ]
+        .concat(),
+        env: vec![],
+        needs_codex: false,
+    };
+    if let Some(model) = cfg.models.get("code") {
+        cmd.argv.push("--model".into());
+        cmd.argv.push(model.clone());
     }
     if let Some(fb) = &cfg.fallback_model {
         cmd.argv.push("--fallback-model".into());
@@ -1013,5 +1196,74 @@ mod tests {
         );
         let prompt = cmd.argv.iter().find(|a| a.starts_with("/spec")).unwrap();
         assert!(prompt.contains(&format!("INVARIANTS_FILE: {}", inv.display())));
+    }
+
+    fn code_brief() -> Vec<(u32, CodeFindingBrief<'static>)> {
+        vec![(
+            1,
+            CodeFindingBrief {
+                title: "race in save",
+                severity: "critical",
+                scenario: "two writers",
+                file: "src/state.rs",
+                line: Some(42),
+                snippet: Some("let st = load()?;"),
+            },
+        )]
+    }
+
+    #[test]
+    fn code_fix_command_is_broad_edit_and_carries_the_answers_contract() {
+        let (_tmp, mut cfg, _dirs) = setup();
+        cfg.budget_code_fix_usd = 5.0;
+        cfg.models.insert("code".into(), "opus".into());
+        cfg.effort.insert("code-fix".into(), "high".into());
+        let cmd = findings_code_fix_command(&cfg, &code_brief(), None);
+        assert_eq!(cmd.mode, Mode::Headless);
+        // Broad edit grant + acceptEdits (NOT the plan.md-locked doc_chat_tools).
+        let i = cmd.argv.iter().position(|a| a == "--allowedTools").unwrap();
+        assert_eq!(cmd.argv[i + 1], CODE_FIX_TOOLS);
+        assert!(cmd.argv[i + 1].contains("Edit") && cmd.argv[i + 1].contains("Bash"));
+        let p = cmd
+            .argv
+            .iter()
+            .position(|a| a == "--permission-mode")
+            .unwrap();
+        assert_eq!(cmd.argv[p + 1], "acceptEdits");
+        // Code budget, not the plan-fix budget.
+        let b = cmd
+            .argv
+            .iter()
+            .position(|a| a == "--max-budget-usd")
+            .unwrap();
+        assert_eq!(cmd.argv[b + 1], "5");
+        // Routing + prompt contents.
+        assert!(cmd.argv.windows(2).any(|w| w == ["--model", "opus"]));
+        assert!(cmd.argv.windows(2).any(|w| w == ["--effort", "high"]));
+        let prompt = cmd.argv.iter().find(|a| a.contains("REQUEST:")).unwrap();
+        assert!(prompt.contains("src/state.rs:42"));
+        assert!(prompt.contains("ANSWERS:"));
+        assert!(
+            prompt.contains("Do NOT commit"),
+            "destructive-command guardrail"
+        );
+        assert!(prompt.contains("./check.sh"));
+    }
+
+    #[test]
+    fn code_review_command_is_read_only_and_embeds_the_diff() {
+        let (_tmp, cfg, _dirs) = setup();
+        let cmd = code_fix_review_command(&cfg, "diff --git a/x b/x\n+broken", &code_brief());
+        let i = cmd.argv.iter().position(|a| a == "--allowedTools").unwrap();
+        assert_eq!(cmd.argv[i + 1], CODE_REVIEW_TOOLS);
+        assert!(
+            !cmd.argv[i + 1].contains("Edit"),
+            "reviewer must be read-only"
+        );
+        assert!(!cmd.argv[i + 1].contains("Write"));
+        let prompt = cmd.argv.iter().find(|a| a.contains("REVIEW:")).unwrap();
+        assert!(prompt.contains("diff --git a/x b/x"));
+        assert!(prompt.contains("REGRESSIONS:"));
+        assert!(prompt.contains("src/state.rs:42"));
     }
 }

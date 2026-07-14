@@ -22,6 +22,7 @@ pub mod pr_comment;
 pub mod provenance;
 pub mod redact;
 pub mod report;
+pub mod review;
 pub mod run_cmd;
 pub mod runner;
 pub mod scaffold;
