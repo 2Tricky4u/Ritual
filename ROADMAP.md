@@ -1,5 +1,15 @@
 # ritual roadmap
 
+> **Status (2026-07-14, completeness gate)**: green tests never mean "done".
+> Plans now declare a `## Deliverables` checklist; a read-only `coverage`
+> LLM-as-Judge stage checks each against the built tree and files a gap finding
+> per miss (ritual ticks the satisfied boxes); `ritual complete` auto-drives the
+> gaps to fixes in bounded, budget-capped rounds until the judge is clean (a
+> recurring gap goes STUCK so the rest progress); `ritual complete --check` is
+> the CI gate (exit 0 only when coverage is clean AND check.sh green AND no
+> confirmed finding open). This closes the "reward-hacking gap" where an agent
+> satisfies the visible tests without the real intent. Detail below.
+>
 > **Status (2026-07-14)**: v0.10 extended the findings-fix loop to
 > dual-review CODE findings - `F`/`A` queue them, one headless broad-edit run
 > fixes them all, and the fix is verified against the global context by

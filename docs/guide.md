@@ -175,6 +175,32 @@ notification: a budget kill says which knob to raise (e.g.
 `budget_finding_fix_usd`), tool-lock denials name the tool and file, and
 `ritual attach <run-id>` replays the full transcript for anything deeper.
 
+## Completeness: green tests are not "done"
+
+A structural test suite proves what EXISTS is correct, never that the whole
+plan was BUILT - so an LLM can green the tests at 40% and stop (the
+"reward-hacking gap"). ritual closes it with a **coverage gate**:
+
+- Your plan carries a **`## Deliverables`** checklist, one item per concrete
+  deliverable: `- [ ] D1: <desc> - accept: <measurable pass/fail criterion> -
+  route: <path or §Section>`. The `plan` stage is prompted to write it and
+  `plan-review` flags a missing or vague one. IDs (`D1`) are stable, independent
+  of step numbers.
+- The **`coverage`** stage (last in the pipeline) is an LLM-as-Judge: read-only,
+  it checks each deliverable against the actual tree - present? substantive (not
+  a stub)? meets its acceptance criterion? - and files a **gap finding** per
+  miss (which routes into the normal fix loop). ritual - not the agent - ticks
+  the satisfied boxes. The stage is `Done` only at **zero gaps**.
+- **`ritual complete`** drives it: judge coverage, auto-build each gap (code
+  gaps via code-fix, plan gaps via plan-fix) in bounded rounds, re-judge, and
+  loop until the judge is clean - a deliverable that keeps failing is marked
+  STUCK (after `complete_max_attempts_per_item` tries) so the rest still
+  progress. Bounded by `budget_complete_usd`, `complete_max_rounds`, and
+  `complete_round_scope` (a few gaps per round so each pass actually finishes).
+- **`ritual complete --check`** is the token-free CI gate: exit 0 only when
+  coverage is clean AND `check.sh` is green AND no confirmed finding is open.
+  "Done" means all three, never just tests-green.
+
 The exit-code contract follows the lifecycle: a confirmed critical
 blocks scripts/CI **until you mark it fixed or dismissed**. In CI:
 `ritual run dual-review --ci` writes JUnit XML to `.ritual/ci/` and

@@ -625,6 +625,63 @@ fn complete_check_exits_nonzero_until_coverage_passes() {
         .stdout(predicate::str::contains("not complete"));
 }
 
+fn complete_agent() -> String {
+    format!(
+        "{}/tests/fixtures/complete_agent.sh",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+#[test]
+fn complete_drives_the_deliverable_loop_to_done() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = setup_project();
+    let root = tmp.path();
+    // A green check.sh (the completeness gate re-checks the tree).
+    std::fs::write(root.join("check.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(
+        root.join("check.sh"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    // One code deliverable whose target file does not exist yet.
+    let feat = root.join(".ritual/features/main");
+    std::fs::create_dir_all(&feat).unwrap();
+    std::fs::write(
+        feat.join("plan.md"),
+        "# Plan\n\n## Deliverables\n- [ ] D1: media file - accept: media.txt exists - route: media.txt\n",
+    )
+    .unwrap();
+
+    // The loop: coverage flags D1 missing -> code-fix builds media.txt ->
+    // coverage confirms -> Done. Exits 0.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(root)
+        .env("RITUAL_CLAUDE_CMD", complete_agent())
+        .env("RITUAL_CODEX_CMD", complete_agent())
+        .args(["complete"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("all deliverables satisfied"));
+
+    assert!(
+        root.join("media.txt").exists(),
+        "the fix agent built the file"
+    );
+    let plan = std::fs::read_to_string(feat.join("plan.md")).unwrap();
+    assert!(plan.contains("- [x] D1"), "coverage ticked D1: {plan}");
+
+    // And the CI gate now agrees.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(root)
+        .args(["complete", "--check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("complete"));
+}
+
 #[test]
 fn findings_exit_code_contract() {
     let tmp = setup_project();
