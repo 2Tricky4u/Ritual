@@ -5,6 +5,7 @@ pub mod ci;
 pub mod clean;
 pub mod cli;
 pub mod clipboard;
+pub mod code_fix;
 pub mod coderabbit;
 pub mod config;
 pub mod doctor;
