@@ -3587,7 +3587,7 @@ impl App {
         tx: &mpsc::Sender<AppMsg>,
     ) {
         self.code_fix_task = None;
-        let _run_id = self.current_code_run_id.take();
+        let run_id = self.current_code_run_id.take().unwrap_or_default();
         let Some(mut ctx) = self.code_fix_ctx.take() else {
             return;
         };
@@ -3597,9 +3597,6 @@ impl App {
             .as_deref()
             .map(crate::answers::parse_answers)
             .unwrap_or_default();
-        let tree_changed = crate::git::touched_since(&ctx.run_cwd, &ctx.snap)
-            .map(|t| !t.is_empty())
-            .unwrap_or(true);
         let event = match outcome {
             Err(e) => crate::code_fix::GateEvent::FixFailed(format!("{e:#}")),
             Ok(o) if !o.meta.ok => {
@@ -3613,7 +3610,6 @@ impl App {
             }
             Ok(_) => crate::code_fix::GateEvent::FixOk {
                 answers: answers.clone(),
-                tree_changed,
             },
         };
         ctx.answers = answers;
@@ -3632,8 +3628,10 @@ impl App {
                 self.code_fix_ctx = Some(ctx);
                 self.spawn_gate_check(run_cwd, tx);
             }
-            crate::code_fix::Step::Revert(reason) => self.revert_code_batch(ctx, &reason, tx),
-            _ => self.revert_code_batch(ctx, "internal: unexpected step after fix", tx),
+            crate::code_fix::Step::Revert(reason) => {
+                self.fail_code_batch(ctx, &reason, Some(&run_id), tx)
+            }
+            _ => self.fail_code_batch(ctx, "internal: unexpected step after fix", None, tx),
         }
     }
 
@@ -3742,7 +3740,12 @@ impl App {
                 };
                 let run_id = runner::new_run_id("code-fix-review");
                 if let Err(e) = runner::spawn_detached(&self.dirs, &req, &run_id) {
-                    self.revert_code_batch(ctx, &format!("re-review failed to start: {e:#}"), tx);
+                    self.fail_code_batch(
+                        ctx,
+                        &format!("re-review failed to start: {e:#}"),
+                        None,
+                        tx,
+                    );
                     return;
                 }
                 self.status_msg = Some("check.sh green; re-reviewing the fix…".into());
@@ -3751,8 +3754,9 @@ impl App {
                 self.code_fix_ctx = Some(ctx);
                 self.code_fix_task = Some(task);
             }
-            crate::code_fix::Step::Revert(reason) => self.revert_code_batch(ctx, &reason, tx),
-            _ => self.revert_code_batch(ctx, "internal: unexpected step after check", tx),
+            // check.sh red: no agent run to attach; the tail IS the diagnosis.
+            crate::code_fix::Step::Revert(reason) => self.fail_code_batch(ctx, &reason, None, tx),
+            _ => self.fail_code_batch(ctx, "internal: unexpected step after check", None, tx),
         }
     }
 
@@ -3764,7 +3768,7 @@ impl App {
         tx: &mpsc::Sender<AppMsg>,
     ) {
         self.code_fix_task = None;
-        let _run_id = self.current_code_run_id.take();
+        let run_id = self.current_code_run_id.take().unwrap_or_default();
         let Some(ctx) = self.code_fix_ctx.take() else {
             return;
         };
@@ -3789,8 +3793,10 @@ impl App {
         );
         match step {
             crate::code_fix::Step::Accept(nums) => self.accept_code_batch(ctx, &nums, tx),
-            crate::code_fix::Step::Revert(reason) => self.revert_code_batch(ctx, &reason, tx),
-            _ => self.revert_code_batch(ctx, "internal: unexpected step after review", tx),
+            crate::code_fix::Step::Revert(reason) => {
+                self.fail_code_batch(ctx, &reason, Some(&run_id), tx)
+            }
+            _ => self.fail_code_batch(ctx, "internal: unexpected step after review", None, tx),
         }
     }
 
@@ -3837,18 +3843,33 @@ impl App {
         self.drain_pending_chat(tx);
     }
 
-    /// A gate failed: git-restore the touched files; the findings stay queued.
-    fn revert_code_batch(&mut self, ctx: CodeFixCtx, reason: &str, tx: &mpsc::Sender<AppMsg>) {
-        if let Ok(touched) = crate::git::touched_since(&ctx.run_cwd, &ctx.snap) {
-            let _ = crate::git::restore(&ctx.run_cwd, &ctx.snap, &touched);
-        }
+    /// A leg failed. The attempt is LEFT in the working tree (never deleted -
+    /// git is the undo, and auto-restore is unreliable when the target code is
+    /// untracked); the findings stay queued. Surface WHY, an `ritual attach`
+    /// hint to replay the run, and how to keep/discard with git.
+    fn fail_code_batch(
+        &mut self,
+        ctx: CodeFixCtx,
+        reason: &str,
+        attach: Option<&str>,
+        tx: &mpsc::Sender<AppMsg>,
+    ) {
         self.reload_artifacts();
         let n = ctx.items.len();
-        self.status_msg = Some(format!("code-fix reverted: {reason}; {n} stay queued"));
+        let attach_hint = match attach {
+            Some(id) if !id.is_empty() => format!(" · ritual attach {id}"),
+            _ => String::new(),
+        };
+        self.status_msg = Some(format!(
+            "code-fix failed: {reason}{attach_hint} · the attempt is in your working tree (git diff to review, git restore . / git stash to discard) · {n} stay queued"
+        ));
         crate::notify::notify(
             self.cfg.notifications,
-            "ritual: code-fix reverted",
-            &format!("{}: {reason}", ctx.branch),
+            "ritual: code-fix failed",
+            &format!(
+                "{}: {reason} - attempt left in the working tree",
+                ctx.branch
+            ),
         );
         self.drain_pending_chat(tx);
     }
@@ -6477,11 +6498,13 @@ mod tests {
         assert!(app.code_fix_ctx.is_none(), "batch cleared");
         assert_eq!(
             std::fs::read_to_string(root.join("x.rs")).unwrap(),
-            "fn x() {}\n",
-            "worktree restored on a red gate"
+            "fn x() { BROKEN }\n",
+            "the attempt is LEFT in the tree, not deleted"
         );
         assert_eq!(app.queued_auto().len(), 1, "finding stays queued");
-        assert!(app.status_msg.as_deref().unwrap().contains("reverted"));
+        let msg = app.status_msg.as_deref().unwrap();
+        assert!(msg.contains("failed") && msg.contains("check.sh"), "{msg}");
+        assert!(msg.contains("working tree"), "{msg}");
     }
 
     #[test]
@@ -6513,7 +6536,7 @@ mod tests {
     }
 
     #[test]
-    fn code_fix_reverts_on_reported_regression() {
+    fn code_fix_leaves_the_attempt_on_reported_regression() {
         let (_t, mut app, tx, _rx) = test_app();
         let root = seed_code_repo(&mut app);
         let slug = app.slug.clone();
@@ -6529,11 +6552,12 @@ mod tests {
         app.on_code_review_exited(ok_outcome(), tail, &tx);
         assert_eq!(
             std::fs::read_to_string(root.join("x.rs")).unwrap(),
-            "fn x() {}\n",
-            "regression → reverted"
+            "fn x() { regressed }\n",
+            "the attempt is LEFT in the tree even on a rejected review"
         );
         assert_eq!(app.queued_auto().len(), 1, "requeued");
         assert!(!seeded_json(&app).contains(r#""action": "fixed""#));
+        assert!(app.status_msg.as_deref().unwrap().contains("regression"));
     }
 
     #[test]

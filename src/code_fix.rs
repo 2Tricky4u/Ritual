@@ -25,11 +25,12 @@ pub enum CodePhase {
 /// What just happened, fed to `advance`.
 #[derive(Debug, Clone)]
 pub enum GateEvent {
-    /// The fix run finished; `answers` are its parsed ANSWERS verdicts,
-    /// `tree_changed` is whether it actually edited anything.
+    /// The fix run finished cleanly; `answers` are its parsed ANSWERS verdicts.
+    /// Whether it actually changed anything is left to the gates (an empty diff
+    /// makes the re-review report UNRESOLVED), since git cannot reliably detect
+    /// edits to files that are untracked in the repo.
     FixOk {
         answers: HashMap<u32, AnswerVerdict>,
-        tree_changed: bool,
     },
     FixFailed(String),
     CheckGreen,
@@ -60,15 +61,10 @@ pub fn advance(
     answers: &HashMap<u32, AnswerVerdict>,
 ) -> (Option<CodePhase>, Step) {
     match (phase, event) {
-        (CodePhase::Fixing, GateEvent::FixOk { tree_changed, .. }) => {
-            if !tree_changed {
-                // A "FIXED" claim with no edits can't have fixed anything.
-                (None, Step::Revert("the fix run changed nothing".into()))
-            } else {
-                // DECLINED findings are allowed through here; the gates below
-                // (check.sh + re-review) decide what is actually accepted.
-                (Some(CodePhase::Checking), Step::SpawnCheck)
-            }
+        (CodePhase::Fixing, GateEvent::FixOk { .. }) => {
+            // DECLINED findings are allowed through; the gates below (check.sh
+            // + re-review) decide what is actually accepted.
+            (Some(CodePhase::Checking), Step::SpawnCheck)
         }
         (CodePhase::Fixing, GateEvent::FixFailed(r)) => (None, Step::Revert(r)),
         (CodePhase::Checking, GateEvent::CheckGreen) => {
@@ -137,35 +133,16 @@ mod tests {
     }
 
     #[test]
-    fn advance_fixing_to_checking_when_tree_changed() {
+    fn advance_fixing_to_checking() {
         let a = fixed(&[1]);
         let (phase, step) = advance(
             CodePhase::Fixing,
-            GateEvent::FixOk {
-                answers: a.clone(),
-                tree_changed: true,
-            },
+            GateEvent::FixOk { answers: a.clone() },
             &[1],
             &a,
         );
         assert_eq!(phase, Some(CodePhase::Checking));
         assert_eq!(step, Step::SpawnCheck);
-    }
-
-    #[test]
-    fn advance_fix_no_change_reverts() {
-        let a = fixed(&[1]);
-        let (phase, step) = advance(
-            CodePhase::Fixing,
-            GateEvent::FixOk {
-                answers: a.clone(),
-                tree_changed: false,
-            },
-            &[1],
-            &a,
-        );
-        assert_eq!(phase, None);
-        assert!(matches!(step, Step::Revert(_)));
     }
 
     #[test]

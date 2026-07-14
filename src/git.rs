@@ -75,8 +75,8 @@ fn untracked(cwd: &Path) -> Result<Vec<PathBuf>> {
     )?))
 }
 
-/// Snapshot the current worktree state so a later `restore` can undo whatever a
-/// run touches. `git stash create` captures tracked working-tree+index changes
+/// Snapshot the current worktree state so a later `diff_since` can show what a
+/// run changed. `git stash create` captures tracked working-tree+index changes
 /// as a commit without altering the tree; it prints nothing on a clean tree, so
 /// we fall back to HEAD, then to the empty-tree sentinel for a repo with no
 /// commits.
@@ -91,23 +91,12 @@ pub fn snapshot(cwd: &Path) -> Result<GitSnapshot> {
     })
 }
 
-/// The files that changed since the snapshot: tracked modifications
-/// (`git diff --name-only <base>`) plus untracked files the run newly created.
-/// Gitignored build output never appears.
-pub fn touched_since(cwd: &Path, snap: &GitSnapshot) -> Result<Vec<PathBuf>> {
-    let mut touched: Vec<PathBuf> =
-        lines_to_paths(&git(cwd, &["diff", "--name-only", &snap.base])?);
-    for p in untracked(cwd)? {
-        if !snap.untracked_before.contains(&p) && !touched.contains(&p) {
-            touched.push(p);
-        }
-    }
-    Ok(touched)
-}
-
 /// A human-readable diff of everything the run changed since the snapshot, for
 /// the re-review agent. `git diff` omits untracked files, so newly-created
-/// files are listed under a `NEW FILES:` trailer.
+/// files are listed under a `NEW FILES:` trailer. NOTE: git cannot show
+/// modifications to files that are UNTRACKED in this repo (e.g. a code subtree
+/// that was never `git add`ed) - the reviewer is told to read the code directly
+/// to cover that gap.
 pub fn diff_since(cwd: &Path, snap: &GitSnapshot) -> Result<String> {
     let mut out = git(cwd, &["-c", "core.quotepath=false", "diff", &snap.base])?;
     let new_files: Vec<PathBuf> = untracked(cwd)?
@@ -121,36 +110,6 @@ pub fn diff_since(cwd: &Path, snap: &GitSnapshot) -> Result<String> {
         }
     }
     Ok(out)
-}
-
-/// Restore only the `touched` files to their snapshot state: revert tracked
-/// files that existed in the base, delete files the run newly created. Scoped
-/// so unrelated working-tree changes survive.
-pub fn restore(cwd: &Path, snap: &GitSnapshot, touched: &[PathBuf]) -> Result<()> {
-    for path in touched {
-        let spec = format!("{}:{}", snap.base, path.display());
-        let in_base = Command::new("git")
-            .args(["cat-file", "-e", &spec])
-            .current_dir(cwd)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if in_base {
-            git(
-                cwd,
-                &["checkout", &snap.base, "--", &path.to_string_lossy()],
-            )?;
-        } else {
-            // Newly created by the run (or a pre-existing untracked file the
-            // run edited — the documented limitation): remove it.
-            let abs = cwd.join(path);
-            if abs.exists() {
-                std::fs::remove_file(&abs)
-                    .with_context(|| format!("removing {}", abs.display()))?;
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -180,61 +139,6 @@ mod tests {
         git(p, &["commit", "-qm", "x"]).unwrap();
     }
 
-    fn read(p: &Path, f: &str) -> String {
-        std::fs::read_to_string(p.join(f)).unwrap()
-    }
-
-    #[test]
-    fn clean_tree_edit_is_touched_and_restored() {
-        let t = init_repo();
-        let p = t.path();
-        commit(p, "a.rs", "fn a() {}\n");
-        let snap = snapshot(p).unwrap();
-        std::fs::write(p.join("a.rs"), "fn a() { broken }\n").unwrap();
-        assert_eq!(
-            touched_since(p, &snap).unwrap(),
-            vec![PathBuf::from("a.rs")]
-        );
-        restore(p, &snap, &touched_since(p, &snap).unwrap()).unwrap();
-        assert_eq!(read(p, "a.rs"), "fn a() {}\n");
-    }
-
-    #[test]
-    fn unrelated_dirty_change_survives_restore() {
-        let t = init_repo();
-        let p = t.path();
-        commit(p, "a.rs", "A\n");
-        commit(p, "b.rs", "B\n");
-        // Pre-existing uncommitted user edit to b.rs, present BEFORE the fix.
-        std::fs::write(p.join("b.rs"), "B edited by user\n").unwrap();
-        let snap = snapshot(p).unwrap();
-        // The "fix" only touches a.rs.
-        std::fs::write(p.join("a.rs"), "A broken\n").unwrap();
-        restore(p, &snap, &touched_since(p, &snap).unwrap()).unwrap();
-        assert_eq!(read(p, "a.rs"), "A\n", "fix reverted");
-        assert_eq!(
-            read(p, "b.rs"),
-            "B edited by user\n",
-            "user change survives"
-        );
-    }
-
-    #[test]
-    fn newly_created_file_is_deleted_on_restore() {
-        let t = init_repo();
-        let p = t.path();
-        commit(p, "a.rs", "A\n");
-        let snap = snapshot(p).unwrap();
-        std::fs::write(p.join("new.rs"), "new\n").unwrap();
-        assert!(
-            touched_since(p, &snap)
-                .unwrap()
-                .contains(&PathBuf::from("new.rs"))
-        );
-        restore(p, &snap, &touched_since(p, &snap).unwrap()).unwrap();
-        assert!(!p.join("new.rs").exists(), "created file removed");
-    }
-
     #[test]
     fn diff_since_shows_hunks_and_new_files() {
         let t = init_repo();
@@ -253,40 +157,14 @@ mod tests {
     }
 
     #[test]
-    fn no_commit_repo_uses_sentinel_and_deletes_created() {
+    fn snapshot_falls_back_to_head_then_empty_tree() {
         let t = init_repo();
         let p = t.path();
-        // No commits at all.
-        let snap = snapshot(p).unwrap();
-        assert_eq!(snap.base, EMPTY_TREE);
-        std::fs::write(p.join("fresh.rs"), "hi\n").unwrap();
-        assert!(
-            touched_since(p, &snap)
-                .unwrap()
-                .contains(&PathBuf::from("fresh.rs"))
-        );
-        restore(p, &snap, &touched_since(p, &snap).unwrap()).unwrap();
-        assert!(!p.join("fresh.rs").exists());
-    }
-
-    #[test]
-    fn preexisting_untracked_edit_is_not_content_restored() {
-        // Documented limitation, pinned: a pre-existing UNTRACKED file the fix
-        // edits is not in the snapshot base, so restore deletes it rather than
-        // restoring its prior content.
-        let t = init_repo();
-        let p = t.path();
+        // No commits → empty-tree sentinel.
+        assert_eq!(snapshot(p).unwrap().base, EMPTY_TREE);
+        // With a commit and a clean tree → HEAD (stash create is empty).
         commit(p, "a.rs", "A\n");
-        std::fs::write(p.join("notes.txt"), "user notes\n").unwrap(); // untracked, pre-existing
-        let snap = snapshot(p).unwrap();
-        assert!(snap.untracked_before.contains(&PathBuf::from("notes.txt")));
-        std::fs::write(p.join("notes.txt"), "fix clobbered notes\n").unwrap();
-        // touched_since does NOT flag it (it existed before), so a normal
-        // restore leaves it as the fix left it - it is not auto-reverted.
-        assert!(
-            !touched_since(p, &snap)
-                .unwrap()
-                .contains(&PathBuf::from("notes.txt"))
-        );
+        let head = git(p, &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(snapshot(p).unwrap().base, head);
     }
 }

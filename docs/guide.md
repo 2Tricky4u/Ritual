@@ -148,10 +148,14 @@ the one document you targeted (enforced at the permission layer).
    pass that fixes them all, and verifies against the **global context**:
    it runs `./check.sh` (full), then an independent read-only **re-review**
    of the diff confirms each finding is resolved and nothing regressed.
-   Only a fix that passes BOTH is accepted; any failure **git-reverts the
-   whole batch** and the findings stay queued. Unlike a plan-fix (section-
-   gated, `⟨u⟩`-revertable), **a passing code fix is LEFT in your working
-   tree** - review it with `git diff` and keep or discard it with git.
+   Only a fix that passes BOTH is accepted (the findings are marked fixed).
+   **Whether it passes or fails, the attempt is LEFT in your working tree** -
+   ritual never deletes the work; git is the undo. A failure **names why**
+   (and offers `ritual attach <id>` to replay the run) and leaves the
+   findings queued; review the attempt with `git diff`, keep the good parts,
+   or discard with `git restore .` / `git stash`. (Code that lives in a
+   directory not tracked by this git repo can't be diffed cleanly - the
+   re-review reads the files directly, and nothing is ever auto-deleted.)
    Prefer to fix by hand instead? `⟨m⟩` flags a finding ⚑M and `Q` sends
    the manual queue to nvim's quickfix; work through them and `⟨f⟩` each.
 7. Fix code findings, re-run `C`, then **close the loop**: `⟨f⟩` marks
