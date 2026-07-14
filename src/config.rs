@@ -27,6 +27,18 @@ pub struct FileConfig {
     /// Ceiling for ONE batch code-fix run (the LLM fixes all queued code
     /// findings in a single run, then re-reviews - per run, not per finding).
     pub budget_code_fix_usd: Option<f64>,
+    /// Ceiling for ONE coverage (completeness judge) run.
+    pub budget_coverage_usd: Option<f64>,
+    /// Whole-invocation ceiling for `ritual complete` (sum of all its coverage
+    /// and fix runs); the loop stops before a run would exceed it.
+    pub budget_complete_usd: Option<f64>,
+    /// `ritual complete` loop bounds: hard round cap, consecutive-clean rounds
+    /// to declare done, gaps driven per round, and per-deliverable attempts
+    /// before it is marked STUCK.
+    pub complete_max_rounds: Option<u32>,
+    pub complete_clean_rounds: Option<u32>,
+    pub complete_round_scope: Option<u32>,
+    pub complete_max_attempts_per_item: Option<u32>,
     /// `[keys]` table: action name -> chord ("check-full = \"F\"").
     pub keys: Option<HashMap<String, String>>,
     /// Redact secrets from archives/streams/reports (default true).
@@ -142,6 +154,12 @@ pub struct Config {
     pub budget_doc_chat_usd: f64,
     pub budget_finding_fix_usd: f64,
     pub budget_code_fix_usd: f64,
+    pub budget_coverage_usd: f64,
+    pub budget_complete_usd: f64,
+    pub complete_max_rounds: u32,
+    pub complete_clean_rounds: u32,
+    pub complete_round_scope: u32,
+    pub complete_max_attempts_per_item: u32,
     pub keymap: Keymap,
     pub redaction: bool,
     pub budget_daily_usd: Option<f64>,
@@ -180,6 +198,12 @@ impl Default for Config {
             budget_doc_chat_usd: 0.50,
             budget_finding_fix_usd: 1.0,
             budget_code_fix_usd: 5.0,
+            budget_coverage_usd: 2.0,
+            budget_complete_usd: 30.0,
+            complete_max_rounds: 5,
+            complete_clean_rounds: 1,
+            complete_round_scope: 3,
+            complete_max_attempts_per_item: 2,
             keymap: Keymap::default(),
             redaction: true,
             budget_daily_usd: None,
@@ -266,6 +290,24 @@ impl Config {
             }
             if let Some(b) = fc.budget_code_fix_usd {
                 cfg.budget_code_fix_usd = b;
+            }
+            if let Some(b) = fc.budget_coverage_usd {
+                cfg.budget_coverage_usd = b;
+            }
+            if let Some(b) = fc.budget_complete_usd {
+                cfg.budget_complete_usd = b;
+            }
+            if let Some(v) = fc.complete_max_rounds {
+                cfg.complete_max_rounds = v;
+            }
+            if let Some(v) = fc.complete_clean_rounds {
+                cfg.complete_clean_rounds = v;
+            }
+            if let Some(v) = fc.complete_round_scope {
+                cfg.complete_round_scope = v;
+            }
+            if let Some(v) = fc.complete_max_attempts_per_item {
+                cfg.complete_max_attempts_per_item = v;
             }
             if let Some(keys) = fc.keys {
                 key_overrides.extend(keys); // later layers win per-action
@@ -412,6 +454,9 @@ mod tests {
         assert_eq!(cfg.claude_cmd, vec!["claude"]);
         assert!(!cfg.consensus_enabled, "consensus ships dark");
         assert_eq!(cfg.budget_code_fix_usd, 5.0, "code-fix cap default");
+        assert_eq!(cfg.budget_coverage_usd, 2.0, "coverage cap default");
+        assert_eq!(cfg.complete_max_rounds, 5);
+        assert_eq!(cfg.complete_max_attempts_per_item, 2);
     }
 
     #[test]
@@ -468,6 +513,12 @@ mod tests {
 fallback_model = "claude-sonnet-5"
 budget_finding_fix_usd = 2.5
 budget_code_fix_usd = 7.0
+budget_coverage_usd = 3.0
+budget_complete_usd = 40.0
+complete_max_rounds = 8
+complete_clean_rounds = 2
+complete_round_scope = 4
+complete_max_attempts_per_item = 3
 
 [keys]
 check-full = "F"
@@ -511,6 +562,12 @@ alpha = "echo a"
         assert_eq!(cfg.fallback_model.as_deref(), Some("claude-sonnet-5"));
         assert_eq!(cfg.budget_finding_fix_usd, 2.5);
         assert_eq!(cfg.budget_code_fix_usd, 7.0);
+        assert_eq!(cfg.budget_coverage_usd, 3.0);
+        assert_eq!(cfg.budget_complete_usd, 40.0);
+        assert_eq!(cfg.complete_max_rounds, 8);
+        assert_eq!(cfg.complete_clean_rounds, 2);
+        assert_eq!(cfg.complete_round_scope, 4);
+        assert_eq!(cfg.complete_max_attempts_per_item, 3);
         assert_eq!(cfg.models["plan-review"], "opus");
         assert_eq!(cfg.effort["plan"], "xhigh");
         assert_eq!(cfg.retry_models, vec!["claude-opus-4-8", "claude-sonnet-5"]);

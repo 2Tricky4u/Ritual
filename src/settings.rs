@@ -88,6 +88,22 @@ pub static CATALOG: &[SettingDef] = &[
         get: |c| Some(c.budget_code_fix_usd.to_string()),
     },
     SettingDef {
+        key: "budget_coverage_usd",
+        label: "coverage (per run)",
+        doc: "USD cap for ONE coverage completeness-judge run",
+        group: "budgets",
+        kind: SettingKind::F64,
+        get: |c| Some(c.budget_coverage_usd.to_string()),
+    },
+    SettingDef {
+        key: "budget_complete_usd",
+        label: "complete (per invocation)",
+        doc: "USD ceiling for a whole `ritual complete` loop",
+        group: "budgets",
+        kind: SettingKind::F64,
+        get: |c| Some(c.budget_complete_usd.to_string()),
+    },
+    SettingDef {
         key: "budget_daily_usd",
         label: "daily ceiling",
         doc: "daily spend across all runs (empty = unlimited)",
@@ -658,6 +674,7 @@ budget_finding_fix_usd = 3.0
         cfg.effort.insert("plan".into(), "xhigh".into());
         assert_eq!(get("budget_finding_fix_usd", &cfg), Some("3".into()));
         assert_eq!(get("budget_code_fix_usd", &cfg), Some("5".into()));
+        assert_eq!(get("budget_coverage_usd", &cfg), Some("2".into()));
         assert_eq!(get("budget_daily_usd", &cfg), None);
         assert_eq!(get("models.plan", &cfg), Some("fable-5".into()));
         assert_eq!(get("models.plan-review", &cfg), None);

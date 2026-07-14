@@ -419,6 +419,7 @@ fn budget_check(cfg: &Config) -> CheckResult {
         ("doc-chat", cfg.budget_doc_chat_usd),
         ("finding-fix", cfg.budget_finding_fix_usd),
         ("code-fix", cfg.budget_code_fix_usd),
+        ("coverage", cfg.budget_coverage_usd),
     ] {
         if per_run > daily {
             over.push(format!("{name} (${per_run})"));
