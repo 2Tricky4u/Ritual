@@ -324,8 +324,14 @@ pub fn set_answer(
     rewrite(lf)
 }
 
-/// Persist a findings file: pretty JSON, tmp + rename (atomic on POSIX).
+/// Persist a findings file: pretty JSON, tmp + rename (atomic on POSIX). If the
+/// file was deleted underneath us (e.g. a concurrent `reset-plan` wiped the
+/// plan/coverage findings while the TUI held a stale copy), keep the in-memory
+/// change but do NOT resurrect the file on disk.
 fn rewrite(lf: &LoadedFindings) -> Result<()> {
+    if !lf.path.exists() {
+        return Ok(());
+    }
     let tmp = lf.path.with_extension("json.tmp");
     std::fs::write(&tmp, serde_json::to_string_pretty(&lf.file)?)?;
     std::fs::rename(&tmp, &lf.path)?;
@@ -423,6 +429,26 @@ mod tests {
         assert_eq!(agg[0].finding.title, "open");
         assert_eq!(aggregate(&loaded, true).len(), 2);
         assert_eq!(resolved_count(&loaded), 1);
+    }
+
+    #[test]
+    fn set_action_on_a_deleted_file_does_not_resurrect_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("20260712T000000Z-coverage.json");
+        std::fs::write(
+            &path,
+            r#"{"stage":"coverage","findings":[{"title":"x","verdict":"confirmed"}]}"#,
+        )
+        .unwrap();
+        let mut loaded = load_all(tmp.path()).unwrap();
+        // A concurrent reset-plan deletes the file underneath the stale copy.
+        std::fs::remove_file(&path).unwrap();
+        set_action(&mut loaded, 0, 0, "fixed").unwrap();
+        assert!(!path.exists(), "deleted file is not resurrected");
+        assert_eq!(
+            loaded[0].file.findings[0].action, "fixed",
+            "in-memory change is still applied"
+        );
     }
 
     #[test]

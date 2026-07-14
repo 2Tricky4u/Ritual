@@ -198,10 +198,23 @@ pub fn complete(cfg: &Config, dirs: &RitualDirs, check: bool) -> Result<bool> {
             round_scope: cfg.complete_round_scope,
             max_attempts: cfg.complete_max_attempts_per_item,
         };
-        let start_spend = crate::history::today_spend(&dirs.runs_dir());
+        // The run-ids that already existed - so the loop's own spend is the cost
+        // of runs on THIS branch created after we started, not the whole day's
+        // spend across every feature/terminal (which would stop the loop early).
+        let runs_before: std::collections::HashSet<String> =
+            crate::history::load_all(&dirs.runs_dir())
+                .unwrap_or_default()
+                .iter()
+                .map(|m| m.run_id.clone())
+                .collect();
         let mut ds = crate::complete::DriveState::default();
         loop {
-            let spent = crate::history::today_spend(&dirs.runs_dir()) - start_spend;
+            let spent: f64 = crate::history::load_all(&dirs.runs_dir())
+                .unwrap_or_default()
+                .iter()
+                .filter(|m| m.branch == branch && !runs_before.contains(&m.run_id))
+                .filter_map(|m| m.total_cost_usd)
+                .sum();
             if budget_exceeded(cfg, dirs).is_some() {
                 println!("daily budget reached; stopping the complete loop");
                 break;
@@ -318,6 +331,18 @@ fn drive_gaps(
 ) -> Result<()> {
     let invariants = stages::meaningful_invariants(dirs);
 
+    // A gap with neither a file nor a plan_step route can't be driven; report it
+    // so the eventual STUCK has a visible cause (add a `route:` hint) instead of
+    // silently burning attempts.
+    for f in gaps.iter().map(|g| &g.finding) {
+        if f.file.is_none() && f.plan_step.is_none() {
+            println!(
+                "  skipping unroutable gap (no file/plan_step route): {}",
+                f.title
+            );
+        }
+    }
+
     let code: Vec<&crate::findings::Finding> = gaps
         .iter()
         .map(|g| &g.finding)
@@ -345,8 +370,19 @@ fn drive_gaps(
                 )
             })
             .collect();
+        // Parity with the TUI code-fix: the prompt forbids commit/reset and
+        // promises ritual checks HEAD; headlessly we at least warn if the agent
+        // moved it (snapshot fails-open, so an unborn HEAD is harmless).
+        let snap = crate::git::snapshot(&dirs.work_root).ok();
         let cmd = stages::findings_code_fix_command(cfg, &briefs, invariants.as_deref());
         run_fix(cfg, dirs, branch, title, "code-fix", cmd)?;
+        if let Some(snap) = snap
+            && crate::git::head_moved(&dirs.work_root, &snap)
+        {
+            println!(
+                "  warning: the code-fix agent moved HEAD (commit/reset); inspect with git reflog"
+            );
+        }
     }
 
     let plan: Vec<&crate::findings::Finding> = gaps
@@ -418,7 +454,16 @@ fn run_fix(
     };
     let run_id = runner::new_run_id(stage_label);
     runner::spawn_detached(dirs, &req, &run_id)?;
-    let _ = follow_run(cfg, dirs, req.agent, &run_id)?;
+    let outcome = follow_run(cfg, dirs, req.agent, &run_id)?;
+    if !outcome.meta.ok {
+        // Surface WHY (budget cap, tool denial, ...) instead of swallowing it;
+        // the gap will recur and eventually go STUCK, but the user needs the
+        // actionable reason. Never bail - that would abort the whole loop.
+        println!(
+            "  {stage_label} run did not succeed: {}",
+            crate::history::decode_failure(&outcome.meta)
+        );
+    }
     Ok(())
 }
 
