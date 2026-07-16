@@ -148,6 +148,11 @@ struct CodeFixCtx {
     briefs: Vec<OwnedCodeBrief>,
     phase: crate::code_fix::CodePhase,
     answers: std::collections::HashMap<u32, crate::answers::AnswerVerdict>,
+    /// The fix's rendered ChangeSet, captured right after the fix run (before
+    /// check.sh, whose artifacts must not pollute the review evidence). The
+    /// review leg consumes it; None there fails the batch - the reviewer is
+    /// never handed an empty diff.
+    fix_change: Option<String>,
 }
 
 /// The last APPLIED batch, so `u` can revert it: the one undo snapshot plus
@@ -3714,6 +3719,7 @@ impl App {
                 briefs: owned,
                 phase: crate::code_fix::CodePhase::Fixing,
                 answers: std::collections::HashMap::new(),
+                fix_change: None,
             },
         ))
     }
@@ -3819,17 +3825,26 @@ impl App {
                     );
                     return;
                 }
-                let no_change = crate::git::observed_change(&ctx.run_cwd, &ctx.snap)
-                    .map(|c| c.is_empty())
-                    .unwrap_or(false);
-                if no_change {
-                    self.fail_code_batch(
-                        ctx,
-                        "fix produced no observable change",
-                        Some(&run_id),
-                        tx,
-                    );
-                    return;
+                // Fail CLOSED on a git error: an unverifiable change must never
+                // slide through as "there was a change" with an empty review
+                // diff. Capture the render HERE, before check.sh - artifacts
+                // the check writes must not pollute the review evidence.
+                match crate::git::observed_change(&ctx.run_cwd, &ctx.snap) {
+                    Err(e) => {
+                        let reason = format!("git could not verify the fix: {e:#}");
+                        self.fail_code_batch(ctx, &reason, Some(&run_id), tx);
+                        return;
+                    }
+                    Ok(c) if c.is_empty() => {
+                        self.fail_code_batch(
+                            ctx,
+                            "fix produced no observable change",
+                            Some(&run_id),
+                            tx,
+                        );
+                        return;
+                    }
+                    Ok(c) => ctx.fix_change = Some(c.render()),
                 }
                 if !ctx.run_cwd.join("check.sh").exists() {
                     let reason = format!(
@@ -3921,11 +3936,14 @@ impl App {
         match step {
             crate::code_fix::Step::SpawnReview => {
                 ctx.phase = crate::code_fix::CodePhase::Reviewing;
-                // The real change set (content-hashed), so the reviewer sees
-                // actual edits even when the target code is untracked in git.
-                let diff = crate::git::observed_change(&ctx.run_cwd, &ctx.snap)
-                    .map(|c| c.render())
-                    .unwrap_or_default();
+                // The change set captured right after the fix run: content-
+                // hashed (untracked/ignored targets included) and free of
+                // check.sh artifacts. Never hand the reviewer an empty diff -
+                // a missing capture fails the batch instead.
+                let Some(diff) = ctx.fix_change.take() else {
+                    self.fail_code_batch(ctx, "internal: fix change set missing", None, tx);
+                    return;
+                };
                 let cmd = {
                     let briefs: Vec<(u32, stages::CodeFindingBrief)> = ctx
                         .briefs
