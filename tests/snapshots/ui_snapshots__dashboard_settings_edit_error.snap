@@ -1,5 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
+assertion_line: 627
 expression: "render_at(&app, 90, 30)"
 ---
 "                            │  live   findings    history    plan    guide              "
@@ -26,9 +27,9 @@ expression: "render_at(&app, 90, 30)"
 "            │ appearance                                                     │            "
 "            │  theme                                      eldritch (default) │            "
 "            │  icons                                          nerd (default) │ q  quit    "
-"            │  transparency                                   true (default) │            "
+"            │                                                                │            "
 "            │  finding fix (per run): abc▏                                   │            "
 "            │  USD cap for ONE F-apply batch fix run - number > 0            │            "
-"            │  ✗ must be a number > 0                                        │            "
+"            │ j/k move · enter toggle/edit · g/G first/last · S/esc close    │            "
 "            ╰────────────────────────────────────────────────────────────────╯            "
 " RITUAL   detached  detached                                                          "

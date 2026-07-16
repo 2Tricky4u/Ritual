@@ -1,5 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
+assertion_line: 614
 expression: "render_at(&app, 90, 30)"
 ---
 "                            │  live   findings    history    plan    guide              "
@@ -29,6 +30,6 @@ expression: "render_at(&app, 90, 30)"
 "            │  transparency                                   true (default) │            "
 "            │ behavior                                                       │            "
 "            │  notifications                                  true (default) │            "
-"            │  redaction                                      true (default) │            "
+"            │ j/k move · enter toggle/edit · g/G first/last · S/esc close    │            "
 "            ╰────────────────────────────────────────────────────────────────╯            "
 " RITUAL   detached  detached                                                          "

@@ -171,6 +171,26 @@ fn dashboard_help_overlay_plan() {
 }
 
 #[test]
+fn dashboard_help_overlay_history() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_app(&tmp);
+    app.tab = Tab::History;
+    app.show_help = true;
+    insta::assert_snapshot!(render(&app));
+}
+
+#[test]
+fn dashboard_help_overlay_guide() {
+    // Guide previously had NO context section at all; it now advertises
+    // enter (run selected stage) plus the shared actions.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_app(&tmp);
+    app.tab = Tab::Guide;
+    app.show_help = true;
+    insta::assert_snapshot!(render(&app));
+}
+
+#[test]
 fn dashboard_help_overlay_finding_detail() {
     // Over the finding-detail modal, which-key advertises ONLY the keys
     // `detail_input` honors (finding actions + up/down), not the global/tab
@@ -329,6 +349,103 @@ fn dashboard_running_with_budget() {
     app.running = Some(ritual::state::StageId::PlanReview);
     app.check = ritual::ui::app::CheckState::Green;
     insta::assert_snapshot!(render(&app));
+}
+
+/// The which-key honesty contract: every context advertises exactly the keys
+/// that work there. Encoded literally so any drift (a new action forgotten,
+/// a section reshuffle, a phantom unbound entry) fails loudly.
+#[test]
+fn whichkey_sections_advertise_exactly_what_works() {
+    use ritual::keymap::Action::*;
+    use ritual::ui::dashboard::{WkEntry, whichkey_sections};
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_app(&tmp);
+
+    let names = |app: &ritual::ui::app::App| -> Vec<(&'static str, usize)> {
+        whichkey_sections(app)
+            .iter()
+            .map(|(t, v)| (*t, v.len()))
+            .collect()
+    };
+
+    // Every tab carries its ctx + the three shared sections.
+    for (tab, ctx, n) in [
+        (Tab::Live, "run", 1),
+        (Tab::Findings, "findings", 12),
+        (Tab::History, "history", 2),
+        (Tab::Plan, "plan", 2),
+        (Tab::Guide, "guide", 1),
+    ] {
+        app.tab = tab;
+        app.finding_detail = false;
+        assert_eq!(
+            names(&app),
+            vec![(ctx, n), ("actions", 7), ("global", 7), ("move", 6)],
+            "sections for {ctx}"
+        );
+        // Confirm (Enter launches/opens) is advertised on EVERY tab.
+        let sections = whichkey_sections(&app);
+        assert!(
+            sections[0].1.contains(&WkEntry::Act(Confirm)),
+            "{ctx} must advertise enter"
+        );
+    }
+
+    // The findings ctx carries the palette-only entry (renders as `:`), and
+    // the plan ctx carries ResetPlan the same way.
+    app.tab = Tab::Findings;
+    assert!(
+        whichkey_sections(&app)[0]
+            .1
+            .contains(&WkEntry::Act(FindingsApply)),
+        "findings advertises the palette-only apply"
+    );
+    app.tab = Tab::Plan;
+    assert!(
+        whichkey_sections(&app)[0]
+            .1
+            .contains(&WkEntry::Act(ResetPlan))
+    );
+
+    // The finding-detail modal advertises only what detail_input honors,
+    // including the literal close keys.
+    app.finding_detail = true;
+    let detail = whichkey_sections(&app);
+    assert_eq!(detail.len(), 2);
+    assert_eq!(detail[0].0, "finding");
+    assert!(detail[0].1.contains(&WkEntry::Lit {
+        keys: "esc/q/enter",
+        desc: "close"
+    }));
+    assert_eq!(
+        detail[1],
+        ("move", vec![WkEntry::Act(Up), WkEntry::Act(Down)])
+    );
+    app.finding_detail = false;
+
+    // No phantom rows: every Act entry across all contexts either has a
+    // bound chord or a non-empty palette label (renders as `:` — never
+    // silently dropped like the old FindingsApply).
+    let km = ritual::keymap::Keymap::default();
+    for tab in [
+        Tab::Live,
+        Tab::Findings,
+        Tab::History,
+        Tab::Plan,
+        Tab::Guide,
+    ] {
+        app.tab = tab;
+        for (title, entries) in whichkey_sections(&app) {
+            for e in entries {
+                if let WkEntry::Act(a) = e {
+                    assert!(
+                        !km.chords_for(a).is_empty() || !ritual::keymap::describe(a).is_empty(),
+                        "phantom entry {a:?} in section {title}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]

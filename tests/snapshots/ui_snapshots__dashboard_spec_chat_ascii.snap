@@ -1,5 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
+assertion_line: 547
 expression: "render_at(&app, 100, 26)"
 ---
 "                            │ spec · § Behavior (the contract: WHAT,│ ai: chat · spec · § Behavior ("
@@ -25,6 +26,6 @@ expression: "render_at(&app, 100, 26)"
 "                            │                                       │                               "
 "                            │                                       │                               "
 "                            │                                       │                               "
-"                            │                                       │                               "
 "                            │                                       │ > and ▏cap it at 3 attempts   "
+"                            │                                       │ enter send · alt+enter ⏎ · tab"
 " RITUAL  br: detached  detached                                                                     "

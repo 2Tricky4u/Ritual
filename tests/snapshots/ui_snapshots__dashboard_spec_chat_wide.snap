@@ -1,5 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
+assertion_line: 518
 expression: "render_at(&app, 120, 30)"
 ---
 "                            │ spec · § Behavior (the contract: WHAT, not HOW)  │ 󰚩 chat · spec · § Behavior (the contra…"
@@ -29,6 +30,6 @@ expression: "render_at(&app, 120, 30)"
 "                            │                                                  │                                        "
 "                            │                                                  │                                        "
 "                            │                                                  │                                        "
-"                            │                                                  │                                        "
 "                            │                                                  │  and ▏cap it at 3 attempts             "
+"                            │                                                  │ enter send · alt+enter ⏎ · tab target ·"
 " RITUAL   detached  detached                                                                                        "

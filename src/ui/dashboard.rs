@@ -637,6 +637,7 @@ fn draw_chat_panel(f: &mut Frame, app: &App, chat: &ChatState, area: Rect) {
             Constraint::Length(1),
             Constraint::Min(1),
             Constraint::Length(input_rows),
+            Constraint::Length(1), // persistent key footer (chat swallows `?`)
         ])
         .split(area);
 
@@ -693,10 +694,6 @@ fn draw_chat_panel(f: &mut Frame, app: &App, chat: &ChatState, area: Rect) {
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
             "  ask me to write or refine this doc",
-            Style::default().fg(t.comment()),
-        )));
-        lines.push(Line::from(Span::styled(
-            "  Tab: target · Enter: send · Esc: close",
             Style::default().fg(t.comment()),
         )));
     }
@@ -757,6 +754,21 @@ fn draw_chat_panel(f: &mut Frame, app: &App, chat: &ChatState, area: Rect) {
     f.render_widget(
         Paragraph::new(input_lines.into_iter().skip(skip).collect::<Vec<_>>()),
         rows[2],
+    );
+
+    // Persistent key footer: the chat swallows `?` (it types), so this line
+    // is the only in-context documentation. Two states: idle vs in-flight.
+    let footer = if chat.in_flight {
+        " enter queue · ctrl+x cancel edit · ↑↓ scroll"
+    } else {
+        " enter send · alt+enter ⏎ · tab target · ↑↓ scroll · alt+z/ctrl+z undo/redo · esc close"
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            footer,
+            Style::default().fg(t.comment()).add_modifier(Modifier::DIM),
+        ))),
+        rows[3],
     );
 }
 
@@ -1613,7 +1625,7 @@ fn draw_finding_detail(f: &mut Frame, app: &App) {
     for (key, label) in [("o", "nvim"), ("e", "editor"), ("j/k", "next")] {
         cap(&mut footer, key, label.into());
     }
-    cap(&mut footer, "esc", "close".into());
+    cap(&mut footer, "esc/q/enter", "close".into());
     f.render_widget(Paragraph::new(Line::from(footer)), rows[1]);
 }
 
@@ -1667,13 +1679,27 @@ fn draw_palette(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
+/// One row in a which-key section: a real Action (keycaps resolved from the
+/// live keymap; unbound-but-labeled actions render with a `:` keycap so
+/// palette-only entries are never silently dropped) or a literal hint for
+/// modal keys that aren't Actions (esc/enter/q).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WkEntry {
+    Act(Action),
+    Lit {
+        keys: &'static str,
+        desc: &'static str,
+    },
+}
+
 /// The ordered key sections to show in the which-key overlay for the CURRENT
-/// context: the actions specific to the active tab (or the finding-detail
-/// overlay) FIRST - the "what's available here" - then the always-present
-/// `global` and `move` sections. Mirrors what `dispatch`/`nav` actually gate per
-/// context so the list stays honest to what a keypress does.
-fn whichkey_sections(app: &App) -> Vec<(&'static str, Vec<Action>)> {
+/// context: the actions specific to the active tab (or the modal overlay)
+/// FIRST, then the tab-agnostic `actions`, `global` and `move` sections.
+/// Mirrors what `dispatch`/`nav`/the modal handlers actually honor per
+/// context - the honesty test in tests/ui_snapshots.rs pins these tables.
+pub fn whichkey_sections(app: &App) -> Vec<(&'static str, Vec<WkEntry>)> {
     use Action::*;
+    use WkEntry::{Act, Lit};
     // The finding-detail overlay is its own modal: `detail_input` honors only a
     // subset (the finding actions + up/down + help/close), swallowing tabs,
     // palette, settings, scrolling and feature-nav - so advertise ONLY what
@@ -1683,72 +1709,92 @@ fn whichkey_sections(app: &App) -> Vec<(&'static str, Vec<Action>)> {
             (
                 "finding",
                 vec![
-                    FindingFix,
-                    FindingDismiss,
-                    FindingClaudeFix,
-                    FindingManual,
-                    DocUndo,
-                    NvimOpen,
-                    OpenEditor,
+                    Act(FindingFix),
+                    Act(FindingDismiss),
+                    Act(FindingClaudeFix),
+                    Act(FindingManual),
+                    Act(DocUndo),
+                    Act(NvimOpen),
+                    Act(OpenEditor),
+                    Lit {
+                        keys: "esc/q/enter",
+                        desc: "close",
+                    },
                 ],
             ),
-            ("move", vec![Up, Down]),
+            ("move", vec![Act(Up), Act(Down)]),
         ];
     }
-    let ctx: (&'static str, Vec<Action>) = match app.tab {
-        Tab::Live => (
-            "run",
-            vec![
-                Confirm, Cancel, Takeover, CheckFast, CheckFull, SpecChat, OpenEditor,
-            ],
-        ),
+    // Per-tab context: ONLY what is specific to this tab. Finding-targeted
+    // keys (o/e and the triage set) live on Findings; Confirm appears
+    // everywhere because Enter launches the selected stage from every tab
+    // (and opens the finding on Findings).
+    let ctx: (&'static str, Vec<WkEntry>) = match app.tab {
+        Tab::Live => ("run", vec![Act(Confirm)]),
         Tab::Findings => (
             "findings",
             vec![
-                Confirm,
-                FindingFix,
-                FindingDismiss,
-                FindingClaudeFix,
-                FindingManual,
-                FindingsApply,
-                TriageAll,
-                QueueAllCode,
-                ToggleResolved,
-                Filter,
-                NvimOpen,
-                NvimQuickfix,
-                OpenEditor,
+                Act(Confirm),
+                Act(FindingFix),
+                Act(FindingDismiss),
+                Act(FindingClaudeFix),
+                Act(FindingManual),
+                Act(QueueAllCode),
+                Act(TriageAll),
+                Act(FindingsApply),
+                Act(ToggleResolved),
+                Act(Filter),
+                Act(NvimOpen),
+                Act(OpenEditor),
             ],
         ),
-        Tab::Plan => ("plan", vec![SpecChat, DocUndo, OpenEditor]),
-        Tab::History => ("history", vec![Filter, Takeover, OpenEditor]),
-        Tab::Guide => ("", vec![]),
+        Tab::Plan => ("plan", vec![Act(Confirm), Act(ResetPlan)]),
+        Tab::History => ("history", vec![Act(Confirm), Act(Filter)]),
+        Tab::Guide => ("guide", vec![Act(Confirm)]),
     };
-    let mut out: Vec<(&'static str, Vec<Action>)> = Vec::new();
-    if !ctx.1.is_empty() {
-        out.push(ctx);
-    }
-    out.push((
-        "global",
-        vec![
-            Quit,
-            Help,
-            Palette,
-            NextTab,
-            TabLive,
-            TabFindings,
-            TabHistory,
-            TabPlan,
-            TabGuide,
-            Refresh,
-            Settings,
-        ],
-    ));
-    out.push((
-        "move",
-        vec![Up, Down, ScrollTop, Follow, FeaturePrev, FeatureNext],
-    ));
-    out
+    // Tab-agnostic actions: verified to work identically on every tab
+    // (no tab guard in dispatch).
+    let shared: Vec<WkEntry> = vec![
+        Act(Cancel),
+        Act(CheckFast),
+        Act(CheckFull),
+        Act(Takeover),
+        Act(SpecChat),
+        Act(DocUndo),
+        Act(NvimQuickfix),
+    ];
+    vec![
+        ctx,
+        ("actions", shared),
+        (
+            "global",
+            vec![
+                Act(Quit),
+                Act(Help),
+                Act(Palette),
+                Act(NextTab),
+                // The five tab jumps compress to one row (they'd crowd out
+                // real context on narrow frames).
+                Lit {
+                    keys: "1-5",
+                    desc: "jump to tab",
+                },
+                Act(Refresh),
+                Act(Settings),
+            ],
+        ),
+        (
+            "move",
+            vec![
+                Act(Up),
+                Act(Down),
+                Act(ScrollTop),
+                Act(Follow),
+                Act(FeaturePrev),
+                Act(FeatureNext),
+            ],
+        ),
+    ]
 }
 
 /// The which-key help overlay: the keys/actions live in the CURRENT view,
@@ -1764,28 +1810,41 @@ fn draw_help(f: &mut Frame, app: &App) {
     let desc_style = Style::default().fg(t.muted());
 
     // One rendered block per non-empty section: a header line + one row per
-    // action that actually has a bound chord (palette-only actions stay
-    // reachable via `:`), plus that block's display width.
+    // entry. An Action with a bound chord shows its keycaps; an UNBOUND one
+    // with a label shows the `:` keycap + "(palette)" instead of vanishing
+    // (the old silent drop hid FindingsApply entirely); Lit rows render
+    // their literal keys (modal esc/enter hints that aren't Actions).
     let mut blocks: Vec<(Vec<Line>, usize)> = Vec::new();
-    for (title, actions) in whichkey_sections(app) {
+    for (title, entries) in whichkey_sections(app) {
         let mut ls: Vec<Line> = Vec::new();
         let mut w = title.chars().count() + 1;
-        for a in actions {
-            let caps: Vec<String> = app
-                .cfg
-                .keymap
-                .chords_for(a)
-                .iter()
-                .map(|c| c.caption())
-                .collect();
-            if caps.is_empty() {
-                continue;
-            }
-            let keys = caps.join(" / ");
-            let desc = describe(a);
-            w = w.max(keys.chars().count() + desc.chars().count() + 6);
+        for entry in entries {
+            let (keys, desc) = match entry {
+                WkEntry::Act(a) => {
+                    let caps: Vec<String> = app
+                        .cfg
+                        .keymap
+                        .chords_for(a)
+                        .iter()
+                        .map(|c| c.caption())
+                        .collect();
+                    let desc = describe(a);
+                    if caps.is_empty() {
+                        if desc.is_empty() {
+                            continue; // dynamic action with no label: nothing to show
+                        }
+                        // Unbound-but-labeled: the `:` keycap says "via the
+                        // palette" - the row must never vanish silently.
+                        (":".to_string(), desc.to_string())
+                    } else {
+                        (caps.join(" / "), desc.to_string())
+                    }
+                }
+                WkEntry::Lit { keys, desc } => (keys.to_string(), desc.to_string()),
+            };
+            w = w.max(keys.chars().count() + desc.chars().count() + 5);
             ls.push(Line::from(vec![
-                Span::raw("  "),
+                Span::raw(" "),
                 keycap(t, &keys),
                 Span::raw(" "),
                 Span::styled(desc, desc_style),
@@ -1862,7 +1921,7 @@ fn draw_settings(f: &mut Frame, app: &App) {
         rows.push((Some(i), def.group));
     }
 
-    let want_h = rows.len() as u16 + 3; // top pad + rows + borders
+    let want_h = rows.len() as u16 + 4; // top pad + rows + key footer + borders
     let area = centered_rect(
         f.area(),
         66.min(f.area().width.saturating_sub(2)).max(1),
@@ -1878,8 +1937,10 @@ fn draw_settings(f: &mut Frame, app: &App) {
         .position(|(ci, _)| *ci == Some(s.selected))
         .unwrap_or(0);
     // The inline edit block pins to the panel bottom: prompt, hint, error.
+    // One more line is always reserved for the key footer (the settings
+    // overlay swallows `?`, so this is its only key documentation).
     let reserved = if s.edit.is_some() { 3 } else { 0 };
-    let visible = (inner.height as usize).saturating_sub(1 + reserved);
+    let visible = (inner.height as usize).saturating_sub(2 + reserved);
     let first = sel_row.saturating_sub(visible.saturating_sub(1));
 
     let mut lines = vec![Line::default()];
@@ -1960,6 +2021,15 @@ fn draw_settings(f: &mut Frame, app: &App) {
             )));
         }
     }
+    // Key footer, pinned to the bottom row.
+    while (lines.len() as u16) < inner.height.saturating_sub(1) {
+        lines.push(Line::default());
+    }
+    lines.truncate(inner.height.saturating_sub(1) as usize);
+    lines.push(Line::from(Span::styled(
+        " j/k move · enter toggle/edit · g/G first/last · S/esc close",
+        Style::default().fg(t.comment()).add_modifier(Modifier::DIM),
+    )));
     f.render_widget(Paragraph::new(lines), inner);
 }
 

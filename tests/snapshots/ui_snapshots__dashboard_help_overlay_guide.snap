@@ -1,0 +1,27 @@
+---
+source: tests/ui_snapshots.rs
+assertion_line: 190
+expression: render(&app)
+---
+"               ╭ keys ───────────────────────────────────────────────────╮de             "
+"  PIPELINE ────│  guide                            move                  │────────────────"
+"  ○ spec       │   enter  run stage / open item     k / ↑  move up       │         1/257  "
+"  ○ plan       │                                    j / ↓  move down     │                "
+"  ○ plan-review│  actions                           g  scroll to top     │ent → review →  "
+"  ○ tests-red  │   x  cancel running stage          G  jump to end/tail  │heck.sh  keeps  "
+"  ○ implement  │   c  run check.sh fast             [  previous feature  │                "
+"  ○ dual-review│   C  run full check.sh             ]  next feature      │                "
+"  ○ coverage   │   a  take over in claude                                │                "
+"               │   s  chat: edit spec/plan                               │                "
+" 󰚩 AGENTS ─────│   u  undo last plan fix                                 │al feedback     "
+"  󰚩 claude …   │   Q  findings → nvim quickfix                           │gine, not model "
+"  󰚩 codex …    │                                                         │hree roles:     "
+"  󱘖 bridge …   │  global                                                 │second          "
+"   nvim …      │   ctrl+c / q  quit ritual                               │                "
+"   check ?     │   ?  show help                                          │                "
+"               │   :  command palette                                    │                "
+"   detached    │   tab  next tab                                         │                "
+"               │   1-5  jump to tab                                      │ter⟩  opens it  "
+"               │   r  refresh auth/artifacts                             │hape, see       "
+"               │   S  settings: edit config                              │                "
+" RITUAL   de╰─────────────────────────────────────────────────────────╯                "
