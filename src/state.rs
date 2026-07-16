@@ -256,6 +256,14 @@ impl RitualDirs {
     pub fn runs_dir(&self) -> PathBuf {
         self.root().join("runs")
     }
+    /// The user-editable lane definitions for `ritual audit`.
+    pub fn audit_lanes_file(&self) -> PathBuf {
+        self.root().join("audit-lanes.md")
+    }
+    /// Per-audit lane reports live under here, one subdir per run timestamp.
+    pub fn audit_dir(&self) -> PathBuf {
+        self.root().join("audit")
+    }
     pub fn logs_dir(&self) -> PathBuf {
         self.root().join("logs")
     }
