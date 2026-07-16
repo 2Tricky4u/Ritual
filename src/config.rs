@@ -29,6 +29,12 @@ pub struct FileConfig {
     pub budget_code_fix_usd: Option<f64>,
     /// Ceiling for ONE coverage (completeness judge) run.
     pub budget_coverage_usd: Option<f64>,
+    /// Ceiling for EACH `ritual audit` leg (discovery run, every lane run,
+    /// and the judge run) - a full audit costs up to (lanes + 1) × this.
+    pub budget_audit_usd: Option<f64>,
+    /// Hard cap on audit lanes per run (the always-on global-overview lane
+    /// counts toward it). Clamped to at least 1.
+    pub audit_max_lanes: Option<usize>,
     /// Whole-invocation ceiling for `ritual complete` (sum of all its coverage
     /// and fix runs); the loop stops before a run would exceed it.
     pub budget_complete_usd: Option<f64>,
@@ -155,6 +161,8 @@ pub struct Config {
     pub budget_finding_fix_usd: f64,
     pub budget_code_fix_usd: f64,
     pub budget_coverage_usd: f64,
+    pub budget_audit_usd: f64,
+    pub audit_max_lanes: usize,
     pub budget_complete_usd: f64,
     pub complete_max_rounds: u32,
     pub complete_clean_rounds: u32,
@@ -199,6 +207,8 @@ impl Default for Config {
             budget_finding_fix_usd: 1.0,
             budget_code_fix_usd: 5.0,
             budget_coverage_usd: 2.0,
+            budget_audit_usd: 3.0,
+            audit_max_lanes: 8,
             budget_complete_usd: 30.0,
             complete_max_rounds: 5,
             complete_clean_rounds: 1,
@@ -293,6 +303,13 @@ impl Config {
             }
             if let Some(b) = fc.budget_coverage_usd {
                 cfg.budget_coverage_usd = b;
+            }
+            if let Some(b) = fc.budget_audit_usd {
+                cfg.budget_audit_usd = b;
+            }
+            if let Some(v) = fc.audit_max_lanes {
+                // 0 lanes is a config typo, not a request for a no-op audit.
+                cfg.audit_max_lanes = v.max(1);
             }
             if let Some(b) = fc.budget_complete_usd {
                 cfg.budget_complete_usd = b;
@@ -455,8 +472,34 @@ mod tests {
         assert!(!cfg.consensus_enabled, "consensus ships dark");
         assert_eq!(cfg.budget_code_fix_usd, 5.0, "code-fix cap default");
         assert_eq!(cfg.budget_coverage_usd, 2.0, "coverage cap default");
+        assert_eq!(cfg.budget_audit_usd, 3.0, "audit per-leg cap default");
+        assert_eq!(cfg.audit_max_lanes, 8, "audit lane cap default");
         assert_eq!(cfg.complete_max_rounds, 5);
         assert_eq!(cfg.complete_max_attempts_per_item, 2);
+    }
+
+    #[test]
+    fn audit_config_overrides_and_zero_lane_clamp() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".ritual")).unwrap();
+        std::fs::write(
+            tmp.path().join(".ritual/config.toml"),
+            "budget_audit_usd = 1.25\naudit_max_lanes = 4\n",
+        )
+        .unwrap();
+        let cfg = Config::load(tmp.path(), None, false).unwrap();
+        assert_eq!(cfg.budget_audit_usd, 1.25);
+        assert_eq!(cfg.audit_max_lanes, 4);
+
+        // One field alone leaves the other at its default.
+        std::fs::write(
+            tmp.path().join(".ritual/config.toml"),
+            "audit_max_lanes = 0\n",
+        )
+        .unwrap();
+        let cfg = Config::load(tmp.path(), None, false).unwrap();
+        assert_eq!(cfg.budget_audit_usd, 3.0, "budget untouched");
+        assert_eq!(cfg.audit_max_lanes, 1, "0 lanes is a typo, clamp to 1");
     }
 
     #[test]
