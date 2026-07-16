@@ -756,6 +756,11 @@ impl App {
                 self.stream.push(*ev);
                 if self.stream.len() > 5000 {
                     self.stream.drain(..1000);
+                    // Keep a manual scroll pointing at the same events (the
+                    // renderer also clamps, so a stale value can't panic).
+                    if let Some(s) = self.stream_scroll.as_mut() {
+                        *s = s.saturating_sub(1000);
+                    }
                 }
             }
             AppMsg::RunExited(outcome) => self.on_run_exited(*outcome),
@@ -816,6 +821,13 @@ impl App {
         if key.kind != KeyEventKind::Press {
             return;
         }
+        // Ctrl-C always quits - BEFORE the modal handlers, or any open text
+        // surface (palette, dismiss, filter, settings, chat) swallows it and
+        // the promise in the keymap becomes a lie.
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.quit = true;
+            return;
+        }
         if self.confirm_quit {
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('q') => self.quit = true,
@@ -830,8 +842,14 @@ impl App {
             }
             return;
         }
+        // Text surfaces receive only the key CODE, so chorded characters
+        // (ctrl/alt) must be dropped here or they insert their base letter.
+        let typed = !matches!(key.code, KeyCode::Char(_))
+            || key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
         if self.dismiss_prompt.is_some() {
-            self.dismiss_input(key.code);
+            if typed {
+                self.dismiss_input(key.code);
+            }
             return;
         }
         if self.apply_confirm.is_some() {
@@ -857,11 +875,15 @@ impl App {
             return;
         }
         if self.settings.is_some() {
-            self.settings_input(key.code);
+            if typed {
+                self.settings_input(key.code);
+            }
             return;
         }
         if self.palette.is_some() {
-            self.palette_input(key.code, tx);
+            if typed {
+                self.palette_input(key.code, tx);
+            }
             return;
         }
         if self.finding_detail {
@@ -873,12 +895,9 @@ impl App {
             return;
         }
         if self.filter_editing {
-            self.filter_input(key.code);
-            return;
-        }
-        // Ctrl-C always quits, even if rebound away.
-        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.quit = true;
+            if typed {
+                self.filter_input(key.code);
+            }
             return;
         }
         if let Some(action) = self.cfg.keymap.resolve(key.code, key.modifiers) {
@@ -5757,6 +5776,32 @@ mod tests {
                 .unwrap()
                 .contains("2 other")
         );
+    }
+
+    #[test]
+    fn ctrl_c_quits_from_inside_every_text_modal_and_chords_do_not_type() {
+        let ctrl_c = Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        // Palette open: Ctrl-C used to append a literal 'c' to the filter.
+        let (_t, mut app, tx, _rx) = test_app();
+        app.palette = Some(PaletteState {
+            input: "ru".into(),
+            selected: 0,
+        });
+        app.on_input(ctrl_c.clone(), &tx);
+        assert!(app.quit, "ctrl-c must quit even with the palette open");
+        assert_eq!(app.palette.as_ref().unwrap().input, "ru");
+
+        // Filter editing: a ctrl-chorded letter must not type its base char.
+        let (_t2, mut app, tx, _rx) = test_app();
+        app.tab = Tab::Findings;
+        app.filter_editing = true;
+        app.on_input(
+            Event::Key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL)),
+            &tx,
+        );
+        assert_eq!(app.filter, "", "ctrl+w must not insert a literal 'w'");
+        app.on_input(ctrl_c, &tx);
+        assert!(app.quit, "ctrl-c must quit while the filter edits");
     }
 
     #[test]

@@ -63,8 +63,13 @@ impl Term {
         // run id) while giving nothing back. Bracketed paste IS enabled so a
         // multi-line paste into the chat input arrives as one Paste event
         // instead of newline key presses that would submit mid-paste.
-        crossterm::execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)
-            .context("entering alternate screen")?;
+        // Raw mode is already ON: if anything below fails, undo it before
+        // returning - TERMINAL_ACTIVE is still false so neither the panic
+        // hook nor Drop would, and the user's shell would be left raw.
+        if let Err(e) = crossterm::execute!(stdout, EnterAlternateScreen, EnableBracketedPaste) {
+            let _ = disable_raw_mode();
+            return Err(e).context("entering alternate screen");
+        }
         TERMINAL_ACTIVE.store(true, Ordering::SeqCst);
         let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
         Ok(Self { terminal })
@@ -89,11 +94,15 @@ impl Term {
     /// redraw so a resize-while-suspended can't corrupt the buffer.
     pub fn resume(&mut self) -> Result<()> {
         enable_raw_mode()?;
-        crossterm::execute!(
+        // Same contract as `enter`: never bail out with raw mode half-set.
+        if let Err(e) = crossterm::execute!(
             self.terminal.backend_mut(),
             EnterAlternateScreen,
             EnableBracketedPaste
-        )?;
+        ) {
+            let _ = disable_raw_mode();
+            return Err(e.into());
+        }
         TERMINAL_ACTIVE.store(true, Ordering::SeqCst);
         self.terminal.hide_cursor()?;
         self.terminal.clear()?;

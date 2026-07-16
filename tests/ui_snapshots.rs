@@ -682,6 +682,24 @@ fn rendering_survives_hostile_sizes_in_every_state() {
             }),
         ),
         (
+            "live-stale-scroll",
+            Box::new(|| {
+                // A ring-buffer drain dropped 1000 events while the user was
+                // scrolled near the old end: the stale Some(4990) must clamp,
+                // not slice out of bounds.
+                let t = tempfile::tempdir().unwrap();
+                let mut a = setup_app(&t);
+                a.tab = ritual::ui::app::Tab::Live;
+                for i in 0..50 {
+                    a.stream.push(ritual::runner::events::AgentEvent::Text {
+                        text: format!("event {i}"),
+                    });
+                }
+                a.stream_scroll = Some(4990);
+                (t, a)
+            }),
+        ),
+        (
             "guide",
             Box::new(|| {
                 let t = tempfile::tempdir().unwrap();

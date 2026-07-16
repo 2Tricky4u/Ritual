@@ -1,5 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
+assertion_line: 282
 expression: render(&app)
 ---
 "                            │   live   findings   history    plan    guide              "
@@ -20,7 +21,7 @@ expression: render(&app)
 "   │                                                                                  │   "
 "   │                                                                                  │   "
 "   │                                                                                  │   "
-"   │ f  fix   d  dismiss…   m  manual   o  nvim   e  editor   j/k  next   esc  close  │   "
+"   │ f  fix   d  dismiss…   F  queue code-fix   m  manual   o  nvim   e  editor   j/k │   "
 "   ╰──────────────────────────────────────────────────────────────────────────────────╯   "
 "                            │                                                             "
 " RITUAL   detached  detached                                                          "

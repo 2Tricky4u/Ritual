@@ -71,7 +71,9 @@ fn fill_row_chip<'a>(
             used += w;
             out.push(s);
         } else {
-            let take = budget - used - 1;
+            // saturating: previous spans can consume EXACTLY budget, and
+            // `budget - used - 1` would underflow (debug panic on resize).
+            let take = budget.saturating_sub(used + 1);
             let clipped: String = s.content.chars().take(take).collect();
             out.push(Span::styled(format!("{clipped}…"), s.style));
             used += take + 1;
@@ -963,7 +965,16 @@ fn draw_live(f: &mut Frame, app: &App, area: Rect) {
         }
     } else {
         let height = stream_area.height as usize;
-        let end = app.stream_scroll.unwrap_or(app.stream.len());
+        let len = app.stream.len();
+        // The scroll value is the EXCLUSIVE end index. Clamp low so
+        // scroll-to-top (Some(0)) shows the first page instead of nothing,
+        // and clamp high so a stale value left by the ring-buffer drain
+        // (update() drops 1000 events without touching the scroll) can never
+        // slice past the end and panic mid-run.
+        let end = app
+            .stream_scroll
+            .map(|s| s.clamp(height.min(len), len))
+            .unwrap_or(len);
         let start = end.saturating_sub(height);
         let lines: Vec<Line> = app.stream[start..end]
             .iter()
@@ -1569,18 +1580,21 @@ fn draw_finding_detail(f: &mut Frame, app: &App) {
     for (key, label) in [("f", "fix"), ("d", "dismiss…")] {
         cap(&mut footer, key, label.into());
     }
-    // F answers plan findings; the footer tracks the triage state.
+    // F queues BOTH kinds: plan findings for the plan-fix batch, code
+    // findings (file-anchored) for the code-fix batch.
     let plan_finding = finding.file.is_none() && finding.plan_step.is_some();
     if let Some(label) = app.fix_label() {
         footer.push(Span::styled(
             format!("{} {label}  ", SPINNER[app.spinner % SPINNER.len()]),
             Style::default().fg(t.attention()),
         ));
-    } else if plan_finding {
+    } else {
         let f_label = if finding.answer.as_deref() == Some("auto") {
             "apply/unqueue"
-        } else {
+        } else if plan_finding {
             "queue claude"
+        } else {
+            "queue code-fix"
         };
         cap(&mut footer, "F", f_label.into());
     }
@@ -1592,12 +1606,6 @@ fn draw_finding_detail(f: &mut Frame, app: &App) {
         cap(&mut footer, key, label.into());
     }
     cap(&mut footer, "esc", "close".into());
-    if !plan_finding && app.fix_label().is_none() {
-        footer.push(Span::styled(
-            "F answers plan findings · m queues manual",
-            Style::default().fg(t.comment()).add_modifier(Modifier::DIM),
-        ));
-    }
     f.render_widget(Paragraph::new(Line::from(footer)), rows[1]);
 }
 
@@ -1689,6 +1697,7 @@ fn whichkey_sections(app: &App) -> Vec<(&'static str, Vec<Action>)> {
         Tab::Findings => (
             "findings",
             vec![
+                Confirm,
                 FindingFix,
                 FindingDismiss,
                 FindingClaudeFix,
@@ -1700,6 +1709,7 @@ fn whichkey_sections(app: &App) -> Vec<(&'static str, Vec<Action>)> {
                 Filter,
                 NvimOpen,
                 NvimQuickfix,
+                OpenEditor,
             ],
         ),
         Tab::Plan => ("plan", vec![SpecChat, DocUndo, OpenEditor]),
@@ -2069,26 +2079,40 @@ fn content_sized_rect(frame: Rect, lines: &[Line], min_width: u16) -> Rect {
 /// ratatui's WordWrapper for the plain prose these floats hold; a word wider
 /// than the panel char-wraps across rows).
 fn wrapped_rows(line: &Line, width: usize) -> u16 {
+    if width == 0 {
+        return 1;
+    }
     let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
     let mut rows: u16 = 1;
     let mut cur = 0usize;
-    for word in text.split_whitespace() {
-        let w = word.chars().count();
-        if w > width {
+    // Tokens keep their REAL widths, including whitespace runs: keycap hint
+    // lines render with multi-space gaps and ratatui wraps with
+    // `Wrap { trim: false }`, so collapsing runs to one space undercounts and
+    // the float clips its last row on narrow frames.
+    let mut iter = text.chars().peekable();
+    while let Some(&first) = iter.peek() {
+        let ws = first.is_whitespace();
+        let mut w = 0usize;
+        while iter.peek().is_some_and(|c| c.is_whitespace() == ws) {
+            iter.next();
+            w += 1;
+        }
+        if ws {
+            // Spaces fill (and can end) the current row but never open one.
+            cur = (cur + w).min(width);
+        } else if w > width {
+            // A word longer than the row hard-wraps mid-word.
             if cur > 0 {
                 rows += 1;
             }
             let full = (w - 1) / width;
             rows += full as u16;
             cur = w - full * width;
-            continue;
-        }
-        let need = if cur == 0 { w } else { w + 1 };
-        if cur + need > width {
+        } else if cur + w > width {
             rows += 1;
             cur = w;
         } else {
-            cur += need;
+            cur += w;
         }
     }
     rows
@@ -2306,5 +2330,36 @@ mod tests {
         let line = fill_row_chip(spans, vec![], 9, Color::Reset);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "abcde    ");
+    }
+
+    #[test]
+    fn fill_row_chip_survives_an_exact_fit_multi_span_row() {
+        // Previous spans consuming EXACTLY the budget used to underflow
+        // `budget - used - 1` (debug panic / release row overflow) when the
+        // next span arrived. width 10, chip 2 -> budget 7.
+        let spans = vec![Span::raw("abc"), Span::raw("defg"), Span::raw("h")];
+        let chip = vec![Span::raw("XY")];
+        let line = fill_row_chip(spans, chip, 10, Color::Reset);
+        assert!(
+            visible_width(&line.spans) <= 10,
+            "row must never overflow its width"
+        );
+    }
+
+    #[test]
+    fn wrapped_rows_counts_multi_space_runs_like_the_renderer() {
+        // Keycap hint lines render with multi-space gaps and ratatui wraps
+        // with trim:false; collapsing runs undercounted rows and clipped the
+        // last hint line on narrow frames.
+        // 22 chars once the double gaps are counted; the collapse-to-one-
+        // space math saw 17 and predicted ONE row at width 20 - the real
+        // renderer wraps to two, clipping the float's last line.
+        let line = Line::from("aa  bb  cc  dd  ee  ff");
+        assert_eq!(wrapped_rows(&line, 20), 2);
+        // Zero width must not divide-by-zero.
+        assert_eq!(wrapped_rows(&line, 0), 1);
+        // Plain single-space text is unchanged by the rewrite.
+        assert_eq!(wrapped_rows(&Line::from("ab cd"), 5), 1);
+        assert_eq!(wrapped_rows(&Line::from("ab cd"), 4), 2);
     }
 }
