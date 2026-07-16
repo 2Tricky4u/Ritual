@@ -61,22 +61,25 @@ fn plan_review_tools(cfg: &Config) -> String {
         PLAN_REVIEW_TOOLS.to_string()
     }
 }
-/// The doc-chat agent may read anything but edit ONLY the one document it's
-/// given. Path rules are gitignore-style; a single leading '/' anchors at the
-/// settings source, so a filesystem-absolute path needs '//'. Enforced by
-/// `dontAsk` mode; `acceptEdits` would auto-approve edits everywhere and
-/// defeat the scoping (verified against the permission docs).
-fn doc_chat_tools(doc_path: &Path) -> String {
-    let p = doc_path.display().to_string(); // absolute, starts with '/'
-    format!("Read,Edit(/{p}),Write(/{p})")
+/// The doc-chat agent's grant: Read anything, Edit/Write for the one document
+/// it targets. The rules USED to be path-scoped (`Edit(//abs/doc)`), but under
+/// `--permission-mode dontAsk` the current CLI (verified empirically on
+/// 2.1.205) never matches a path-scoped Edit/Write rule - every scoped edit is
+/// denied and the stage dies doing nothing. So the file tools are granted
+/// BARE and dontAsk still denies all other tools (no Bash, no Task); document
+/// scoping is enforced ritual-side by the section-confinement gate
+/// (`spec::edits_confined_multi`) and the coverage/plan-review re-judges.
+fn doc_chat_tools(_doc_path: &Path) -> String {
+    "Read,Edit,Write".to_string()
 }
 
-/// The coverage judge may READ anything (to inspect the built tree) but WRITE
-/// only into the findings dir (its one JSON output) - no source edits, no shell.
-/// `dontAsk` denies everything outside these rules.
-fn coverage_tools(findings_dir: &Path) -> String {
-    let d = findings_dir.display().to_string(); // absolute, starts with '/'
-    format!("Read,Glob,Grep,Write(/{d}/**)")
+/// The coverage judge may READ anything (to inspect the built tree) and WRITE
+/// its one findings JSON - no shell, no Task. Write is granted BARE for the
+/// same reason as [`doc_chat_tools`]: dontAsk never matches path-scoped
+/// Write rules (verified on CLI 2.1.205; the old `Write(//findings/**)` rule
+/// denied the findings file and the whole coverage verdict was lost).
+fn coverage_tools(_findings_dir: &Path) -> String {
+    "Read,Glob,Grep,Write".to_string()
 }
 
 /// Sandbox argv prefix for a run: only headless runs are wrapped (interactive
@@ -1174,8 +1177,10 @@ mod tests {
         assert!(prompt.contains("add a retry invariant"));
         assert!(prompt.contains("RECENT CONVERSATION"));
         assert!(cmd.argv.contains(&"stream-json".to_string()));
-        // Hard scoping: dontAsk mode + Edit/Write rules anchored to THE doc
-        // with the '//' filesystem-absolute form; Read stays unrestricted.
+        // dontAsk denies every tool outside the grant. The Edit/Write rules
+        // are BARE: the CLI (2.1.205) never matches path-scoped Edit/Write
+        // rules under dontAsk, so scoping is enforced ritual-side (section
+        // confinement gate), not by the permission engine.
         assert!(cmd.argv.contains(&"dontAsk".to_string()));
         assert!(!cmd.argv.contains(&"acceptEdits".to_string()));
         let tools = cmd
@@ -1183,12 +1188,11 @@ mod tests {
             .iter()
             .find(|a| a.starts_with("Read,"))
             .expect("allowedTools value");
-        assert!(tools.contains(&format!(
-            "Edit(//{})",
-            path.display().to_string().trim_start_matches('/')
-        )));
-        assert!(tools.starts_with("Read,Edit(//"));
-        assert!(tools.contains("Write(//"));
+        assert_eq!(tools, "Read,Edit,Write");
+        assert!(
+            !tools.contains("(/"),
+            "no path-scoped file rules (unmatched under dontAsk)"
+        );
 
         // The spec-target prompt never carries SPEC_FILE.
         assert!(!prompt.contains("SPEC_FILE:"));
@@ -1269,14 +1273,15 @@ mod tests {
         assert!(prompt.contains("ANSWERS:"));
         assert!(prompt.contains("#<n>: FIXED"));
         assert!(prompt.contains("#<n>: DECLINED <one-line reason>"));
-        // Same hard lock + the fix budget capping the whole run.
+        // Same grant + the fix budget capping the whole run (scoping is
+        // ritual-side; path-scoped rules never match under dontAsk).
         assert!(cmd.argv.contains(&"dontAsk".to_string()));
         let tools = cmd
             .argv
             .iter()
             .find(|a| a.starts_with("Read,"))
             .expect("allowedTools value");
-        assert!(tools.contains(&format!("Edit(/{})", plan.display())));
+        assert_eq!(tools, "Read,Edit,Write");
         let i = cmd
             .argv
             .iter()
