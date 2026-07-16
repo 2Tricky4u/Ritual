@@ -142,12 +142,16 @@ pub fn preflight(cfg: &Config, dirs: &RitualDirs) -> Option<String> {
     }
 }
 
-/// Tracked modifications vs HEAD plus untracked (non-ignored) files.
+/// Tracked modifications vs HEAD plus untracked (non-ignored) files. `-z`
+/// (NUL-separated, unquoted) parsing: without it git C-quotes names with
+/// spaces/quotes/non-ASCII, the quoted string resolves to a nonexistent
+/// path, and the file - possibly the one holding the secret - silently
+/// skips the scan.
 fn changed_files(dirs: &RitualDirs) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for args in [
-        &["diff", "--name-only", "HEAD"][..],
-        &["ls-files", "--others", "--exclude-standard"][..],
+        &["diff", "--name-only", "-z", "HEAD"][..],
+        &["ls-files", "-z", "--others", "--exclude-standard"][..],
     ] {
         let out = std::process::Command::new("git")
             .args(args)
@@ -158,9 +162,9 @@ fn changed_files(dirs: &RitualDirs) -> Result<Vec<PathBuf>> {
         if !out.status.success() {
             continue;
         }
-        for line in String::from_utf8_lossy(&out.stdout).lines() {
-            let p = PathBuf::from(line.trim());
-            if !line.trim().is_empty() && !files.contains(&p) {
+        for seg in String::from_utf8_lossy(&out.stdout).split('\0') {
+            let p = PathBuf::from(seg);
+            if !seg.is_empty() && !files.contains(&p) {
                 files.push(p);
             }
         }
@@ -223,6 +227,42 @@ fn findings_from_report(text: &str, scan_root: &Path, redact: bool) -> Result<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changed_files_returns_quoted_names_literally() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.email", "t@t"][..],
+            &["config", "user.name", "t"][..],
+        ] {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .output()
+                .unwrap();
+        }
+        std::fs::write(p.join("tödo.txt"), "tracked\n").unwrap();
+        for args in [&["add", "."][..], &["commit", "-qm", "x"][..]] {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .output()
+                .unwrap();
+        }
+        std::fs::write(p.join("tödo.txt"), "modified\n").unwrap();
+        std::fs::write(p.join("we ird name.txt"), "untracked\n").unwrap();
+        let dirs = crate::state::RitualDirs::new(p);
+        let files = changed_files(&dirs).unwrap();
+        // Without -z these come back C-quoted ("t\303\266do.txt"), resolve to
+        // nonexistent paths, and silently skip the secrets scan.
+        assert!(files.contains(&PathBuf::from("tödo.txt")), "{files:?}");
+        assert!(
+            files.contains(&PathBuf::from("we ird name.txt")),
+            "{files:?}"
+        );
+    }
 
     #[test]
     fn maps_report_hits_to_critical_findings() {

@@ -232,15 +232,16 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
     }
 
     // -- secrets gate -------------------------------------------------------------
+    // The scan lists changed files VIA GIT: outside a repo it scans nothing,
+    // so a green here would be a lie.
+    let in_git_repo = std::process::Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(&dirs.work_root)
+        .output()
+        .is_ok_and(|o| o.status.success());
     out.push(if !cfg.secrets_enabled {
         check("secrets", CheckStatus::Skipped, "disabled in [secrets]")
-    } else if crate::secrets::available(cfg) {
-        check(
-            "secrets",
-            CheckStatus::Pass,
-            "gitleaks scans changed files before dual-review",
-        )
-    } else {
+    } else if !crate::secrets::available(cfg) {
         check(
             "secrets",
             CheckStatus::Warn,
@@ -248,6 +249,18 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
                 "`{}` not runnable; gate silently skipped (pacman -S gitleaks)",
                 cfg.gitleaks_cmd.join(" ")
             ),
+        )
+    } else if !in_git_repo {
+        check(
+            "secrets",
+            CheckStatus::Warn,
+            "not a git repo: the changed-files scan is inert (nothing gets scanned)",
+        )
+    } else {
+        check(
+            "secrets",
+            CheckStatus::Pass,
+            "gitleaks scans changed files before dual-review",
         )
     });
 
