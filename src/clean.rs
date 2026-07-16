@@ -150,46 +150,92 @@ pub fn clean(dirs: &RitualDirs, keep: usize, dry_run: bool) -> Result<CleanRepor
     }
     candidates.sort(); // oldest first
 
-    // 4. Chained candidates prune only as a contiguous oldest prefix.
+    // 4+5. Chained candidates prune only as a contiguous prefix in LINKAGE
+    //    order (chain order is finish order - under parallel runs that is
+    //    NOT run_id order), and the covering checkpoint is written BEFORE
+    //    any deletion. Verify -> checkpoint runs under the chain lock so a
+    //    finishing daemon can't append between the two. Forward progress is
+    //    structural: the prefix starts at the old anchor and extends it, so
+    //    the old run_id "moves forward" guard (wrong under interleaving) is
+    //    gone.
     let old_checkpoint = provenance::load_checkpoint(&runs_dir).unwrap_or_default();
-    let covered = |id: &str| {
-        old_checkpoint
-            .as_ref()
-            .is_some_and(|cp| id <= cp.as_of_run_id.as_str())
-    };
+    let base = old_checkpoint
+        .as_ref()
+        .map(|c| c.link_hash.clone())
+        .unwrap_or_else(|| provenance::GENESIS.to_string());
+    let all_metas = crate::history::load_all(&runs_dir).unwrap_or_default();
+    let covered = provenance::covered_run_ids(&all_metas, &base);
     let candidate_set: HashSet<&String> = candidates.iter().collect();
-    // Uncovered chained runs, oldest first; the prunable prefix must be an
-    // unbroken run of candidates starting at the chain's current base.
     let mut chain_verified = true;
-    let uncovered_chained: Vec<&String> = chained.keys().filter(|id| !covered(id)).collect();
-    let mut prunable_chained: HashSet<String> = HashSet::new();
-    if uncovered_chained
-        .iter()
-        .any(|id| candidate_set.contains(*id))
-    {
-        // Never checkpoint over a chain that is already broken.
-        match provenance::verify_log(&runs_dir)? {
-            VerifyOutcome::Ok { .. } => {}
-            VerifyOutcome::Broken { run_id, .. } => {
+    let mut prunable_chained: Vec<String> = Vec::new();
+    let any_chained_candidate = chained
+        .keys()
+        .any(|id| !covered.contains(id) && candidate_set.contains(id));
+    if any_chained_candidate {
+        type PruneDecision = std::result::Result<(Vec<String>, Option<Checkpoint>), String>;
+        let decision: PruneDecision = provenance::with_chain_lock(&runs_dir, || {
+            // Never checkpoint over a chain that is already broken.
+            if let VerifyOutcome::Broken { run_id, .. } = provenance::verify_log(&runs_dir)? {
+                return Ok(Err(run_id));
+            }
+            // Longest prefix of the linkage order that are ALL candidates;
+            // the first keeper ends it. Re-load under the lock: a daemon
+            // may have appended since the scan above.
+            let metas = crate::history::load_all(&runs_dir)?;
+            let mut prefix: Vec<String> = Vec::new();
+            for id in provenance::chain_order(&metas, &base) {
+                if candidate_set.contains(&id) {
+                    prefix.push(id);
+                } else {
+                    break;
+                }
+            }
+            if prefix.is_empty() {
+                return Ok(Ok((prefix, None)));
+            }
+            let newest = prefix.last().unwrap();
+            let link_hash = metas
+                .iter()
+                .find(|m| &m.run_id == newest)
+                .and_then(|m| m.chain.as_ref())
+                .map(|c| c.this.clone())
+                .context("prunable run lost its chain")?;
+            let mut cp = Checkpoint {
+                as_of_run_id: newest.clone(),
+                link_hash,
+                pruned_runs: old_checkpoint.as_ref().map(|c| c.pruned_runs).unwrap_or(0)
+                    + prefix.len(),
+                created_at: Utc::now(),
+                prev_checkpoint: old_checkpoint
+                    .as_ref()
+                    .map(|c| c.self_hash.clone())
+                    .unwrap_or_else(|| provenance::GENESIS.to_string()),
+                self_hash: String::new(),
+            };
+            cp.self_hash = provenance::compute_checkpoint_hash(&cp)?;
+            if !dry_run {
+                provenance::write_checkpoint(&runs_dir, &cp)
+                    .context("writing checkpoint before pruning")?;
+            }
+            Ok(Ok((prefix, Some(cp))))
+        })?;
+        match decision {
+            Err(run_id) => {
                 chain_verified = false;
                 report.notices.push(format!(
                     "chain already broken at {run_id}: not checkpointing over it; chained runs kept"
                 ));
             }
-        }
-        if chain_verified {
-            for id in &uncovered_chained {
-                if candidate_set.contains(*id) {
-                    prunable_chained.insert((*id).clone());
-                } else {
-                    break; // first chained keeper ends the prefix
-                }
+            Ok((prefix, cp)) => {
+                prunable_chained = prefix;
+                report.checkpoint = cp;
             }
         }
     }
+    let _ = chain_verified; // recorded via the notice; kept for readability
     // Chained candidates outside the prefix (or with a broken chain) are kept.
     candidates.retain(|id| {
-        let is_chained_uncovered = chained.contains_key(id) && !covered(id);
+        let is_chained_uncovered = chained.contains_key(id) && !covered.contains(id);
         if is_chained_uncovered && !prunable_chained.contains(id) {
             report.kept.push((id.clone(), KeepReason::ChainContinuity));
             false
@@ -197,36 +243,6 @@ pub fn clean(dirs: &RitualDirs, keep: usize, dry_run: bool) -> Result<CleanRepor
             true
         }
     });
-
-    // 5. New checkpoint covering the pruned chained prefix, written BEFORE
-    //    any deletion, and never moving backwards.
-    if !prunable_chained.is_empty() {
-        let newest_pruned = prunable_chained.iter().max().unwrap().clone();
-        let link_hash = chained[&newest_pruned].clone();
-        let mut cp = Checkpoint {
-            as_of_run_id: newest_pruned,
-            link_hash,
-            pruned_runs: old_checkpoint.as_ref().map(|c| c.pruned_runs).unwrap_or(0)
-                + prunable_chained.len(),
-            created_at: Utc::now(),
-            prev_checkpoint: old_checkpoint
-                .as_ref()
-                .map(|c| c.self_hash.clone())
-                .unwrap_or_else(|| provenance::GENESIS.to_string()),
-            self_hash: String::new(),
-        };
-        cp.self_hash = provenance::compute_checkpoint_hash(&cp)?;
-        let moves_forward = old_checkpoint
-            .as_ref()
-            .is_none_or(|old| cp.as_of_run_id > old.as_of_run_id);
-        if moves_forward {
-            if !dry_run {
-                provenance::write_checkpoint(&runs_dir, &cp)
-                    .context("writing checkpoint before pruning")?;
-            }
-            report.checkpoint = Some(cp);
-        }
-    }
 
     // 6. Delete, meta-first, continuing past failures. Every target is built
     //    from a discovered filename and asserted to stay inside runs_dir.
@@ -712,5 +728,76 @@ mod tests {
 
         assert!(!r.failures.is_empty(), "failures recorded");
         assert!(r.deleted_groups.is_empty());
+    }
+
+    #[test]
+    fn clean_prunes_a_linkage_prefix_under_interleaving() {
+        // Linkage order X -> Y -> Z where the OLDEST link (X) carries the
+        // LARGEST run_id (parallel finishes). keep=1 protects only the
+        // newest run_id (X!), so the prunable linkage prefix is empty at
+        // first position... i.e. the first linkage entry X is a keeper and
+        // NOTHING chained prunes - the prefix rule must hold in LINKAGE
+        // order, not run_id order.
+        let tmp = tempfile::tempdir().unwrap();
+        let d = dirs(&tmp);
+        let lx = mk_chained(&d, "20260701T000009Z-x", GENESIS);
+        let ly = mk_chained(&d, "20260701T000001Z-y", &lx);
+        let _lz = mk_chained(&d, "20260701T000002Z-z", &ly);
+        let r = clean(&d, 1, false).unwrap();
+        assert!(r.checkpoint.is_none(), "prefix blocked by the keeper");
+        assert!(
+            r.kept
+                .iter()
+                .any(|(id, why)| id.ends_with("-y") && *why == KeepReason::ChainContinuity),
+            "{:?}",
+            r.kept
+        );
+        assert!(matches!(
+            provenance::verify_log(&d.runs_dir()).unwrap(),
+            VerifyOutcome::Ok { runs: 3, .. }
+        ));
+
+        // With keep=0 nothing is protected: the whole linkage prefix prunes
+        // and the checkpoint anchors at the LINKAGE-newest pruned run (Z),
+        // regardless of run_ids.
+        let r = clean(&d, 0, false).unwrap();
+        let cp = r.checkpoint.expect("checkpoint written");
+        assert!(cp.as_of_run_id.ends_with("-z"), "{}", cp.as_of_run_id);
+        assert_eq!(cp.pruned_runs, 3);
+        assert!(matches!(
+            provenance::verify_log(&d.runs_dir()).unwrap(),
+            VerifyOutcome::Ok { runs: 0, .. }
+        ));
+        // The next run chains onto the checkpoint anchor and verifies.
+        let next = mk_chained(&d, "20260701T000010Z-n", &cp.link_hash);
+        assert_eq!(provenance::last_link(&d.runs_dir()), next);
+        assert!(matches!(
+            provenance::verify_log(&d.runs_dir()).unwrap(),
+            VerifyOutcome::Ok { runs: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn two_cleans_round_trip_over_an_interleaved_chain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = dirs(&tmp);
+        // First clean prunes an interleaved pair.
+        let la = mk_chained(&d, "20260701T000005Z-a", GENESIS);
+        let lb = mk_chained(&d, "20260701T000001Z-b", &la);
+        let r1 = clean(&d, 0, false).unwrap();
+        let cp1 = r1.checkpoint.expect("first checkpoint");
+        assert!(cp1.as_of_run_id.ends_with("-b"));
+        // Second batch, also out of run_id order, chained onto the anchor.
+        let lc = mk_chained(&d, "20260701T000009Z-c", &lb);
+        let _ld = mk_chained(&d, "20260701T000006Z-d", &lc);
+        let r2 = clean(&d, 0, false).unwrap();
+        let cp2 = r2.checkpoint.expect("second checkpoint");
+        assert!(cp2.as_of_run_id.ends_with("-d"), "{}", cp2.as_of_run_id);
+        assert_eq!(cp2.prev_checkpoint, cp1.self_hash, "lineage accumulates");
+        assert_eq!(cp2.pruned_runs, 4);
+        assert!(matches!(
+            provenance::verify_log(&d.runs_dir()).unwrap(),
+            VerifyOutcome::Ok { runs: 0, .. }
+        ));
     }
 }

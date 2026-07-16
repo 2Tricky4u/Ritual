@@ -211,14 +211,93 @@ pub fn write_checkpoint(runs_dir: &Path, cp: &Checkpoint) -> Result<()> {
     )
 }
 
-/// The `this` hash of the newest chained run, else the checkpoint link
-/// (pruned-everything case: the next run chains onto the checkpoint), else
-/// GENESIS.
+/// Cross-process exclusive lock serializing "read [`last_link`] -> write
+/// chained meta" as one atomic unit (and clean's verify -> checkpoint
+/// window). flock(2) auto-releases when the fd closes, so a SIGKILLed
+/// daemon can never wedge the chain. Same-host only (flock over NFS is
+/// unreliable) - consistent with the pid-liveness assumptions elsewhere.
+/// The lock file lives beside the metas and is ignored by clean/load_all.
+pub fn with_chain_lock<T>(runs_dir: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    std::fs::create_dir_all(runs_dir)?;
+    let file = std::fs::File::options()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(runs_dir.join("chain.lock"))?;
+    let _guard = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive)
+        .map_err(|(_, errno)| anyhow::anyhow!("locking chain.lock: {errno}"))?;
+    f()
+}
+
+/// Chained metas covered by a checkpoint: the backward linkage walk from its
+/// `link_hash` (this -> prev). During clean's crash window (checkpoint
+/// written, files not yet deleted) these are still on disk and must be
+/// skipped by verify - same trust model as the old `run_id <= as_of_run_id`
+/// skip: covered content is attested by the checkpoint alone.
+pub(crate) fn covered_run_ids(
+    metas: &[RunMeta],
+    link_hash: &str,
+) -> std::collections::HashSet<String> {
+    let by_this: std::collections::HashMap<&str, &RunMeta> = metas
+        .iter()
+        .filter_map(|m| m.chain.as_ref().map(|c| (c.this.as_str(), m)))
+        .collect();
+    let mut covered = std::collections::HashSet::new();
+    let mut cur = link_hash;
+    while let Some(m) = by_this.get(cur) {
+        if !covered.insert(m.run_id.clone()) {
+            break; // cycle paranoia: impossible to build honestly
+        }
+        cur = m.chain.as_ref().unwrap().prev.as_str();
+    }
+    covered
+}
+
+/// Chained run_ids in LINKAGE order (oldest -> newest) from `start`. Stops
+/// at a fork (two successors) or a missing link; callers needing a total
+/// order run [`verify_log`] first. Chain order is FINISH order, which under
+/// parallel runs (audit lanes) is NOT run_id order.
+pub fn chain_order(metas: &[RunMeta], start: &str) -> Vec<String> {
+    let mut by_prev: std::collections::HashMap<&str, Vec<&RunMeta>> =
+        std::collections::HashMap::new();
+    for m in metas {
+        if let Some(c) = &m.chain {
+            by_prev.entry(c.prev.as_str()).or_default().push(m);
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut prev = start.to_string();
+    while let Some(succ) = by_prev.get(prev.as_str()) {
+        if succ.len() != 1 || out.contains(&succ[0].run_id) {
+            break; // fork or cycle: not a total order
+        }
+        prev = succ[0].chain.as_ref().unwrap().this.clone();
+        out.push(succ[0].run_id.clone());
+    }
+    out
+}
+
+/// The chain TIP's `this` hash - the link no other meta chains from - else
+/// the checkpoint link (pruned-everything case: the next run chains onto
+/// the checkpoint), else GENESIS. Writers call this UNDER [`with_chain_lock`],
+/// making "exactly one tip" an invariant; on a legacy multi-tip fork the
+/// largest-run_id tip wins deterministically (matches the old behavior;
+/// verify_log reports the fork itself).
 pub fn last_link(runs_dir: &Path) -> String {
-    if let Ok(metas) = crate::history::load_all(runs_dir)
-        && let Some(hash) = metas.into_iter().find_map(|m| m.chain.map(|c| c.this))
-    {
-        return hash;
+    if let Ok(metas) = crate::history::load_all(runs_dir) {
+        // load_all is newest-first, so `find` picks the largest-run_id tip.
+        let chained: Vec<&RunMeta> = metas.iter().filter(|m| m.chain.is_some()).collect();
+        if let Some(first) = chained.first() {
+            let prevs: std::collections::HashSet<&str> = chained
+                .iter()
+                .map(|m| m.chain.as_ref().unwrap().prev.as_str())
+                .collect();
+            let tip = chained
+                .iter()
+                .find(|m| !prevs.contains(m.chain.as_ref().unwrap().this.as_str()))
+                .unwrap_or(first); // all-cycle degenerate: newest wins
+            return tip.chain.as_ref().unwrap().this.clone();
+        }
     }
     if let Ok(Some(cp)) = load_checkpoint(runs_dir) {
         return cp.link_hash;
@@ -261,29 +340,47 @@ pub fn verify_log(runs_dir: &Path) -> Result<VerifyOutcome> {
         });
     }
 
-    let mut metas = crate::history::load_all(runs_dir)?;
-    metas.reverse(); // load_all is newest-first
+    let metas = crate::history::load_all(runs_dir)?;
+    // Skip metas the checkpoint covers - by LINKAGE (backward walk from its
+    // anchor), not by run_id: chain order is finish order, and under
+    // parallel runs a covered link can carry a larger run_id than a live one.
+    let covered = checkpoint
+        .as_ref()
+        .map(|cp| covered_run_ids(&metas, &cp.link_hash))
+        .unwrap_or_default();
     let chained: Vec<&RunMeta> = metas
         .iter()
         .filter(|m| m.chain.is_some())
-        .filter(|m| {
-            checkpoint
-                .as_ref()
-                .is_none_or(|cp| m.run_id.as_str() > cp.as_of_run_id.as_str())
-        })
+        .filter(|m| !covered.contains(&m.run_id))
         .collect();
+    // Walk prev -> this LINKAGE from the anchor: legacy sequential chains
+    // are linkage-ordered lists too, so one algorithm covers both, and
+    // out-of-order finishes (parallel audit lanes) verify clean.
+    let mut by_prev: std::collections::BTreeMap<&str, Vec<&RunMeta>> =
+        std::collections::BTreeMap::new();
+    for m in &chained {
+        by_prev
+            .entry(m.chain.as_ref().unwrap().prev.as_str())
+            .or_default()
+            .push(m);
+    }
+    for succ in by_prev.values_mut() {
+        succ.sort_by(|a, b| a.run_id.cmp(&b.run_id)); // deterministic fork naming
+    }
     let mut prev = checkpoint
         .as_ref()
         .map(|cp| cp.link_hash.clone())
         .unwrap_or_else(|| GENESIS.to_string());
-    for meta in &chained {
-        let chain = meta.chain.as_ref().unwrap();
-        if chain.prev != prev {
+    let mut walked = 0usize;
+    while let Some(succ) = by_prev.remove(prev.as_str()) {
+        if succ.len() > 1 {
             return Ok(VerifyOutcome::Broken {
-                run_id: meta.run_id.clone(),
-                reason: format!("prev-link mismatch (expected {prev}, found {})", chain.prev),
+                run_id: succ[0].run_id.clone(),
+                reason: format!("chain fork: {} runs share prev-link {prev}", succ.len()),
             });
         }
+        let meta = succ[0];
+        let chain = meta.chain.as_ref().unwrap();
         let archive = runs_dir.join(format!("{}.jsonl", meta.run_id));
         let bytes = std::fs::read(&archive).unwrap_or_default();
         let expected = compute_link(&prev, &bytes, meta)?;
@@ -294,9 +391,24 @@ pub fn verify_log(runs_dir: &Path) -> Result<VerifyOutcome> {
             });
         }
         prev = chain.this.clone();
+        walked += 1;
+    }
+    if walked != chained.len() {
+        // A chained meta the walk never consumed: bad start hash, deleted
+        // middle link, or a meta imported from elsewhere.
+        let orphan = by_prev
+            .values()
+            .flatten()
+            .map(|m| m.run_id.clone())
+            .min()
+            .unwrap_or_default();
+        return Ok(VerifyOutcome::Broken {
+            run_id: orphan,
+            reason: "orphaned link (prev-hash not reachable from the chain start)".into(),
+        });
     }
     Ok(VerifyOutcome::Ok {
-        runs: chained.len(),
+        runs: walked,
         checkpoint,
     })
 }
@@ -445,14 +557,127 @@ mod tests {
             other => panic!("expected broken, got {other:?}"),
         }
 
-        // Consistently re-hashed forgery of link_hash -> breaks at the first
-        // surviving run instead (prev-link mismatch).
+        // Consistently re-hashed forgery of link_hash: the anchor covers
+        // NOTHING (backward linkage walk finds no meta), so every run on
+        // disk is unreachable from it - broken at the earliest orphan.
         let forged = mk_checkpoint("20260711T000001Z-a", "0000forged", 1, GENESIS);
         write_checkpoint(tmp.path(), &forged).unwrap();
         match verify_log(tmp.path()).unwrap() {
-            VerifyOutcome::Broken { run_id, .. } => assert!(run_id.ends_with("-b")),
+            VerifyOutcome::Broken { run_id, reason } => {
+                assert!(run_id.ends_with("-a"), "{run_id}");
+                assert!(reason.contains("orphaned link"), "{reason}");
+            }
             other => panic!("expected broken, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn out_of_order_finish_verifies_by_linkage() {
+        // Parallel audit lanes: B (larger run_id) finishes FIRST and chains
+        // from GENESIS; A (smaller run_id) finishes later and chains from B.
+        // The old run_id-ordered walk called this CHAIN BROKEN.
+        let tmp = tempfile::tempdir().unwrap();
+        let cb = mk_run(tmp.path(), "20260716T000002Z-b", GENESIS);
+        let ca = mk_run(tmp.path(), "20260716T000001Z-a", &cb.this);
+        assert_eq!(
+            verify_log(tmp.path()).unwrap(),
+            VerifyOutcome::Ok {
+                runs: 2,
+                checkpoint: None
+            }
+        );
+        // And the tip is A (by linkage), not B (largest run_id).
+        assert_eq!(last_link(tmp.path()), ca.this);
+    }
+
+    #[test]
+    fn chain_lock_serializes_concurrent_appends() {
+        // 8 threads race "read last_link -> write chained meta"; flock
+        // contends across separate opens even in one process. Without the
+        // lock two writers read the same prev and fork the chain.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        std::thread::scope(|s| {
+            for i in 0..8 {
+                let dir = dir.clone();
+                s.spawn(move || {
+                    with_chain_lock(&dir, || {
+                        let prev = last_link(&dir);
+                        mk_run(&dir, &format!("20260716T00000{i}Z-t{i}"), &prev);
+                        Ok(())
+                    })
+                    .unwrap();
+                });
+            }
+        });
+        assert_eq!(
+            verify_log(tmp.path()).unwrap(),
+            VerifyOutcome::Ok {
+                runs: 8,
+                checkpoint: None
+            },
+            "eight serialized appends form one unforked line"
+        );
+    }
+
+    #[test]
+    fn fork_is_broken_and_last_link_picks_newest_tip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _f1 = mk_run(tmp.path(), "20260716T000001Z-a", GENESIS);
+        let f2 = mk_run(tmp.path(), "20260716T000002Z-b", GENESIS);
+        match verify_log(tmp.path()).unwrap() {
+            VerifyOutcome::Broken { run_id, reason } => {
+                assert!(run_id.ends_with("-a"), "smallest run_id named: {run_id}");
+                assert!(reason.contains("chain fork"), "{reason}");
+            }
+            other => panic!("expected fork, got {other:?}"),
+        }
+        // Writers stay deterministic on legacy forks: largest-run_id tip.
+        assert_eq!(last_link(tmp.path()), f2.this);
+    }
+
+    #[test]
+    fn orphaned_meta_is_broken() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c1 = mk_run(tmp.path(), "20260716T000001Z-a", GENESIS);
+        let _ = c1;
+        mk_run(tmp.path(), "20260716T000002Z-b", "0000nowhere");
+        match verify_log(tmp.path()).unwrap() {
+            VerifyOutcome::Broken { run_id, reason } => {
+                assert!(run_id.ends_with("-b"), "{run_id}");
+                assert!(reason.contains("orphaned link"), "{reason}");
+            }
+            other => panic!("expected orphan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn checkpoint_skips_covered_by_linkage_not_run_id() {
+        // Interleaved chain: X (LARGE run_id) is linkage-oldest, then Y
+        // (small run_id), then Z. A checkpoint anchored at Y covers X and Y
+        // by LINKAGE even though X's run_id is larger than Y's - the old
+        // `run_id <= as_of` skip got this wrong.
+        let tmp = tempfile::tempdir().unwrap();
+        let cx = mk_run(tmp.path(), "20260716T000009Z-x", GENESIS);
+        let cy = mk_run(tmp.path(), "20260716T000001Z-y", &cx.this);
+        let cz = mk_run(tmp.path(), "20260716T000002Z-z", &cy.this);
+        let cp = mk_checkpoint("20260716T000001Z-y", &cy.this, 2, GENESIS);
+        write_checkpoint(tmp.path(), &cp).unwrap();
+        // Crash window: X and Y still on disk.
+        assert!(matches!(
+            verify_log(tmp.path()).unwrap(),
+            VerifyOutcome::Ok { runs: 1, .. }
+        ));
+        // After the deletion finishes: same verdict.
+        for id in ["20260716T000009Z-x", "20260716T000001Z-y"] {
+            std::fs::remove_file(tmp.path().join(format!("{id}.meta.json"))).unwrap();
+            std::fs::remove_file(tmp.path().join(format!("{id}.jsonl"))).unwrap();
+        }
+        assert!(matches!(
+            verify_log(tmp.path()).unwrap(),
+            VerifyOutcome::Ok { runs: 1, .. }
+        ));
+        assert_eq!(last_link(tmp.path()), cz.this);
     }
 
     #[test]

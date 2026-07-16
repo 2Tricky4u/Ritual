@@ -586,14 +586,24 @@ pub async fn execute_run(
     }
 
     // Chain link: computed last, over the final archive + meta content.
+    // "read last_link -> write meta" is ONE atomic unit under the chain
+    // lock: parallel daemons (audit lanes) finishing together used to read
+    // the same prev and fork the chain. Blocking flock is fine here - the
+    // child has exited, nothing else runs on this daemon, and the critical
+    // section is milliseconds. On lock failure the run lands UNCHAINED
+    // (the existing best-effort posture): a run is never lost.
     let archive_bytes = tokio::fs::read(&archive_path).await.unwrap_or_default();
-    let prev = crate::provenance::last_link(&runs_dir);
-    meta.chain = crate::provenance::compute_link(&prev, &archive_bytes, &meta).ok();
-
     let meta_path = runs_dir.join(format!("{run_id}.meta.json"));
-    tokio::fs::write(&meta_path, serde_json::to_string_pretty(&meta)?)
-        .await
-        .with_context(|| format!("writing {}", meta_path.display()))?;
+    let locked = crate::provenance::with_chain_lock(&runs_dir, || {
+        let prev = crate::provenance::last_link(&runs_dir);
+        meta.chain = crate::provenance::compute_link(&prev, &archive_bytes, &meta).ok();
+        crate::fsx::atomic_write(&meta_path, serde_json::to_string_pretty(&meta)?.as_bytes())
+    });
+    if locked.is_err() {
+        meta.chain = None;
+        crate::fsx::atomic_write(&meta_path, serde_json::to_string_pretty(&meta)?.as_bytes())
+            .with_context(|| format!("writing {}", meta_path.display()))?;
+    }
     let _ = std::fs::remove_file(&status_file);
     let _ = std::fs::remove_file(request_path(dirs, &run_id));
 
