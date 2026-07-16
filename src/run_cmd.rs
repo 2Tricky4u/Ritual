@@ -404,7 +404,7 @@ fn drive_gaps(
         // Parity with the TUI code-fix: the prompt forbids commit/reset and
         // promises ritual checks HEAD; headlessly we at least warn if the agent
         // moved it (snapshot fails-open, so an unborn HEAD is harmless).
-        let snap = crate::git::snapshot(&dirs.work_root).ok();
+        let snap = crate::git::snapshot(&dirs.work_root, &[]).ok();
         let cmd = stages::findings_code_fix_command(cfg, &briefs, invariants.as_deref());
         run_fix(cfg, dirs, branch, title, "code-fix", cmd)?;
         if let Some(snap) = snap

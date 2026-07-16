@@ -31,13 +31,17 @@ const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 /// `untracked_before` is the set of untracked files that already existed (so a
 /// file the fix newly creates can be told apart); `before_hashes` is the content
 /// hash of every pre-existing untracked file (so a MODIFICATION to one - which
-/// `git diff` cannot see - is still detectable); `head` is the HEAD commit at
-/// snapshot time (so a rogue commit/reset by the fixer can be caught).
+/// `git diff` cannot see - is still detectable); `extra_hashes` covers the
+/// caller-supplied target paths regardless of tracking/ignore status (`None` =
+/// absent at snapshot time), closing the gitignored-target blind spot; `head`
+/// is the HEAD commit at snapshot time (so a rogue commit/reset by the fixer
+/// can be caught).
 #[derive(Debug, Clone)]
 pub struct GitSnapshot {
     pub base: String,
     pub untracked_before: Vec<PathBuf>,
     pub before_hashes: HashMap<PathBuf, String>,
+    pub extra_hashes: HashMap<PathBuf, Option<String>>,
     pub head: Option<String>,
 }
 
@@ -160,12 +164,13 @@ fn render_file(cwd: &Path, rel: &Path) -> String {
     }
 }
 
-/// Snapshot the current worktree state so a later `diff_since` can show what a
-/// run changed. `git stash create` captures tracked working-tree+index changes
-/// as a commit without altering the tree; it prints nothing on a clean tree, so
-/// we fall back to HEAD, then to the empty-tree sentinel for a repo with no
-/// commits.
-pub fn snapshot(cwd: &Path) -> Result<GitSnapshot> {
+/// Snapshot the current worktree state so a later [`observed_change`] can show
+/// what a run changed. `git stash create` captures tracked working-tree+index
+/// changes as a commit without altering the tree; it prints nothing on a clean
+/// tree, so we fall back to HEAD, then to the empty-tree sentinel for a repo
+/// with no commits. `extra_paths` (the findings' target files) are content-
+/// hashed unconditionally - even gitignored targets stay observable.
+pub fn snapshot(cwd: &Path, extra_paths: &[PathBuf]) -> Result<GitSnapshot> {
     let base = git_opt(cwd, &["stash", "create"])
         .filter(|s| !s.is_empty())
         .or_else(|| git_opt(cwd, &["rev-parse", "HEAD"]).filter(|s| !s.is_empty()))
@@ -176,10 +181,15 @@ pub fn snapshot(cwd: &Path) -> Result<GitSnapshot> {
         .iter()
         .filter_map(|p| hash_file(cwd, p).map(|h| (p.clone(), h)))
         .collect();
+    let extra_hashes = extra_paths
+        .iter()
+        .map(|p| (p.clone(), hash_file(cwd, p)))
+        .collect();
     Ok(GitSnapshot {
         base,
         untracked_before,
         before_hashes,
+        extra_hashes,
         head,
     })
 }
@@ -212,6 +222,42 @@ pub fn observed_change(cwd: &Path, snap: &GitSnapshot) -> Result<ChangeSet> {
     for p in snap.before_hashes.keys() {
         if !now_set.contains(p) && !cwd.join(p).exists() {
             untracked_changed.push((p.clone(), "(file deleted)".to_string()));
+        }
+    }
+    // Caller-supplied target paths: hashed at snapshot time regardless of
+    // tracking/ignore status, so a GITIGNORED target edit is still observed
+    // (it is in neither the tracked diff nor the untracked listing). Dedupe
+    // against both so tracked/untracked targets are not reported twice.
+    if !snap.extra_hashes.is_empty() {
+        let tracked_changed: std::collections::HashSet<PathBuf> = nul_to_paths(&git(
+            cwd,
+            &[
+                "-c",
+                "core.quotepath=false",
+                "diff",
+                "-z",
+                "--name-only",
+                &snap.base,
+            ],
+        )?)
+        .into_iter()
+        .collect();
+        let already: std::collections::HashSet<PathBuf> =
+            untracked_changed.iter().map(|(p, _)| p.clone()).collect();
+        for (p, before) in &snap.extra_hashes {
+            if tracked_changed.contains(p) || already.contains(p) {
+                continue;
+            }
+            let now = hash_file(cwd, p);
+            if &now == before {
+                continue;
+            }
+            let entry = if now.is_none() && !cwd.join(p).exists() {
+                "(file deleted)".to_string()
+            } else {
+                render_file(cwd, p)
+            };
+            untracked_changed.push((p.clone(), entry));
         }
     }
     Ok(ChangeSet {
@@ -265,7 +311,7 @@ mod tests {
         let t = init_repo();
         let p = t.path();
         commit(p, "a.rs", "x\n");
-        let snap = snapshot(p).unwrap();
+        let snap = snapshot(p, &[]).unwrap();
         // Names git would C-quote without -z: unicode and an inner space.
         std::fs::write(p.join("spä ce.rs"), "hello\n").unwrap();
         let cs = observed_change(p, &snap).unwrap();
@@ -283,7 +329,7 @@ mod tests {
         let t = init_repo();
         let p = t.path();
         commit(p, "a.rs", "x\n");
-        let snap = snapshot(p).unwrap();
+        let snap = snapshot(p, &[]).unwrap();
         std::fs::write(p.join("blob.bin"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
         let r = observed_change(p, &snap).unwrap().render();
         assert!(
@@ -297,11 +343,11 @@ mod tests {
         let t = init_repo();
         let p = t.path();
         // No commits → empty-tree sentinel.
-        assert_eq!(snapshot(p).unwrap().base, EMPTY_TREE);
+        assert_eq!(snapshot(p, &[]).unwrap().base, EMPTY_TREE);
         // With a commit and a clean tree → HEAD (stash create is empty).
         commit(p, "a.rs", "A\n");
         let head = git(p, &["rev-parse", "HEAD"]).unwrap();
-        assert_eq!(snapshot(p).unwrap().base, head);
+        assert_eq!(snapshot(p, &[]).unwrap().base, head);
     }
 
     #[test]
@@ -312,7 +358,7 @@ mod tests {
         let p = t.path();
         commit(p, "a.rs", "tracked\n");
         std::fs::write(p.join("u.rs"), "before\n").unwrap(); // untracked
-        let snap = snapshot(p).unwrap();
+        let snap = snapshot(p, &[]).unwrap();
         std::fs::write(p.join("u.rs"), "after\n").unwrap(); // modify untracked
         let cs = observed_change(p, &snap).unwrap();
         assert!(!cs.is_empty(), "untracked edit is observed");
@@ -331,7 +377,7 @@ mod tests {
         let p = t.path();
         commit(p, "a.rs", "x\n");
         std::fs::write(p.join("scratch.rs"), "junk\n").unwrap(); // untracked
-        let snap = snapshot(p).unwrap();
+        let snap = snapshot(p, &[]).unwrap();
         std::fs::remove_file(p.join("scratch.rs")).unwrap(); // deletion-only fix
         let cs = observed_change(p, &snap).unwrap();
         assert!(!cs.is_empty(), "a deletion is an observable change");
@@ -348,7 +394,7 @@ mod tests {
         let p = t.path();
         commit(p, "a.rs", "x\n");
         std::fs::write(p.join("u.rs"), "keep\n").unwrap();
-        let snap = snapshot(p).unwrap();
+        let snap = snapshot(p, &[]).unwrap();
         assert!(observed_change(p, &snap).unwrap().is_empty());
     }
 
@@ -357,7 +403,7 @@ mod tests {
         let t = init_repo();
         let p = t.path();
         commit(p, "a.rs", "one\n");
-        let snap = snapshot(p).unwrap();
+        let snap = snapshot(p, &[]).unwrap();
         std::fs::write(p.join("a.rs"), "two\n").unwrap();
         std::fs::write(p.join("new.rs"), "brand new\n").unwrap();
         let cs = observed_change(p, &snap).unwrap();
@@ -371,11 +417,71 @@ mod tests {
     }
 
     #[test]
+    fn extra_path_gitignored_edit_is_observed_alongside_tracked_change() {
+        let t = init_repo();
+        let p = t.path();
+        commit(p, ".gitignore", "gen/\n");
+        std::fs::create_dir_all(p.join("gen")).unwrap();
+        std::fs::write(p.join("gen/out.rs"), "old\n").unwrap(); // ignored
+        commit(p, "a.rs", "one\n");
+        let snap = snapshot(p, &[PathBuf::from("gen/out.rs")]).unwrap();
+        // The fixer edits a tracked file AND the ignored target: without the
+        // extra-path hash the ignored edit would ride through unreviewed.
+        std::fs::write(p.join("a.rs"), "two\n").unwrap();
+        std::fs::write(p.join("gen/out.rs"), "new\n").unwrap();
+        let cs = observed_change(p, &snap).unwrap();
+        assert!(cs.diff.contains("+two"), "tracked hunk present");
+        assert!(
+            cs.untracked_changed
+                .iter()
+                .any(|(pp, c)| pp == Path::new("gen/out.rs") && c.contains("new")),
+            "ignored target edit must be observed: {:?}",
+            cs.untracked_changed
+        );
+    }
+
+    #[test]
+    fn extra_path_that_is_tracked_or_untracked_is_not_double_reported() {
+        let t = init_repo();
+        let p = t.path();
+        commit(p, "a.rs", "one\n");
+        std::fs::write(p.join("u.rs"), "before\n").unwrap(); // untracked
+        let snap = snapshot(p, &[PathBuf::from("a.rs"), PathBuf::from("u.rs")]).unwrap();
+        std::fs::write(p.join("a.rs"), "two\n").unwrap();
+        std::fs::write(p.join("u.rs"), "after\n").unwrap();
+        let cs = observed_change(p, &snap).unwrap();
+        // a.rs only in the tracked diff; u.rs exactly once in the listing.
+        assert!(
+            !cs.untracked_changed
+                .iter()
+                .any(|(pp, _)| pp == Path::new("a.rs"))
+        );
+        assert_eq!(
+            cs.untracked_changed
+                .iter()
+                .filter(|(pp, _)| pp == Path::new("u.rs"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn extra_path_unchanged_stays_silent() {
+        let t = init_repo();
+        let p = t.path();
+        commit(p, ".gitignore", "gen/\n");
+        std::fs::create_dir_all(p.join("gen")).unwrap();
+        std::fs::write(p.join("gen/out.rs"), "same\n").unwrap();
+        let snap = snapshot(p, &[PathBuf::from("gen/out.rs")]).unwrap();
+        assert!(observed_change(p, &snap).unwrap().is_empty());
+    }
+
+    #[test]
     fn head_moved_detects_a_commit_or_reset() {
         let t = init_repo();
         let p = t.path();
         commit(p, "a.rs", "x\n");
-        let snap = snapshot(p).unwrap();
+        let snap = snapshot(p, &[]).unwrap();
         assert!(!head_moved(p, &snap));
         commit(p, "b.rs", "y\n");
         assert!(head_moved(p, &snap), "a commit moves HEAD");
@@ -383,7 +489,7 @@ mod tests {
         // From an unborn HEAD, the first commit also counts as movement.
         let t2 = init_repo();
         let p2 = t2.path();
-        let snap2 = snapshot(p2).unwrap();
+        let snap2 = snapshot(p2, &[]).unwrap();
         assert_eq!(snap2.head, None);
         commit(p2, "a.rs", "x\n");
         assert!(head_moved(p2, &snap2));

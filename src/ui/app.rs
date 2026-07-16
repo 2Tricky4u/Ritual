@@ -3647,8 +3647,15 @@ impl App {
         if mine.is_empty() {
             return Err("no queued code findings on this feature".into());
         }
-        let snap =
-            crate::git::snapshot(&run_cwd).map_err(|e| format!("git snapshot failed: {e:#}"))?;
+        // Hash the findings' target files explicitly: a GITIGNORED target's
+        // edit is invisible to both the tracked diff and the untracked listing.
+        let targets: Vec<std::path::PathBuf> = mine
+            .iter()
+            .filter_map(|af| af.finding.file.as_deref())
+            .map(std::path::PathBuf::from)
+            .collect();
+        let snap = crate::git::snapshot(&run_cwd, &targets)
+            .map_err(|e| format!("git snapshot failed: {e:#}"))?;
         let mut items: Vec<CodeFixItem> = Vec::new();
         let mut owned: Vec<OwnedCodeBrief> = Vec::new();
         for (i, af) in mine.iter().enumerate() {
