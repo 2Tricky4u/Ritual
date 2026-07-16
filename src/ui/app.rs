@@ -513,6 +513,9 @@ impl App {
             ascii_flag: false,
         };
         app.recompute_anchors();
+        // Guidance is meaningful from frame one ("next: spec" on a fresh
+        // project); the git probe refines it asynchronously after startup.
+        app.recompute_guidance();
         // One-time startup warning when THIS feature's slug is shared by
         // another local branch: their state/plan/findings scopes silently
         // merge (one git call; empty outside a repo).

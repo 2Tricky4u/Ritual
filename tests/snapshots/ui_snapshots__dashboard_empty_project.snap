@@ -1,5 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
+assertion_line: 97
 expression: render(&app)
 ---
 "                            │  live   findings    history    plan    guide              "
@@ -11,16 +12,16 @@ expression: render(&app)
 "  ○ implement               │                                                             "
 "  ○ dual-review             │ pipeline  spec → plan → review → tests → impl → dual        "
 "  ○ coverage                │     chat  s: chat to write/edit the spec or plan live       "
-"                            │     runs  daemons: quit freely, reattach · a takeover       "
-" 󰚩 AGENTS ───────────────── │ findings  enter details · F/m triage · d dismiss · / filter "
-"  󰚩 claude …                │    gates  mutants · secrets · lessons · invariants          "
-"  󰚩 codex …                 │    money  daily budget · per-run caps · costs               "
-"  󱘖 bridge …                │   safety  redaction · verify-log chain · repro              "
-"   nvim …                   │       ci  --ci → JUnit · --json + exit codes                "
-"   check ?                  │ parallel  new --worktree · [ ] switch features              "
-"                            │     more  ps · attach · doctor · clean · pr-comment         "
-"   detached                 │    guide  5: the detailed guide & tips, in-app              "
-"                            │                                                             "
+"  » next: spec              │     runs  daemons: quit freely, reattach · a takeover       "
+"                            │ findings  enter details · F/m triage · d dismiss · / filter "
+" 󰚩 AGENTS ───────────────── │    gates  mutants · secrets · lessons · invariants          "
+"  󰚩 claude …                │    money  daily budget · per-run caps · costs               "
+"  󰚩 codex …                 │   safety  redaction · verify-log chain · repro              "
+"  󱘖 bridge …                │       ci  --ci → JUnit · --json + exit codes                "
+"   nvim …                   │ parallel  new --worktree · [ ] switch features              "
+"   check ?                  │     more  ps · attach · doctor · clean · pr-comment         "
+"                            │    guide  5: the detailed guide & tips, in-app              "
+"   detached                 │                                                             "
 "                            │     enter  run stage    :  palette    ?  keys    q  quit    "
 "                            │                                                             "
 " RITUAL   detached  detached                                                          "

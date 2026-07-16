@@ -1,5 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
+assertion_line: 118
 expression: render(&app)
 ---
 "                            │   live   findings   history    plan    guide              "
@@ -11,6 +12,7 @@ expression: render(&app)
 "  ○ implement               │                                                             "
 "  ○ dual-review             │   minr  ◇single src/x.rs:7 Long line                →you  "
 "  ○ coverage                │    style-ish [dual-review:unconfirmed]                      "
+"  » next: spec              │                                                             "
 "                            │                                                             "
 " 󰚩 AGENTS ───────────────── │                                                             "
 "  󰚩 claude …                │                                                             "
@@ -20,7 +22,6 @@ expression: render(&app)
 "   check ?                  │                                                             "
 "                            │                                                             "
 "   detached                 │                                                             "
-"                            │                                                             "
 "                            │                                                             "
 "                            │                                                             "
 " RITUAL   detached  detached                                                          "

@@ -1,5 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
+assertion_line: 142
 expression: render(&app)
 ---
 "                            │   live   findings   history    plan    guide              "
@@ -11,8 +12,9 @@ expression: render(&app)
 "  ○ implement               │   MAJR  ◇single src/b.rs:9 Was fixed             ✓ fixed  "
 "  ○ dual-review             │    [dual-review:confirmed]                                  "
 "  ○ coverage                │                                                             "
-"                            │   minr  ◇single  Noise                       ∅ dismissed  "
-" 󰚩 AGENTS ───────────────── │    [dual-review:unconfirmed]                                "
+"  » next: spec              │   minr  ◇single  Noise                       ∅ dismissed  "
+"                            │    [dual-review:unconfirmed]                                "
+" 󰚩 AGENTS ───────────────── │                                                             "
 "  󰚩 claude …                │                                                             "
 "  󰚩 codex …                 │                                                             "
 "  󱘖 bridge …                │                                                             "
@@ -20,7 +22,6 @@ expression: render(&app)
 "   check ?                  │                                                             "
 "                            │                                                             "
 "   detached                 │                                                             "
-"                            │                                                             "
 "                            │                                                             "
 "                            │                                                             "
 " RITUAL   detached  detached                                                          "

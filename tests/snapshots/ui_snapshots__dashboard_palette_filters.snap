@@ -1,6 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
-assertion_line: 646
+assertion_line: 705
 expression: render(&app)
 ---
 "                            │  live   findings    history    plan    guide              "
@@ -12,16 +12,16 @@ expression: render(&app)
 "  ○ implement    │  run stage / open item                               │                 "
 "  ○ dual-review  │  cancel running stage                                │pl → dual        "
 "  ○ coverage     │  run check.sh fast                                   │ plan live       "
-"                 │  run full check.sh                                   │a takeover       "
-" 󰚩 AGENTS ───────│  open in running nvim                                │smiss · / filter "
-"  󰚩 claude …     │  run spec                                            │ariants          "
-"  󰚩 codex …      │  run plan                                            │ts               "
-"  󱘖 bridge …     │  run plan-review                                     │pro              "
-"   nvim …        │  run tests-red                                       │s                "
-"   check ?       │  run implement                                       │res              "
-"                 │  run dual-review                                     │-comment         "
-"   detached      │  run coverage                                        │app              "
-"                 ╰──────────────────────────────────────────────────────╯                 "
+"  » next: spec   │  run full check.sh                                   │a takeover       "
+"                 │  open in running nvim                                │smiss · / filter "
+" 󰚩 AGENTS ───────│  run spec                                            │ariants          "
+"  󰚩 claude …     │  run plan                                            │ts               "
+"  󰚩 codex …      │  run plan-review                                     │pro              "
+"  󱘖 bridge …     │  run tests-red                                       │s                "
+"   nvim …        │  run implement                                       │res              "
+"   check ?       │  run dual-review                                     │-comment         "
+"                 │  run coverage                                        │app              "
+"   detached      ╰──────────────────────────────────────────────────────╯                 "
 "                            │     enter  run stage    :  palette    ?  keys    q  quit    "
 "                            │                                                             "
 " RITUAL   detached  detached                                                          "

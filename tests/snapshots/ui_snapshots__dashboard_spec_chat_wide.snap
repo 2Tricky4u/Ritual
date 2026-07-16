@@ -1,6 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
-assertion_line: 518
+assertion_line: 577
 expression: "render_at(&app, 120, 30)"
 ---
 "                            │ spec · § Behavior (the contract: WHAT, not HOW)  │ 󰚩 chat · spec · § Behavior (the contra…"
@@ -12,16 +12,16 @@ expression: "render_at(&app, 120, 30)"
 "  ○ implement               │                                                  │                                        "
 "  ○ dual-review             │󰲣 Behavior (the contract: WHAT, not HOW)          │                                        "
 "  ○ coverage                │                                                  │                                        "
-"                            │must retry on drop                                │                                        "
-" 󰚩 AGENTS ───────────────── │                                                  │                                        "
-"  󰚩 claude …                │󰲣 Edge cases & failure modes                      │                                        "
-"  󰚩 codex …                 │                                                  │                                        "
-"  󱘖 bridge …                │󰲣 Out of scope                                    │                                        "
+"  » next: spec              │must retry on drop                                │                                        "
+"                            │                                                  │                                        "
+" 󰚩 AGENTS ───────────────── │󰲣 Edge cases & failure modes                      │                                        "
+"  󰚩 claude …                │                                                  │                                        "
+"  󰚩 codex …                 │󰲣 Out of scope                                    │                                        "
+"  󱘖 bridge …                │                                                  │                                        "
 "   nvim …                   │                                                  │                                        "
 "   check ?                  │                                                  │                                        "
 "                            │                                                  │                                        "
 "   detached                 │                                                  │                                        "
-"                            │                                                  │                                        "
 "                            │                                                  │                                        "
 "                            │                                                  │                                        "
 "                            │                                                  │                                        "

@@ -1,6 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
-assertion_line: 539
+assertion_line: 598
 expression: "render_at(&app, 100, 26)"
 ---
 "                            │ spec · § Behavior (the contract: WHAT,│ 󰚩 chat · spec · § Behavior (th"
@@ -12,16 +12,16 @@ expression: "render_at(&app, 100, 26)"
 "  ○ implement               │                                       │                               "
 "  ○ dual-review             │󰲣 Behavior (the contract: WHAT, not    │                               "
 "  ○ coverage                │HOW)                                   │                               "
-"                            │                                       │                               "
-" 󰚩 AGENTS ───────────────── │must retry on drop                     │                               "
-"  󰚩 claude …                │                                       │                               "
-"  󰚩 codex …                 │󰲣 Edge cases & failure modes           │                               "
-"  󱘖 bridge …                │                                       │                               "
-"   nvim …                   │󰲣 Out of scope                         │                               "
+"  » next: spec              │                                       │                               "
+"                            │must retry on drop                     │                               "
+" 󰚩 AGENTS ───────────────── │                                       │                               "
+"  󰚩 claude …                │󰲣 Edge cases & failure modes           │                               "
+"  󰚩 codex …                 │                                       │                               "
+"  󱘖 bridge …                │󰲣 Out of scope                         │                               "
+"   nvim …                   │                                       │                               "
 "   check ?                  │                                       │                               "
 "                            │                                       │                               "
 "   detached                 │                                       │                               "
-"                            │                                       │                               "
 "                            │                                       │                               "
 "                            │                                       │                               "
 "                            │                                       │  first line                   "

@@ -1,5 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
+assertion_line: 351
 expression: render(&app)
 ---
 "                            │  live   findings    history    plan    guide              "
@@ -11,16 +12,16 @@ expression: render(&app)
 "  ○ implement               │                                                             "
 "  ○ dual-review             │                                                             "
 "  ○ coverage                │                                                             "
+"  » next: spec              │                                                             "
 "                            │                                                             "
-" 󰚩 AGENTS ───────────────── │                                                             "
-"  󰚩 claude …                │                  waiting for agent output…                  "
+" 󰚩 AGENTS ───────────────── │                  waiting for agent output…                  "
+"  󰚩 claude …                │                                                             "
 "  󰚩 codex …                 │                                                             "
 "  󱘖 bridge …                │                                                             "
 "   nvim …                   │                                                             "
 "   check green              │                                                             "
 "                            │                                                             "
 "   detached                 │                                                             "
-"                            │                                                             "
 "                            │                                                             "
 "                            │                                                             "
 " RITUAL   detached  detached                         $4.20/$5  ⠋ plan-review   ok "

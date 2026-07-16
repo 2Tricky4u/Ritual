@@ -349,11 +349,21 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         let selected = i == app.selected;
         // Attempt history at a glance: ×N once a stage has been re-run.
         let attempts = app.stage_attempts(*id);
-        let suffix = if attempts > 1 {
+        let mut suffix = if attempts > 1 {
             format!(" ×{attempts}")
         } else {
             String::new()
         };
+        // Done-but-stale (guidance): the inputs moved since this ran.
+        let stale = app
+            .guidance
+            .as_ref()
+            .and_then(|g| g.stages.get(id))
+            .is_some_and(|sg| sg.stale.is_some());
+        if stale {
+            suffix.push(' ');
+            suffix.push_str(t.icon_stale());
+        }
         if selected {
             // PmenuSel: purple row, dark text.
             let spans = vec![Span::styled(
@@ -363,6 +373,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             lines.push(fill_row(spans, w, t.bg_selection()));
         } else {
             let label_color = match status {
+                StageStatus::Done if stale => t.warn(),
                 StageStatus::Done => t.grey_fg(),
                 StageStatus::Running => t.info(),
                 StageStatus::Failed => t.error(),
@@ -377,6 +388,34 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 ),
             ];
             lines.push(fill_row(spans, w, bg));
+        }
+    }
+    // Guidance strip: the next actionable stage + its top note/warning
+    // (cached on App; the renderer only reads).
+    if let Some(g) = &app.guidance {
+        if let Some(next) = g.next {
+            lines.push(fill_row(
+                vec![Span::styled(
+                    format!("  » next: {}", next.label()),
+                    Style::default().fg(t.info()).bg(bg),
+                )],
+                w,
+                bg,
+            ));
+        }
+        if let Some(note) = g
+            .next_note
+            .as_deref()
+            .or_else(|| g.warnings.first().map(String::as_str))
+        {
+            lines.push(fill_row(
+                vec![Span::styled(
+                    format!("  {note}"),
+                    Style::default().fg(t.warn()).bg(bg),
+                )],
+                w,
+                bg,
+            ));
         }
     }
     lines.push(Line::default());

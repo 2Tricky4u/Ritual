@@ -1,0 +1,27 @@
+---
+source: tests/ui_snapshots.rs
+assertion_line: 497
+expression: out
+---
+"                            │  live   findings    history    plan    guide              "
+"  PIPELINE ──────────────── │─────────────────────────────────────────────────────────────"
+"   spec                     │                                                             "
+"   plan                    │                    █▀█ █ ▀█▀ █ █ ▄▀█ █                      "
+"   plan-review             │                    █▀▄ █  █  █▄█ █▀█ █▄▄                    "
+"   tests-red               │         s u m m o n  ·  r e v i e w  ·  v e r i f y         "
+"   implement                │                                                             "
+"   dual-review              │ pipeline  spec → plan → review → tests → impl → dual        "
+"   coverage                 │     chat  s: chat to write/edit the spec or plan live       "
+"  » next: plan              │     runs  daemons: quit freely, reattach · a takeover       "
+"  spec.md changed after this│ findings  enter details · F/m triage · d dismiss · / filter "
+"                            │    gates  mutants · secrets · lessons · invariants          "
+" 󰚩 AGENTS ───────────────── │    money  daily budget · per-run caps · costs               "
+"  󰚩 claude …                │   safety  redaction · verify-log chain · repro              "
+"  󰚩 codex …                 │       ci  --ci → JUnit · --json + exit codes                "
+"  󱘖 bridge …                │ parallel  new --worktree · [ ] switch features              "
+"   nvim …                   │     more  ps · attach · doctor · clean · pr-comment         "
+"   check ?                  │    guide  5: the detailed guide & tips, in-app              "
+"                            │                                                             "
+"   detached                 │     enter  run stage    :  palette    ?  keys    q  quit    "
+"                            │                                                             "
+" RITUAL   detached  t                                                                 "

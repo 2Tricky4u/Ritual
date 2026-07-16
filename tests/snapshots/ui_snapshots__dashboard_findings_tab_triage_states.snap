@@ -1,5 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
+assertion_line: 245
 expression: render(&app)
 ---
 "                            │   live   findings   history    plan    guide              "
@@ -11,16 +12,16 @@ expression: render(&app)
 "  ○ implement               │   MAJR  ◇single ⚓ Step 2 queued for the claud… ⚑A queued " Hidden by multi-width symbols: [(49, " ")]
 "  ○ dual-review             │    s1 [plan-review:confirmed]                               "
 "  ○ coverage                │                                                             "
-"                            │   MAJR  ◇single src/a.rs:3 yours to fix by ha… ⚑M manual  "
-" 󰚩 AGENTS ───────────────── │    s2 [plan-review:confirmed]                               "
-"  󰚩 claude …                │                                                             "
-"  󰚩 codex …                 │   MAJR   ◆both  ⚓ Step 5 resolution recorded by th… →✓ " Hidden by multi-width symbols: [(51, " ")]
-"  󱘖 bridge …                │    s4 [plan-review:accepted]                                "
-"   nvim …                   │                                                             "
-"   check ?                  │   minr  ◇single ⚓ Step 4 declined by the las… ✗ declined " Hidden by multi-width symbols: [(49, " ")]
-"                            │    s3 [plan-review:confirmed]                               "
-"   detached                 │                                                             "
-"                            │   minr  ◇single ⚓ Step 6 retracted in round 2         →∅ " Hidden by multi-width symbols: [(49, " ")]
+"  » next: spec              │   MAJR  ◇single src/a.rs:3 yours to fix by ha… ⚑M manual  "
+"                            │    s2 [plan-review:confirmed]                               "
+" 󰚩 AGENTS ───────────────── │                                                             "
+"  󰚩 claude …                │   MAJR   ◆both  ⚓ Step 5 resolution recorded by th… →✓ " Hidden by multi-width symbols: [(51, " ")]
+"  󰚩 codex …                 │    s4 [plan-review:accepted]                                "
+"  󱘖 bridge …                │                                                             "
+"   nvim …                   │   minr  ◇single ⚓ Step 4 declined by the las… ✗ declined " Hidden by multi-width symbols: [(49, " ")]
+"   check ?                  │    s3 [plan-review:confirmed]                               "
+"                            │                                                             "
+"   detached                 │   minr  ◇single ⚓ Step 6 retracted in round 2         →∅ " Hidden by multi-width symbols: [(49, " ")]
 "                            │    s5 [plan-review:refuted]                                 "
 "                            │                                                             "
 " RITUAL   detached  detached                                                     ⚑1 "

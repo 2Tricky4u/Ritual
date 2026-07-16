@@ -1,5 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
+assertion_line: 280
 expression: render(&app)
 ---
 "                            │   live   findings   history    plan    guide              "
@@ -11,16 +12,16 @@ expression: render(&app)
 "  ○ implement               │                                                             "
 "  ○ dual-review             │                                                             "
 "  ○ coverage   ╭ apply answers ───────────────────────────────────────────╮               "
-"               │fix 4 code finding(s) - one run + check.sh + re-review?   │               "
-" 󰚩 AGENTS ─────│a passing fix stays in your working tree - review with git│               "
-"  󰚩 claude …   │1 on other features skipped                               │review         "
-"  󰚩 codex …    │ y  apply   u  unqueue this   esc  cancel                 │               "
-"  󱘖 bridge …   ╰──────────────────────────────────────────────────────────╯               "
+"  » next: spec │fix 4 code finding(s) - one run + check.sh + re-review?   │               "
+"               │a passing fix stays in your working tree - review with git│               "
+" 󰚩 AGENTS ─────│1 on other features skipped                               │review         "
+"  󰚩 claude …   │ y  apply   u  unqueue this   esc  cancel                 │               "
+"  󰚩 codex …    ╰──────────────────────────────────────────────────────────╯               "
+"  󱘖 bridge …                │                                                             "
 "   nvim …                   │                                                             "
 "   check ?                  │                                                             "
 "                            │                                                             "
 "   detached                 │                                                             "
-"                            │                                                             "
 "                            │                                                             "
 "                            │                                                             "
 " RITUAL   detached  detached                                                          "

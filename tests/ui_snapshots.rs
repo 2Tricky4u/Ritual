@@ -448,6 +448,65 @@ fn whichkey_sections_advertise_exactly_what_works() {
     }
 }
 
+/// A project whose whole pipeline finished two hours ago, then spec.md was
+/// edited: plan/plan-review/tests-red must wear the stale marker, the label
+/// turns warn, and the guidance strip names the rerun.
+fn setup_stale_app(tmp: &tempfile::TempDir) -> App {
+    ritual::scaffold::init(tmp.path(), false).unwrap();
+    let fin = (chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+    let stages: String = [
+        "spec",
+        "plan",
+        "plan_review",
+        "tests_red",
+        "implement",
+        "dual_review",
+        "coverage",
+    ]
+    .iter()
+    .map(|s| format!(r#""{s}":{{"status":"done","finished_at":"{fin}"}}"#))
+    .collect::<Vec<_>>()
+    .join(",");
+    std::fs::write(
+        tmp.path().join(".ritual/state.json"),
+        format!(
+            r#"{{"version":1,"features":{{"detached":{{"branch":"detached","title":"t",
+                "created_at":"2026-07-16T00:00:00Z","updated_at":"2026-07-16T00:00:00Z",
+                "stages":{{{stages}}}}}}}}}"#
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(tmp.path().join(".ritual/features/detached")).unwrap();
+    // Touched NOW, i.e. after every finished_at: the staleness trigger.
+    std::fs::write(
+        tmp.path().join(".ritual/features/detached/spec.md"),
+        "# Feature\n\n## Goal\nrefined after the pipeline ran\n",
+    )
+    .unwrap();
+    let dirs = RitualDirs::new(tmp.path());
+    App::new(Config::default(), dirs).unwrap()
+}
+
+#[test]
+fn dashboard_sidebar_stale_stage_and_next_line() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = setup_stale_app(&tmp);
+    let out = render(&app);
+    assert!(out.contains("» next: plan"), "{out}");
+    assert!(out.contains("spec.md changed"), "{out}");
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn dashboard_sidebar_stale_stage_ascii() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_stale_app(&tmp);
+    app.cfg.theme.icons = ritual::theme::IconSet::Ascii;
+    let out = render(&app);
+    assert!(out.contains("[~]"), "ascii stale marker: {out}");
+    insta::assert_snapshot!(out);
+}
+
 #[test]
 fn dashboard_history_scrolled_to_bottom() {
     // 30 runs on a 22-row frame: the oldest are beyond one screen and were

@@ -1,6 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
-assertion_line: 282
+assertion_line: 302
 expression: render(&app)
 ---
 "                            │   live   findings   history    plan    guide              "
@@ -12,12 +12,12 @@ expression: render(&app)
 "  ○│recommended: fix manually - confirmed code finding                                │   "
 "  ○│                                                                                  │   "
 "  ○│two writers clobber each other                                                    │   "
-"   │                                                                                  │   "
-" 󰚩 │▏ let st = load(&path)?; // no lock                                               │   "
-"  󰚩│▏ save(&path, &st)?;                                                              │   "
+"  »│                                                                                  │   "
+"   │▏ let st = load(&path)?; // no lock                                               │   "
+" 󰚩 │▏ save(&path, &st)?;                                                              │   "
+"  󰚩│                                                                                  │   "
 "  󰚩│                                                                                  │   "
 "  󱘖│                                                                                  │   "
-"   │                                                                                  │   "
 "   │                                                                                  │   "
 "   │                                                                                  │   "
 "   │                                                                                  │   "

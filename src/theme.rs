@@ -244,6 +244,10 @@ impl Theme {
     pub fn icon_skipped(&self) -> &'static str {
         self.pick("", "(-)")
     }
+    /// A Done stage whose inputs moved since it ran (guidance staleness).
+    pub fn icon_stale(&self) -> &'static str {
+        self.pick("\u{f021}", "[~]")
+    }
     pub fn icon_branch(&self) -> &'static str {
         self.pick("", "br:")
     }

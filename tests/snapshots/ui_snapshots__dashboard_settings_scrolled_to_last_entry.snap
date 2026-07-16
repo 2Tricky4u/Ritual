@@ -1,6 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
-assertion_line: 635
+assertion_line: 694
 expression: render(&app)
 ---
 "                            │  live   findings    history    plan    guide              "
@@ -12,16 +12,16 @@ expression: render(&app)
 "  ○ implemen│  effort: plan-fix                                  - (default) │            "
 "  ○ dual-rev│  effort: plan-review                               - (default) │dual        "
 "  ○ coverage│  effort: dual-review                               - (default) │ live       "
-"            │ appearance                                                     │eover       "
-" 󰚩 AGENTS ──│  theme                                      eldritch (default) │ · / filter "
-"  󰚩 claude …│  icons                                          nerd (default) │ts          "
-"  󰚩 codex … │  transparency                                   true (default) │            "
-"  󱘖 bridge …│ behavior                                                       │            "
-"   nvim …   │  notifications                                  true (default) │            "
-"   check ?  │  redaction                                      true (default) │            "
-"            │  offline                                       false (default) │ent         "
-"   detached │  base ref                                       main (default) │            "
-"            │  check timeout (s)                               600 (default) │            "
+"  » next: sp│ appearance                                                     │eover       "
+"            │  theme                                      eldritch (default) │ · / filter "
+" 󰚩 AGENTS ──│  icons                                          nerd (default) │ts          "
+"  󰚩 claude …│  transparency                                   true (default) │            "
+"  󰚩 codex … │ behavior                                                       │            "
+"  󱘖 bridge …│  notifications                                  true (default) │            "
+"   nvim …   │  redaction                                      true (default) │            "
+"   check ?  │  offline                                       false (default) │ent         "
+"            │  base ref                                       main (default) │            "
+"   detached │  check timeout (s)                               600 (default) │            "
 "            │ j/k move · enter toggle/edit · g/G first/last · S/esc close    │ q  quit    "
 "            ╰────────────────────────────────────────────────────────────────╯            "
 " RITUAL   detached  detached                                                          "
