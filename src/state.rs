@@ -297,6 +297,40 @@ pub fn branch_slug(branch: &str) -> String {
     }
 }
 
+/// Local branches whose names collapse to the SAME slug (`feat/x` and
+/// `feat-x` both slug to `feat-x`): they would silently share one state
+/// entry, plan, and findings scope. Grouped for doctor/TUI warnings; empty
+/// outside a git repo. Sorted for stable output.
+pub fn slug_collisions(dir: &Path) -> Vec<(String, Vec<String>)> {
+    let Some(out) = Command::new("git")
+        .args(["for-each-ref", "refs/heads", "--format=%(refname:short)"])
+        .current_dir(dir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+    else {
+        return Vec::new();
+    };
+    let mut groups: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for branch in String::from_utf8_lossy(&out.stdout).lines() {
+        let branch = branch.trim();
+        if !branch.is_empty() {
+            groups
+                .entry(branch_slug(branch))
+                .or_default()
+                .push(branch.to_string());
+        }
+    }
+    groups.retain(|_, v| v.len() >= 2);
+    groups
+        .into_iter()
+        .map(|(slug, mut branches)| {
+            branches.sort();
+            (slug, branches)
+        })
+        .collect()
+}
+
 /// The MAIN repository root, even when `dir` is inside a linked worktree
 /// (`--git-common-dir` points at the main checkout's .git).
 pub fn git_main_root(dir: &Path) -> Option<PathBuf> {
@@ -510,6 +544,27 @@ mod tests {
     fn no_parent_dirs(p: &Path) -> bool {
         !p.components()
             .any(|c| matches!(c, std::path::Component::ParentDir))
+    }
+
+    #[test]
+    fn slug_collisions_groups_colliding_branches_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q", "-b", "main"]);
+        git(tmp.path(), &["config", "user.email", "t@t"]);
+        git(tmp.path(), &["config", "user.name", "t"]);
+        std::fs::write(tmp.path().join("a.txt"), "a").unwrap();
+        git(tmp.path(), &["add", "a.txt"]);
+        git(tmp.path(), &["commit", "-qm", "x"]);
+        git(tmp.path(), &["branch", "feat/x"]);
+        git(tmp.path(), &["branch", "feat-x"]);
+        git(tmp.path(), &["branch", "lonely"]);
+        let groups = slug_collisions(tmp.path());
+        assert_eq!(groups.len(), 1, "{groups:?}");
+        assert_eq!(groups[0].0, "feat-x");
+        assert_eq!(groups[0].1, vec!["feat-x".to_string(), "feat/x".into()]);
+        // Outside a git repo: empty, never an error.
+        let plain = tempfile::tempdir().unwrap();
+        assert!(slug_collisions(plain.path()).is_empty());
     }
 
     #[test]

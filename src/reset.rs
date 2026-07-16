@@ -48,7 +48,7 @@ pub fn reset_plan(dirs: &RitualDirs, st: &mut State, branch: &str) -> ResetSumma
     feature.updated_at = chrono::Utc::now();
 
     // 3. Remove this feature's plan-review + coverage findings.
-    let findings_removed = remove_plan_findings(dirs, &slug);
+    let findings_removed = remove_plan_findings(dirs, branch);
 
     // 4. Clear the plan undo/redo stacks (they snapshot the now-deleted plan).
     crate::undo::clear(dirs, &slug, "plan");
@@ -61,15 +61,17 @@ pub fn reset_plan(dirs: &RitualDirs, st: &mut State, branch: &str) -> ResetSumma
 }
 
 /// Delete the plan-review/coverage findings files that belong to this feature,
-/// matched EXACTLY by the file's `branch`. A destructive op must never touch a
-/// branch-LESS file (its owner is ambiguous - it may belong to another feature;
-/// the findings dir is shared). Such leftovers are harmless: coverage supersedes
-/// its file on the next run, and plan-review re-writes its own. Code
-/// (dual-review) findings and other features' files always survive.
-fn remove_plan_findings(dirs: &RitualDirs, slug: &str) -> usize {
+/// matched EXACTLY by the file's RAW `branch` string - slug-equality would let
+/// a reset on `feat-x` delete `feat/x`'s findings (both slug to `feat-x`). A
+/// destructive op must never touch a branch-LESS file either (its owner is
+/// ambiguous - it may belong to another feature; the findings dir is shared).
+/// Such leftovers are harmless: coverage supersedes its file on the next run,
+/// and plan-review re-writes its own. Code (dual-review) findings and other
+/// features' files always survive.
+fn remove_plan_findings(dirs: &RitualDirs, branch: &str) -> usize {
     let mut removed = 0;
     for lf in crate::findings::load_all(&dirs.findings_dir()).unwrap_or_default() {
-        let belongs = !lf.file.branch.is_empty() && state::branch_slug(&lf.file.branch) == slug;
+        let belongs = !lf.file.branch.is_empty() && lf.file.branch == branch;
         if belongs
             && PLAN_FINDING_STAGES.contains(&lf.file.stage.as_str())
             && std::fs::remove_file(&lf.path).is_ok()
@@ -100,7 +102,7 @@ pub fn preview(dirs: &RitualDirs, st: &State, branch: &str) -> ResetSummary {
         .iter()
         .filter(|lf| {
             !lf.file.branch.is_empty()
-                && state::branch_slug(&lf.file.branch) == slug
+                && lf.file.branch == branch
                 && PLAN_FINDING_STAGES.contains(&lf.file.stage.as_str())
         })
         .count();
@@ -204,6 +206,33 @@ mod tests {
                 .findings_dir()
                 .join("20260101T000001Z-coverage.json")
                 .exists()
+        );
+    }
+
+    #[test]
+    fn reset_never_crosses_a_slug_collision() {
+        // `feat/x` and `feat-x` slug identically; a reset on one must not
+        // delete the other's findings (raw-branch match, not slug match).
+        let (_t, dirs) = dirs_tmp();
+        let mut st = State::default();
+        st.feature_for_branch_mut("feat-x");
+        std::fs::write(
+            dirs.findings_dir().join("20260101T000000Z-coverage.json"),
+            r#"{"stage":"coverage","branch":"feat/x","findings":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dirs.findings_dir().join("20260101T000001Z-coverage.json"),
+            r#"{"stage":"coverage","branch":"feat-x","findings":[]}"#,
+        )
+        .unwrap();
+        let sum = reset_plan(&dirs, &mut st, "feat-x");
+        assert_eq!(sum.findings_removed, 1, "only the raw-branch match");
+        assert!(
+            dirs.findings_dir()
+                .join("20260101T000000Z-coverage.json")
+                .exists(),
+            "feat/x's finding survives a feat-x reset"
         );
     }
 

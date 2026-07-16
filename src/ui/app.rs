@@ -467,6 +467,19 @@ impl App {
             ascii_flag: false,
         };
         app.recompute_anchors();
+        // One-time startup warning when THIS feature's slug is shared by
+        // another local branch: their state/plan/findings scopes silently
+        // merge (one git call; empty outside a repo).
+        if let Some((_, branches)) = crate::state::slug_collisions(&app.dirs.work_root)
+            .into_iter()
+            .find(|(slug, _)| slug == &app.slug)
+        {
+            app.status_msg = Some(format!(
+                "warning: branches {} share state slug '{}' - rename one",
+                branches.join(" and "),
+                app.slug
+            ));
+        }
         Ok(app)
     }
 

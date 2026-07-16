@@ -264,6 +264,29 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
         )
     });
 
+    // -- branch slug collisions -------------------------------------------------
+    // `feat/x` and `feat-x` share one slug = one state entry/plan/findings
+    // scope; warn before that silently merges two features' bookkeeping.
+    let collisions = crate::state::slug_collisions(&dirs.work_root);
+    if !collisions.is_empty() {
+        let desc = collisions
+            .iter()
+            .map(|(slug, branches)| format!("{} → '{slug}'", branches.join(" + ")))
+            .collect::<Vec<_>>()
+            .join("; ");
+        out.push(check(
+            "slug",
+            CheckStatus::Warn,
+            format!("branches share a state slug ({desc}); rename one branch"),
+        ));
+    } else {
+        out.push(check(
+            "slug",
+            CheckStatus::Pass,
+            "every local branch has its own state slug",
+        ));
+    }
+
     // -- invariants constitution -----------------------------------------------
     out.push(match crate::stages::meaningful_invariants(dirs) {
         Some(_) => check(
