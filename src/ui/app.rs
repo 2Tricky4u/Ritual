@@ -1146,6 +1146,9 @@ impl App {
             None,
             model_override.as_deref(),
             session.as_deref(),
+            // The (possibly linked-worktree) checkout this run executes in:
+            // git preflights must probe THIS tree, not work_root.
+            Some(&run_cwd),
         ) {
             Ok(c) => c,
             Err(e) => {

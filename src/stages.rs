@@ -514,6 +514,7 @@ pub fn code_fix_review_command(
 /// prompt, so ritual surfaces it instead of auto-sending it.
 pub const IMPLEMENT_PROMPT: &str = "Implement the code to make the failing tests from the tests-red step pass. Follow the plan and run ./check.sh before finishing.";
 
+#[allow(clippy::too_many_arguments)] // one optional knob per stage concern; a params struct would just rename them
 pub fn build(
     stage: StageId,
     cfg: &Config,
@@ -526,6 +527,10 @@ pub fn build(
     // <sid>`. `None` on implement opens the `--resume` picker so the user
     // chooses - never the fragile `--continue` ("most recent in cwd").
     session: Option<&str>,
+    // The checkout the run will execute in - the TUI passes its (possibly
+    // linked-worktree) run cwd so git preflights probe the RIGHT tree;
+    // `None` falls back to `dirs.work_root` (CLI / bench).
+    run_cwd: Option<&Path>,
 ) -> Result<StageCommand> {
     let claude = cfg.claude_cmd.clone();
     let findings_env = (
@@ -647,6 +652,11 @@ pub fn build(
             let base = arg
                 .map(str::to_string)
                 .unwrap_or_else(|| cfg.base_ref.clone());
+            // Refuse a provably vacuous review BEFORE spending budget: a
+            // missing base or a tree identical to the merge-base used to
+            // produce an empty diff, findings [], and a Done stage that had
+            // reviewed zero lines. Probes the run's OWN checkout.
+            crate::git::dual_review_preflight(run_cwd.unwrap_or(&dirs.work_root), &base)?;
             StageCommand {
                 mode: Mode::Headless,
                 agent: AgentKind::Claude,
@@ -774,12 +784,51 @@ mod tests {
         (tmp, Config::default(), dirs)
     }
 
+    /// Like `setup`, but inside a git repo on branch `main` with one commit
+    /// and a dirty tracked file - the dual-review preflight needs a real,
+    /// reviewable checkout.
+    fn setup_git() -> (tempfile::TempDir, Config, RitualDirs) {
+        let (tmp, cfg, dirs) = setup();
+        let p = tmp.path();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "t@t"][..],
+            &["config", "user.name", "t"][..],
+        ] {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .output()
+                .unwrap();
+        }
+        std::fs::write(p.join("a.rs"), "one\n").unwrap();
+        for args in [&["add", "a.rs"][..], &["commit", "-qm", "x"][..]] {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .output()
+                .unwrap();
+        }
+        std::fs::write(p.join("a.rs"), "two\n").unwrap(); // reviewable dirt
+        (tmp, cfg, dirs)
+    }
+
     #[test]
     fn plan_review_command_shape() {
         let (_tmp, cfg, dirs) = setup();
         std::fs::create_dir_all(dirs.feature_dir("feat-x")).unwrap();
         std::fs::write(dirs.plan_file("feat-x"), "# plan").unwrap();
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "feat-x", None, None, None).unwrap();
+        let cmd = build(
+            StageId::PlanReview,
+            &cfg,
+            &dirs,
+            "feat-x",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(cmd.mode, Mode::Headless);
         assert!(cmd.needs_codex);
         assert!(cmd.argv.iter().any(|a| a.starts_with("/plan-review ")));
@@ -794,12 +843,32 @@ mod tests {
         std::fs::create_dir_all(dirs.feature_dir("s")).unwrap();
         std::fs::write(dirs.plan_file("s"), "# plan").unwrap();
 
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None, None).unwrap();
+        let cmd = build(
+            StageId::PlanReview,
+            &cfg,
+            &dirs,
+            "s",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let tools = cmd.argv.iter().find(|a| a.contains("mcp__codex")).unwrap();
         assert!(!tools.contains("mcp__pal__consensus"), "dark by default");
 
         cfg.consensus_enabled = true;
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None, None).unwrap();
+        let cmd = build(
+            StageId::PlanReview,
+            &cfg,
+            &dirs,
+            "s",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let tools = cmd.argv.iter().find(|a| a.contains("mcp__codex")).unwrap();
         assert!(tools.contains("mcp__pal__consensus"));
     }
@@ -807,7 +876,19 @@ mod tests {
     #[test]
     fn plan_review_requires_plan_file() {
         let (_tmp, cfg, dirs) = setup();
-        assert!(build(StageId::PlanReview, &cfg, &dirs, "feat-x", None, None, None).is_err());
+        assert!(
+            build(
+                StageId::PlanReview,
+                &cfg,
+                &dirs,
+                "feat-x",
+                None,
+                None,
+                None,
+                None
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -817,11 +898,31 @@ mod tests {
         std::fs::write(dirs.plan_file("s"), "# plan").unwrap();
 
         // Off by default.
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None, None).unwrap();
+        let cmd = build(
+            StageId::PlanReview,
+            &cfg,
+            &dirs,
+            "s",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(!cmd.argv.contains(&"--fallback-model".to_string()));
 
         cfg.fallback_model = Some("claude-sonnet-5".into());
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None, None).unwrap();
+        let cmd = build(
+            StageId::PlanReview,
+            &cfg,
+            &dirs,
+            "s",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let i = cmd
             .argv
             .iter()
@@ -831,7 +932,7 @@ mod tests {
 
         // The interactive `plan` stage opts in: a pinned planning model needs
         // its Opus safety net too.
-        let cmd = build(StageId::Plan, &cfg, &dirs, "s", None, None, None).unwrap();
+        let cmd = build(StageId::Plan, &cfg, &dirs, "s", None, None, None, None).unwrap();
         let i = cmd
             .argv
             .iter()
@@ -840,9 +941,9 @@ mod tests {
         assert_eq!(cmd.argv[i + 1], "claude-sonnet-5");
 
         // Other interactive stages negotiate with the user; no fallback flag.
-        let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None, None, None).unwrap();
+        let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None, None, None, None).unwrap();
         assert!(!cmd.argv.contains(&"--fallback-model".to_string()));
-        let cmd = build(StageId::Implement, &cfg, &dirs, "s", None, None, None).unwrap();
+        let cmd = build(StageId::Implement, &cfg, &dirs, "s", None, None, None, None).unwrap();
         assert!(!cmd.argv.contains(&"--fallback-model".to_string()));
 
         // Doc-chat is headless claude too.
@@ -867,7 +968,7 @@ mod tests {
         cfg.effort.insert("plan".into(), "xhigh".into());
 
         // Pinned stage carries `--effort xhigh`.
-        let cmd = build(StageId::Plan, &cfg, &dirs, "s", None, None, None).unwrap();
+        let cmd = build(StageId::Plan, &cfg, &dirs, "s", None, None, None, None).unwrap();
         let i = cmd
             .argv
             .iter()
@@ -876,20 +977,46 @@ mod tests {
         assert_eq!(cmd.argv[i + 1], "xhigh");
 
         // A stage with no [effort] entry stays at the session default.
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None, None).unwrap();
+        let cmd = build(
+            StageId::PlanReview,
+            &cfg,
+            &dirs,
+            "s",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(!cmd.argv.contains(&"--effort".to_string()));
 
         // Local `spec` has no CLI (empty argv) - never gains the flag even if set.
         cfg.effort.insert("spec".into(), "xhigh".into());
-        let cmd = build(StageId::Spec, &cfg, &dirs, "s", None, None, None).unwrap();
+        let cmd = build(StageId::Spec, &cfg, &dirs, "s", None, None, None, None).unwrap();
         assert!(cmd.argv.is_empty());
     }
 
     #[test]
     fn dual_review_uses_base_ref() {
-        let (_tmp, cfg, dirs) = setup();
-        let cmd = build(StageId::DualReview, &cfg, &dirs, "s", None, None, None).unwrap();
+        let (_tmp, cfg, dirs) = setup_git();
+        let cmd = build(
+            StageId::DualReview,
+            &cfg,
+            &dirs,
+            "s",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(cmd.argv.contains(&"/dual-review main".to_string()));
+        // An explicit base must exist (the preflight verifies it).
+        std::process::Command::new("git")
+            .args(["branch", "develop"])
+            .current_dir(_tmp.path())
+            .output()
+            .unwrap();
         let cmd = build(
             StageId::DualReview,
             &cfg,
@@ -898,9 +1025,112 @@ mod tests {
             Some("develop"),
             None,
             None,
+            None,
         )
         .unwrap();
         assert!(cmd.argv.contains(&"/dual-review develop".to_string()));
+    }
+
+    #[test]
+    fn dual_review_preflight_gates_vacuous_and_broken_runs() {
+        // Dirty tracked file -> reviewable.
+        let (tmp, cfg, dirs) = setup_git();
+        assert!(
+            build(
+                StageId::DualReview,
+                &cfg,
+                &dirs,
+                "s",
+                None,
+                None,
+                None,
+                None
+            )
+            .is_ok()
+        );
+
+        // Missing base ref -> a clear error, not a vacuous review.
+        let err = build(
+            StageId::DualReview,
+            &cfg,
+            &dirs,
+            "s",
+            Some("no-such-ref"),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("base ref"), "{err:#}");
+
+        // Clean tree identical to the merge-base -> "nothing to review".
+        std::process::Command::new("git")
+            .args(["checkout", "-q", "--", "a.rs"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        let err = build(
+            StageId::DualReview,
+            &cfg,
+            &dirs,
+            "s",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("nothing to review"), "{err:#}");
+
+        // Untracked-only dirt is still reviewable (the skill reads those).
+        std::fs::write(tmp.path().join("new.rs"), "brand new\n").unwrap();
+        assert!(
+            build(
+                StageId::DualReview,
+                &cfg,
+                &dirs,
+                "s",
+                None,
+                None,
+                None,
+                None
+            )
+            .is_ok()
+        );
+
+        // Outside git: dual-review refuses...
+        let (_t2, cfg2, dirs2) = setup();
+        let err = build(
+            StageId::DualReview,
+            &cfg2,
+            &dirs2,
+            "s",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("not a git repository"),
+            "{err:#}"
+        );
+        // ...but other stages still build fine there (git is optional for them).
+        std::fs::create_dir_all(dirs2.feature_dir("s")).unwrap();
+        std::fs::write(dirs2.plan_file("s"), "# plan").unwrap();
+        assert!(
+            build(
+                StageId::PlanReview,
+                &cfg2,
+                &dirs2,
+                "s",
+                None,
+                None,
+                None,
+                None
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1061,7 +1291,7 @@ mod tests {
     fn interactive_stages_have_no_stream_flags() {
         let (_tmp, cfg, dirs) = setup();
         for stage in [StageId::Plan, StageId::TestsRed, StageId::Implement] {
-            let cmd = build(stage, &cfg, &dirs, "s", None, None, None).unwrap();
+            let cmd = build(stage, &cfg, &dirs, "s", None, None, None, None).unwrap();
             assert_eq!(cmd.mode, Mode::Interactive);
             assert!(!cmd.argv.contains(&"stream-json".to_string()));
         }
@@ -1082,6 +1312,7 @@ mod tests {
             "s",
             None,
             Some("claude-fable-5"),
+            None,
             None,
         )
         .unwrap();
@@ -1108,7 +1339,7 @@ mod tests {
     #[test]
     fn plan_and_implement_argv_content() {
         let (_tmp, cfg, dirs) = setup();
-        let cmd = build(StageId::Plan, &cfg, &dirs, "s", None, None, None).unwrap();
+        let cmd = build(StageId::Plan, &cfg, &dirs, "s", None, None, None, None).unwrap();
         assert_eq!(cmd.argv[0], "claude");
         assert!(
             cmd.argv
@@ -1121,7 +1352,7 @@ mod tests {
 
         // No pinned session → BARE resume picker: appending the prompt would
         // make it the picker's search term, not a message.
-        let cmd = build(StageId::Implement, &cfg, &dirs, "s", None, None, None).unwrap();
+        let cmd = build(StageId::Implement, &cfg, &dirs, "s", None, None, None, None).unwrap();
         assert_eq!(cmd.argv, vec!["claude", "--resume"]);
         assert!(!cmd.argv.iter().any(|a| a == "--continue"));
     }
@@ -1132,7 +1363,17 @@ mod tests {
         let sid = "abcdef00-1111-4222-8333-444455556666";
 
         // tests-red pins the ritual-owned session id, then the /tdd prompt.
-        let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None, None, Some(sid)).unwrap();
+        let cmd = build(
+            StageId::TestsRed,
+            &cfg,
+            &dirs,
+            "s",
+            None,
+            None,
+            Some(sid),
+            None,
+        )
+        .unwrap();
         let i = cmd
             .argv
             .iter()
@@ -1141,18 +1382,28 @@ mod tests {
         assert_eq!(cmd.argv[i + 1], sid);
         assert!(cmd.argv.last().unwrap().starts_with("/tdd "));
         // Without a session id, tests-red is unchanged.
-        let bare = build(StageId::TestsRed, &cfg, &dirs, "s", None, None, None).unwrap();
+        let bare = build(StageId::TestsRed, &cfg, &dirs, "s", None, None, None, None).unwrap();
         assert!(!bare.argv.iter().any(|a| a == "--session-id"));
 
         // implement resumes that exact session (no prompt - the CLI ignores a
         // positional on interactive resume; ritual surfaces it for paste).
-        let cmd = build(StageId::Implement, &cfg, &dirs, "s", None, None, Some(sid)).unwrap();
+        let cmd = build(
+            StageId::Implement,
+            &cfg,
+            &dirs,
+            "s",
+            None,
+            None,
+            Some(sid),
+            None,
+        )
+        .unwrap();
         assert_eq!(cmd.argv, vec!["claude", "--resume", sid]);
     }
 
     #[test]
     fn invariants_with_only_a_multiline_comment_stay_dark() {
-        let (_tmp, cfg, dirs) = setup();
+        let (_tmp, cfg, dirs) = setup_git();
         std::fs::create_dir_all(dirs.feature_dir("s")).unwrap();
         std::fs::write(dirs.plan_file("s"), "# plan").unwrap();
         // The false-positive shape the T1 fix closed: block-comment inner
@@ -1162,7 +1413,17 @@ mod tests {
             "# Invariants\n<!--\n- looks like a bullet\nfill this in\n-->\n",
         )
         .unwrap();
-        let cmd = build(StageId::DualReview, &cfg, &dirs, "s", None, None, None).unwrap();
+        let cmd = build(
+            StageId::DualReview,
+            &cfg,
+            &dirs,
+            "s",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(
             !cmd.env.iter().any(|(k, _)| k == "RITUAL_INVARIANTS_FILE"),
             "template comments alone must not inject the constitution"
@@ -1171,25 +1432,45 @@ mod tests {
 
     #[test]
     fn invariants_env_reaches_review_stages_only_when_meaningful() {
-        let (_tmp, cfg, dirs) = setup();
+        let (_tmp, cfg, dirs) = setup_git();
         std::fs::create_dir_all(dirs.feature_dir("s")).unwrap();
         std::fs::write(dirs.plan_file("s"), "# plan").unwrap();
         let has_env =
             |cmd: &StageCommand| cmd.env.iter().any(|(k, _)| k == "RITUAL_INVARIANTS_FILE");
 
         // Absent file -> no env.
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None, None).unwrap();
+        let cmd = build(
+            StageId::PlanReview,
+            &cfg,
+            &dirs,
+            "s",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(!has_env(&cmd));
 
         // Scaffold template (headings + comments only) -> still no env.
         std::fs::write(dirs.invariants_file(), crate::scaffold::INVARIANTS_TEMPLATE).unwrap();
-        let cmd = build(StageId::DualReview, &cfg, &dirs, "s", None, None, None).unwrap();
+        let cmd = build(
+            StageId::DualReview,
+            &cfg,
+            &dirs,
+            "s",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(!has_env(&cmd));
 
         // Real bullets -> both review stages carry it; interactive ones don't.
         std::fs::write(dirs.invariants_file(), "# Invariants\n- no panics\n").unwrap();
         for stage in [StageId::PlanReview, StageId::DualReview] {
-            let cmd = build(stage, &cfg, &dirs, "s", None, None, None).unwrap();
+            let cmd = build(stage, &cfg, &dirs, "s", None, None, None, None).unwrap();
             assert!(
                 cmd.env
                     .iter()
@@ -1197,7 +1478,7 @@ mod tests {
                 "{stage:?} must carry the constitution"
             );
         }
-        let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None, None, None).unwrap();
+        let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None, None, None, None).unwrap();
         assert!(!has_env(&cmd));
     }
 
@@ -1208,7 +1489,17 @@ mod tests {
         std::fs::write(dirs.plan_file("s"), "# plan").unwrap();
         cfg.models.insert("plan-review".into(), "opus".into());
 
-        let cmd = build(StageId::PlanReview, &cfg, &dirs, "s", None, None, None).unwrap();
+        let cmd = build(
+            StageId::PlanReview,
+            &cfg,
+            &dirs,
+            "s",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(cmd.argv.windows(2).any(|w| w == ["--model", "opus"]));
 
         let cmd = build(
@@ -1218,6 +1509,7 @@ mod tests {
             "s",
             None,
             Some("claude-sonnet-5"),
+            None,
             None,
         )
         .unwrap();
@@ -1357,7 +1649,7 @@ mod tests {
     #[test]
     fn tests_red_stage_is_red_only() {
         let (_tmp, cfg, dirs) = setup();
-        let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None, None, None).unwrap();
+        let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None, None, None, None).unwrap();
         let prompt = cmd.argv.last().unwrap();
         assert!(prompt.starts_with("/tdd "));
         assert!(

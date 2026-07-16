@@ -266,6 +266,49 @@ pub fn observed_change(cwd: &Path, snap: &GitSnapshot) -> Result<ChangeSet> {
     })
 }
 
+/// Preflight for the dual-review stage, which reviews a git diff: refuse to
+/// spawn (and burn review budget) when there is provably nothing reviewable.
+/// Errors when `cwd` is not a git worktree (only THIS stage needs git), when
+/// `base` doesn't resolve to a commit, or when the working tree matches the
+/// merge-base of `base` and there are no untracked files - the "vacuous green
+/// review" that used to mark the stage Done having reviewed zero lines.
+/// An unborn HEAD reviews against the empty tree (everything is new).
+pub fn dual_review_preflight(cwd: &Path, base: &str) -> Result<()> {
+    anyhow::ensure!(
+        git_opt(cwd, &["rev-parse", "--is-inside-work-tree"]).as_deref() == Some("true"),
+        "dual-review reviews a git diff, but {} is not a git repository",
+        cwd.display()
+    );
+    // Unborn HEAD (fresh repo, no commits): the base cannot resolve either,
+    // so skip the ref check and review everything against the empty tree.
+    let mb = if git_opt(cwd, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_some() {
+        anyhow::ensure!(
+            git_opt(
+                cwd,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("{base}^{{commit}}")
+                ]
+            )
+            .is_some(),
+            "base ref '{base}' not found; set base_ref in .ritual/config.toml or pass one"
+        );
+        git(cwd, &["merge-base", base, "HEAD"])?
+    } else {
+        EMPTY_TREE.to_string()
+    };
+    let dirty = git_opt(cwd, &["diff", "--quiet", &mb]).is_none(); // non-zero exit = differences
+    if !dirty && untracked(cwd)?.is_empty() {
+        anyhow::bail!(
+            "nothing to review: the working tree matches the merge-base of '{base}' \
+             and there are no untracked files"
+        );
+    }
+    Ok(())
+}
+
 /// Did HEAD move since the snapshot? True when the fixer committed, reset, or
 /// checked out despite the prompt forbidding it - grounds to abort the batch.
 /// Fails OPEN on an unreadable HEAD (a transient git error must not trigger a

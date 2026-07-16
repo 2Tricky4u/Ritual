@@ -54,7 +54,16 @@ pub fn execute(
         StageId::Implement => st.stage_session_id(&slug, StageId::TestsRed),
         _ => None,
     };
-    let cmd = stages::build(stage, cfg, dirs, &slug, arg, model, session.as_deref())?;
+    let cmd = stages::build(
+        stage,
+        cfg,
+        dirs,
+        &slug,
+        arg,
+        model,
+        session.as_deref(),
+        None,
+    )?;
 
     if cmd.needs_codex && !cfg.offline && !stages::codex_ready(cfg) {
         anyhow::bail!(
@@ -231,7 +240,8 @@ pub fn complete(cfg: &Config, dirs: &RitualDirs, check: bool) -> Result<bool> {
             {
                 let mut st = State::load(dirs)?;
                 st.feature_for_branch_mut(&branch);
-                let cmd = stages::build(StageId::Coverage, cfg, dirs, &slug, None, None, None)?;
+                let cmd =
+                    stages::build(StageId::Coverage, cfg, dirs, &slug, None, None, None, None)?;
                 run_headless(
                     cfg,
                     dirs,
