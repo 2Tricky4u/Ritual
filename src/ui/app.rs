@@ -236,6 +236,10 @@ pub struct App {
     pub check: CheckState,
     pub agents: crate::agents_status::AgentsStatus,
     pub running: Option<StageId>,
+    /// The branch the in-flight pipeline run was SPAWNED on. `on_run_exited`
+    /// must attribute status/findings to this, never to `self.branch` - the
+    /// user is free to peek at other features (`[`/`]`) while a run is live.
+    pub running_branch: Option<String>,
     pub spinner: usize,
     pub show_help: bool,
     pub status_msg: Option<String>,
@@ -433,6 +437,7 @@ impl App {
             check: CheckState::Unknown,
             agents: Default::default(),
             running: None,
+            running_branch: None,
             spinner: 0,
             show_help: false,
             status_msg: None,
@@ -632,11 +637,24 @@ impl App {
     }
 
     fn set_stage(&mut self, stage: StageId, status: StageStatus, run_id: Option<String>) {
+        let branch = self.branch.clone();
+        self.set_stage_for(&branch, stage, status, run_id);
+    }
+
+    /// Like [`Self::set_stage`] but for an explicit branch: run completion must
+    /// book against the branch the run was SPAWNED on, not the viewed one.
+    fn set_stage_for(
+        &mut self,
+        branch: &str,
+        stage: StageId,
+        status: StageStatus,
+        run_id: Option<String>,
+    ) {
         // Reload-merge-save: fold in any concurrent CLI write BEFORE applying our
         // delta, so the TUI's save can't clobber it (the load-once TUI otherwise
         // overwrites the whole file with a stale snapshot).
         self.reload_state();
-        crate::run_cmd::set_stage(&mut self.state, &self.branch, stage, status, run_id);
+        crate::run_cmd::set_stage(&mut self.state, branch, stage, status, run_id);
         let _ = self.state.save(&self.dirs);
         self.state_mtime = std::fs::metadata(self.dirs.state_file())
             .and_then(|m| m.modified())
@@ -652,14 +670,21 @@ impl App {
             return;
         };
         if let Some(stage) = self.running {
-            let slug = state::branch_slug(&self.branch);
+            // Preserve under the branch the run was SPAWNED on: the user may
+            // be viewing another feature, and pinning the in-flight stage to
+            // the viewed slug would plant a phantom Running there.
+            let branch = self
+                .running_branch
+                .clone()
+                .unwrap_or_else(|| self.branch.clone());
+            let slug = state::branch_slug(&branch);
             if let Some(mem) = self
                 .state
                 .features
                 .get(&slug)
                 .and_then(|f| f.stages.get(&stage).cloned())
             {
-                disk.feature_for_branch_mut(&self.branch)
+                disk.feature_for_branch_mut(&branch)
                     .stages
                     .insert(stage, mem);
             }
@@ -1302,6 +1327,7 @@ impl App {
         self.stream_scroll = None;
         self.tab = Tab::Live;
         self.running = Some(stage);
+        self.running_branch = Some(self.branch.clone());
         self.set_stage(stage, StageStatus::Running, None);
 
         let title = self
@@ -1515,7 +1541,16 @@ impl App {
             return;
         };
         match key.code {
-            KeyCode::Esc => self.chat = None,
+            // Closing the overlay while an edit is in flight would defeat
+            // every chat-is-busy guard (the watcher unpauses, a pipeline stage
+            // could launch, a reopened chat double-submits) - block it.
+            KeyCode::Esc => {
+                if chat.in_flight {
+                    self.status_msg = Some("edit in flight - ctrl+x to cancel it first".into());
+                } else {
+                    self.chat = None;
+                }
+            }
             KeyCode::Backspace => {
                 if chat.cursor > 0 {
                     chat.input.remove(chat.cursor - 1);
@@ -1531,13 +1566,16 @@ impl App {
             KeyCode::Right => chat.cursor = (chat.cursor + 1).min(chat.input.len()),
             KeyCode::Home => chat.cursor = 0,
             KeyCode::End => chat.cursor = chat.input.len(),
+            // Retargeting while an edit streams would make on_chat_exited
+            // judge the WRONG document against the spawn-time snapshot and
+            // mark the wrong stage Done - targets are frozen in flight.
             KeyCode::Tab => {
-                if !chat.targets.is_empty() {
+                if !chat.in_flight && !chat.targets.is_empty() {
                     chat.target_idx = (chat.target_idx + 1) % chat.targets.len();
                 }
             }
             KeyCode::BackTab => {
-                if !chat.targets.is_empty() {
+                if !chat.in_flight && !chat.targets.is_empty() {
                     chat.target_idx =
                         (chat.target_idx + chat.targets.len() - 1) % chat.targets.len();
                 }
@@ -2006,6 +2044,7 @@ impl App {
         self.branch = status.branch.clone();
         self.slug = state::branch_slug(&status.branch);
         self.running = Some(stage);
+        self.running_branch = Some(status.branch.clone());
         self.current_run_id = Some(run_id.clone());
         self.tab = Tab::Live;
         self.status_msg = Some(format!(
@@ -2038,6 +2077,12 @@ impl App {
         let Some(stage) = self.running.take() else {
             return;
         };
+        // The branch the run was spawned on - the user may be viewing another
+        // feature by now, and status/findings must land on THIS one.
+        let branch = self
+            .running_branch
+            .take()
+            .unwrap_or_else(|| self.branch.clone());
         self.run_task = None;
         match outcome {
             Ok(out) => {
@@ -2051,8 +2096,7 @@ impl App {
                     // Coverage is Done ONLY at zero gaps + a real deliverables
                     // checklist (shared, print-free finalizer - never write to
                     // the alt-screen); route its message to the status line.
-                    let (st, msgs) =
-                        crate::coverage::finalize(&self.dirs, &self.branch, &new_findings);
+                    let (st, msgs) = crate::coverage::finalize(&self.dirs, &branch, &new_findings);
                     if let Some(m) = msgs.into_iter().next_back() {
                         self.status_msg = Some(m);
                     }
@@ -2065,11 +2109,7 @@ impl App {
                 // Stamp the real branch onto this run's findings so completeness
                 // consumers scope by branch (parity with the CLI; after finalize
                 // so A3's fingerprint reflects the post-tick tree, before reload).
-                crate::findings::stamp_branch(
-                    &self.dirs.findings_dir(),
-                    &new_findings,
-                    &self.branch,
-                );
+                crate::findings::stamp_branch(&self.dirs.findings_dir(), &new_findings, &branch);
                 crate::notify::notify(
                     self.cfg.notifications,
                     &format!(
@@ -2082,15 +2122,11 @@ impl App {
                         }
                     ),
                     &if status == StageStatus::Failed {
-                        format!(
-                            "{}: {}",
-                            self.branch,
-                            crate::history::decode_failure(&out.meta)
-                        )
+                        format!("{}: {}", branch, crate::history::decode_failure(&out.meta))
                     } else {
                         format!(
                             "{}: {} new findings, ${:.2}",
-                            self.branch,
+                            branch,
                             new_findings.len(),
                             out.meta.total_cost_usd.unwrap_or(0.0)
                         )
@@ -2118,11 +2154,11 @@ impl App {
                         crate::history::decode_failure(&out.meta)
                     ),
                 });
-                self.set_stage(stage, status, Some(out.meta.run_id.clone()));
+                self.set_stage_for(&branch, stage, status, Some(out.meta.run_id.clone()));
             }
             Err(e) => {
                 self.status_msg = Some(format!("{} failed: {e:#}", stage.label()));
-                self.set_stage(stage, StageStatus::Failed, None);
+                self.set_stage_for(&branch, stage, StageStatus::Failed, None);
             }
         }
         self.reload_artifacts();
@@ -2217,7 +2253,11 @@ impl App {
             task.abort();
         }
         if let Some(stage) = self.running.take() {
-            self.set_stage(stage, StageStatus::Failed, None);
+            let branch = self
+                .running_branch
+                .take()
+                .unwrap_or_else(|| self.branch.clone());
+            self.set_stage_for(&branch, stage, StageStatus::Failed, None);
             self.status_msg = Some(format!(
                 "{} cancelled{}",
                 stage.label(),
@@ -3648,6 +3688,12 @@ impl App {
         if self.fix_running() {
             return Err("a fix is already running".into());
         }
+        // An orphaned gate check.sh (cancelled batch) is still holding the
+        // build; a new batch spawned now would have its ctx consumed by THAT
+        // check's CodeGateDone and its edits would land ungated.
+        if self.gate_check_running {
+            return Err("a previous batch's check.sh is still running; wait for it".into());
+        }
         if self.chat_running() {
             return Err("a chat edit is in flight; wait for it to finish".into());
         }
@@ -3937,6 +3983,13 @@ impl App {
         let Some(mut ctx) = self.code_fix_ctx.take() else {
             return;
         };
+        // An orphaned gate result (from a batch cancelled mid-check) must not
+        // consume a NEWER batch's ctx: only a Checking-phase ctx owns this
+        // message; anything else goes back untouched.
+        if ctx.phase != crate::code_fix::CodePhase::Checking {
+            self.code_fix_ctx = Some(ctx);
+            return;
+        }
         let event = if ok {
             crate::code_fix::GateEvent::CheckGreen
         } else {
@@ -5704,6 +5757,119 @@ mod tests {
                 .unwrap()
                 .contains("2 other")
         );
+    }
+
+    #[test]
+    fn run_completion_books_to_the_spawn_branch_not_the_viewed_one() {
+        let (_t, mut app, _tx, _rx) = test_app();
+        // A dual-review spawned on feat-a...
+        app.state.feature_for_branch_mut("feat-a");
+        app.running = Some(StageId::DualReview);
+        app.running_branch = Some("feat-a".into());
+        // ...while the user peeks at feat-b (`]`) before it finishes.
+        app.state.feature_for_branch_mut("feat-b");
+        app.branch = "feat-b".into();
+        app.slug = state::branch_slug("feat-b");
+
+        let meta = crate::history::RunMeta {
+            run_id: "r-attrib".into(),
+            stage: "dual-review".into(),
+            ok: false,
+            ..Default::default()
+        };
+        app.on_run_exited(Ok(runner::RunOutcome {
+            meta,
+            archive: std::path::PathBuf::new(),
+        }));
+
+        let a = app.state.features.get("feat-a").expect("spawn feature");
+        assert_eq!(
+            a.stage(StageId::DualReview).status,
+            StageStatus::Failed,
+            "status books on the branch the run was spawned on"
+        );
+        let b_touched = app
+            .state
+            .features
+            .get("feat-b")
+            .is_some_and(|f| f.stages.contains_key(&StageId::DualReview));
+        assert!(!b_touched, "the merely-viewed feature is untouched");
+    }
+
+    #[test]
+    fn esc_and_tab_are_frozen_while_a_chat_edit_streams() {
+        let (_t, mut app, tx, _rx) = test_app();
+        let target = |doc| ChatTarget {
+            doc,
+            section: None,
+            range: 0..0,
+            missing: false,
+        };
+        app.chat = Some(ChatState {
+            transcript: vec![],
+            input: vec![],
+            cursor: 0,
+            targets: vec![target(stages::DocKind::Spec), target(stages::DocKind::Plan)],
+            target_idx: 0,
+            scroll: 0,
+            in_flight: true,
+            pending: Default::default(),
+        });
+        send(&mut app, &tx, KeyCode::Esc);
+        assert!(app.chat.is_some(), "Esc must not orphan an in-flight edit");
+        send(&mut app, &tx, KeyCode::Tab);
+        assert_eq!(
+            app.chat.as_ref().unwrap().target_idx,
+            0,
+            "the target is frozen while the edit streams"
+        );
+        // Once the run is over, both work again.
+        app.chat.as_mut().unwrap().in_flight = false;
+        send(&mut app, &tx, KeyCode::Tab);
+        assert_eq!(app.chat.as_ref().unwrap().target_idx, 1);
+        send(&mut app, &tx, KeyCode::Esc);
+        assert!(app.chat.is_none());
+    }
+
+    #[test]
+    fn an_orphan_gate_result_never_consumes_a_fixing_batch() {
+        let (_t, mut app, tx, _rx) = test_app();
+        // A NEW batch is mid-fix while the orphaned check.sh (from a batch
+        // cancelled earlier) reports its result.
+        app.code_fix_ctx = Some(CodeFixCtx {
+            branch: "main".into(),
+            run_cwd: app.dirs.work_root.clone(),
+            snap: crate::git::GitSnapshot {
+                base: crate::git::EMPTY_TREE.into(),
+                untracked_before: vec![],
+                before_hashes: Default::default(),
+                extra_hashes: Default::default(),
+                head: None,
+            },
+            items: vec![],
+            numbers: vec![],
+            briefs: vec![],
+            phase: crate::code_fix::CodePhase::Fixing,
+            answers: Default::default(),
+            fix_change: None,
+        });
+        app.gate_check_running = true;
+        app.on_code_gate_done(true, String::new(), &tx);
+        assert!(!app.gate_check_running, "the orphan gate is acknowledged");
+        let ctx = app.code_fix_ctx.as_ref().expect("ctx must survive");
+        assert_eq!(
+            ctx.phase,
+            crate::code_fix::CodePhase::Fixing,
+            "the new batch stays in its own phase"
+        );
+    }
+
+    #[test]
+    fn a_running_gate_check_blocks_a_new_code_fix_batch() {
+        let (_t, mut app, _tx, _rx) = test_app();
+        app.gate_check_running = true;
+        let err = app.prepare_code_fix_apply("any").unwrap_err();
+        assert!(err.contains("check.sh is still running"), "{err}");
     }
 
     #[test]
