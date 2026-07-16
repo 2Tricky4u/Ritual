@@ -101,15 +101,15 @@
 ```
 ╭ feature title ─────────────╮╭ ritual ──────────────────────────────────────╮
 │ ▸ ! feat-auth              ││ live · findings · history · plan             │
-│    main                    ││ 󰚩 claude-fable-5                             │
+│    main                    ││ ◆ claude-fable-5                             │
 │ ───────────────────────────││ ▸ mcp__codex__codex {"prompt":"critique …"}  │
 │ ▸  spec                    ││   ↳ Finding 1 (major): missing rollback step │
 │   ⠹ plan-review            ││  $0.31 4 turns 92.3s                         │
 │   ○ tests-red              ││                                              │
 │                            ││                                              │
 │   feat/auth                ││                                              │
-│ 󰚩 claude ok (max)          ││                                              │
-│ 󰚩 codex ok · bridge ok     ││                                              │
+│ ◆ claude ok (max)          ││                                              │
+│ ◆ codex ok · bridge ok     ││                                              │
 │  check green               ││                                              │
 ╰────────────────────────────╯╰──────────────────────────────────────────────╯
  enter run · : commands · j/k move · ? help          $1.42/$5.00  ⠹ plan-review
@@ -143,6 +143,7 @@ ritual is built on one bet, backed by the research: **external feedback is the q
 - **Findings lifecycle**: on the findings tab, `f` marks fixed and `d` dismisses (write-through to the JSON; `v` shows/hides resolved); the selected finding shows the verbatim source **snippet** it anchors to. The exit-code/CI contract follows: a confirmed critical blocks until resolved. `ritual pr-comment [N] [--inline]` posts the open findings to the branch's GitHub PR, redacted.
 - **Quality gates**: `ritual mutants` mutates only your diff (cargo-mutants) and turns every mutant the tests failed to kill into an anchored finding (a proven test gap, advisory); `ritual secrets` gitleaks-scans exactly what changed (incl. untracked files) and its critical findings **block until dismissed or fingerprinted** (auto-run before every dual-review). `.ritual/invariants.md` is the project constitution: every bullet becomes an acceptance criterion re-injected into each review stage. `ritual lessons` distills your f/d dispositions into review memory the critic reads first. It stops re-flagging what you already dismissed.
 - **Whole-project audit** (`ritual audit`, optional): every other gate reviews a *change*; this one reviews the *system*. Blind parallel review lanes, one per flow/tech (`--discover` enumerates them into an editable `.ritual/audit-lanes.md`) plus an always-on global-overview lane for cross-flow contracts, adjudicated by an adversarial judge that demands an independent Codex verdict per finding. Lands standard findings (stage `audit`) that triage like any review. Run it at milestones, not per commit.
+- **Done means done** (`ritual complete`): plans declare a `## Deliverables` checklist; the read-only `coverage` judge checks each item against the actually-built tree and files a gap per miss; `complete` auto-drives the gaps through bounded, budget-capped fix rounds (containment-gated: a fixer that edits outside its target, self-certifies a checkbox, or commits gets reverted/rejected); `complete --check` is the token-free CI gate.
 - **Third reviewer, ensemble-style**, optional CodeRabbit CLI review before each dual-review: its comments land as *unconfirmed* single-source findings that never block; the dual-review skill verifies or refutes each one. Three agreeing sources is the strongest signal there is.
 - **Reproducible workbench**: the whole multi-LLM setup (14 skills incl. `/spec` and the optional `/consensus`, the code-reviewer agent, both hooks) is vendored in `workbench/` and installed by `ritual init --skills`; `ritual skills diff` shows exactly where installed copies diverge. An optional third-model **consensus tier** (`[consensus] enabled`, pal MCP + Gemini) lets plan-review escalate one contested finding for arbitration.
 
@@ -156,8 +157,8 @@ ritual is built on one bet, backed by the research: **external feedback is the q
 
 ### Trust & audit
 
-- **Safety + money**: gitleaks-style **secret redaction** on every archived line, stream, and report (vendor key shapes, PEM blocks, assignments, entropy tokens; `redaction = false` to opt out). **Daily budgets** (`budget_daily_usd`) with a status-bar meter and run refusal (`--force` overrides); `ritual costs` for per-stage, cache-aware spend analytics. Desktop **notifications** on stage completion.
-- **Provenance**: every run records a **reproducibility bundle** (git commit, dirty-diff hash, claude/codex versions, skill-file hashes, config snapshot; `ritual repro <run-id>` diffs it against your current env) and a **tamper-evident hash chain** (`ritual verify-log` walks it and reports the first break).
+- **Safety + money**: gitleaks-style **secret redaction** on every archived line, stream, and report (vendor key shapes, PEM blocks, assignments, entropy tokens; `redaction = false` to opt out). **Daily budgets** (`budget_daily_usd`) with a status-bar meter and run refusal (`--force` overrides); `offline = true` hard-blocks every agent spawn (metered/plane kill-switch); `ritual costs` for per-stage, cache-aware spend analytics. Desktop **notifications** on stage completion.
+- **Provenance**: every run records a **reproducibility bundle** (git commit, dirty-diff hash, claude/codex versions, skill-file hashes, config snapshot; `ritual repro <run-id>` diffs it against your current env) and a **tamper-evident hash chain** (`ritual verify-log` walks it and reports the first break) - parallel-safe: concurrent daemons (audit lanes, worktrees sharing one `.ritual/`) serialize on a chain lock and verify in linkage order.
 - **Sandboxing**: `[sandbox] wrapper` spawns every headless run under Anthropic's [`srt`][srt-url] (or any argv prefix) from the single spawn chokepoint; supervisor-owned, persisted per run, recorded in the meta ([example settings](docs/srt-settings.example.json)).
 - **CI mode**: `ritual run dual-review --ci` writes JUnit XML to `.ritual/ci/` (confirmed critical/major findings = failures) and exits nonzero. Findings browsing is scriptable: `--json` everywhere, `ritual findings` exits 1 on confirmed criticals.
 - **Standards-shaped telemetry**: `ritual export` emits OTLP-JSON spans with OTel **GenAI semconv** attributes for any OpenTelemetry collector; `--audit-trail` emits IETF draft-sharif agent-audit-trail records (RFC 8785-canonical, SHA-256 hash-chained JSONL).
@@ -220,7 +221,7 @@ ritual new "My feature"          # or: ritual new "Big thing" --worktree feat/bi
 ritual                           # the dashboard
 ```
 
-Scriptable: `status|findings|history|costs [--json]`, `run <stage> [--force] [--ci] [--model m]`, `mutants [--base ref]`, `secrets`, `lessons [--stdout]`, `report [--pdf]`, `repro <run-id>`, `verify-log`, `bench <stage> --runs N`, `skills diff`, `export [--out f] [--audit-trail]`.
+Scriptable: `status|findings|history|costs [--json]`, `run <stage> [--force] [--ci] [--model m]`, `complete [--check]`, `audit [--discover]`, `chat "<msg>" [--plan] [--section s]`, `mutants [--base ref]`, `secrets`, `lessons [--stdout]`, `report [--pdf]`, `repro <run-id>`, `verify-log`, `bench <stage> --runs N`, `ps` / `attach <run-id> [--kill]`, `clean [--keep N]`, `doctor [--deep]`, `skills diff`, `export [--out f] [--audit-trail]`.
 
 _For the full manual, including a start-to-finish walkthrough of every feature, see the **[guide][guide-url]** (also rendered in-app on tab `5`)._
 
@@ -235,10 +236,14 @@ budget_daily_usd = 5.0        # omit for no ceiling
 budget_plan_review_usd = 5.0  # per-run --max-budget-usd caps
 budget_dual_review_usd = 10.0
 budget_finding_fix_usd = 1.0  # per F-apply batch run (answers ALL queued findings)
+budget_code_fix_usd = 5.0     # per code-fix batch (fix + check + re-review)
+budget_coverage_usd = 2.0     # per coverage judge pass
+budget_audit_usd = 3.0        # per audit LANE; the judge's cap scales with lane count
+audit_max_lanes = 8           # global-overview lane always survives the cap
 redaction = true
 notifications = true
 check_timeout_secs = 600      # hung build / dead HIL board can't wedge the loop
-offline = false               # true = skip all cloud auth preflights
+offline = false               # true = BLOCK all agent runs (metered/plane kill-switch)
 fallback_model = ""           # overload fallback for headless claude runs
 # nvim_server = "/run/user/1000/nvim.12345.0"   # explicit socket (auto-discovered otherwise)
 
@@ -288,7 +293,7 @@ blame = "git log --oneline -3 -- {{finding.file}}"
   with: { report_paths: ".ritual/ci/*.xml" }
 ```
 
-**Air-gapped / local models**: set `offline = true` and point the seam at any local agent CLI: `claude_cmd = "my-ollama-agent"` (or env `RITUAL_CLAUDE_CMD`). Everything that matters (archives, findings, reports, chain) is local files; nothing requires cloud auth.
+**Air-gapped / local models**: point the seam at any local agent CLI: `claude_cmd = "my-ollama-agent"` (or env `RITUAL_CLAUDE_CMD`); have it answer the tiny auth probes the way `tests/fake_agent.sh` does. Everything that matters (archives, findings, reports, chain) is local files; nothing requires cloud auth. `offline = true` is something else: a hard **kill-switch that refuses to spawn any agent run** (metered connections, planes) while the TUI, findings, and reports keep working.
 
 **Embedded / hardware-in-the-loop**: use `templates/check-hil.sh` (build → flash → capture serial → assert) as your project's check.sh and set `check_timeout_secs` low enough that a dead board fails fast.
 
@@ -315,6 +320,7 @@ All rebindable via `[keys]`:
 - [x] **v0.10**: LLM batch-fix for dual-review **code** findings - `F`/`A` queue confirmed code findings, one headless broad-edit run fixes them all, verified against the global context by `./check.sh` plus an independent re-review of the diff; a passing fix marks the findings fixed and (v0.10.1) whether it passes OR fails the attempt is always left in your working tree - git is the undo, ritual never deletes the work, and a failure names why + offers `ritual attach <id>` (new `budget_code_fix_usd`)
 - [x] **verification hardening**: the code-fix re-review is now **content-hash verified** so it is never blind on code the repo does not track (the homeserver case), and **fails closed** on a no-op change or a stray `git commit`/reset; accept is **per finding** (each confirmed-resolved finding is marked fixed, the rest requeued with the reviewer's reason; a regression fails the whole batch); the re-reviewer is strictly **read-only** (no shell); plan-fix marks a finding fixed only if its **own section** changed; the plan section-confinement gate is **heading-structured** (closes a decoy-copy bypass); `x` cancels an in-flight fix; and `c`/stage-launch are blocked while a fix runs
 - [x] **completeness gate**: green tests never mean "done". Plans declare a `## Deliverables` checklist (concrete, pass/fail, with acceptance criteria); a read-only **`coverage`** LLM-as-Judge stage checks each against the actually-built tree (present? substantive, not a stub? meets criterion?) and files a gap finding per miss; ritual ticks the satisfied boxes. **`ritual complete`** auto-drives the gaps to fixes in bounded, budget-capped rounds until the judge is clean (a recurring gap is marked STUCK so the rest progress); **`ritual complete --check`** is the CI gate - exit 0 only when coverage is clean AND check.sh green AND no confirmed finding open. Closes the "reward-hacking gap" where an agent satisfies the visible tests without the real intent
+- [x] **whole-project audit + hardening sweep**: `ritual audit` - blind parallel review lanes per flow (+ an always-on global-overview lane for cross-flow contracts) adjudicated by an adversarial judge with per-finding Codex verdicts, landing standard findings; then a 45-defect fix program found by auditing ritual with itself: run results attributed to the spawn-time branch (feature-peeking is safe), writer-unique atomic writes + reload-merge-save everywhere, git gates fail closed, headless `complete` enforces containment/anti-self-certification/no-commit, `offline` became a real kill-switch, non-UTF8/PEM/stderr-safe streaming, PID-reuse-proof daemons with cancel metas, and a **parallel-safe provenance chain** (flock + linkage-order verify - proven live with 8 concurrent lanes)
 - [ ] **Deferred**: steerable runs (Agent SDK), `ritual mcp-server`, SQLite/fuzzy history, chat fork-at-turn, container worktrees, OTLP receiver + in-TUI span waterfall, tree-sitter repo map
 
 See the full [ROADMAP.md][roadmap-url] for the design rationale behind each item, and the non-goals.
