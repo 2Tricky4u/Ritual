@@ -15,10 +15,16 @@ use crate::provenance::{self, Checkpoint, VerifyOutcome};
 use crate::runner::{self, RunState};
 use crate::state::{RitualDirs, State};
 
-/// The four sidecar suffixes that make up one run group, in DELETION order:
+/// The sidecar suffixes that make up one run group, in DELETION order:
 /// meta first, so a partial failure leaves an orphan group the next clean
 /// collects, and verify-log never observes meta-without-archive.
-const SUFFIXES: [&str; 4] = [".meta.json", ".request.json", ".status", ".jsonl"];
+const SUFFIXES: [&str; 5] = [
+    ".meta.json",
+    ".request.json",
+    ".status",
+    ".stderr.log",
+    ".jsonl",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeepReason {

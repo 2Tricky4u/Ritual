@@ -74,6 +74,10 @@ pub struct RunStatus {
     pub pid: u32,
     pub stage: String,
     pub branch: String,
+    /// Kernel start time of the daemon pid (`/proc/<pid>/stat` field 22):
+    /// the PID-reuse discriminator. Old sidecars lack it (pid-only check).
+    #[serde(default)]
+    pub proc_start: Option<u64>,
 }
 
 /// Where a run stands, judged purely from the filesystem.
@@ -124,6 +128,27 @@ pub fn pid_alive(pid: u32) -> bool {
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok()
 }
 
+/// Kernel start time (clock ticks since boot) of `pid`, from
+/// `/proc/<pid>/stat` field 22 - the standard PID-reuse discriminator.
+fn proc_start_time(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // comm (field 2) may contain spaces/parens: fields resume after the
+    // LAST ')' with field 3 (state), so starttime (22) is index 19 there.
+    let rest = stat.rsplit_once(')')?.1;
+    rest.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// Liveness with identity: the pid answers signals AND (when the sidecar
+/// recorded one) its start time matches - a recycled pid must never read as
+/// "our daemon is still running" (phantom Running runs, kill_run signalling
+/// an unrelated process group).
+fn status_alive(status: &RunStatus) -> bool {
+    pid_alive(status.pid)
+        && status
+            .proc_start
+            .is_none_or(|s| proc_start_time(status.pid) == Some(s))
+}
+
 /// Judge a run from its sidecar files.
 pub fn run_state(dirs: &RitualDirs, run_id: &str) -> RunState {
     let meta_path = dirs.runs_dir().join(format!("{run_id}.meta.json"));
@@ -134,9 +159,14 @@ pub fn run_state(dirs: &RitualDirs, run_id: &str) -> RunState {
     }
     if let Ok(text) = std::fs::read_to_string(status_path(dirs, run_id))
         && let Ok(status) = serde_json::from_str::<RunStatus>(&text)
-        && pid_alive(status.pid)
     {
-        return RunState::Running(status);
+        if status_alive(&status) {
+            return RunState::Running(status);
+        }
+        // The daemon is dead (or the pid was recycled) and no meta exists:
+        // GC the stale sidecars so they can't resurrect as phantom runs.
+        let _ = std::fs::remove_file(status_path(dirs, run_id));
+        let _ = std::fs::remove_file(request_path(dirs, run_id));
     }
     RunState::Vanished
 }
@@ -154,7 +184,7 @@ pub fn live_runs(dirs: &RitualDirs) -> Vec<(String, RunStatus)> {
         };
         if let Ok(text) = std::fs::read_to_string(entry.path())
             && let Ok(status) = serde_json::from_str::<RunStatus>(&text)
-            && pid_alive(status.pid)
+            && status_alive(&status)
         {
             out.push((run_id.to_string(), status));
         }
@@ -242,40 +272,67 @@ pub fn spawn_detached(dirs: &RitualDirs, req: &RunRequest, run_id: &str) -> Resu
 /// see the actual error instead of "vanished (daemon died before writing
 /// meta)" - the daemon's stderr goes to a log the user never watches.
 pub async fn daemon_main(dirs: &RitualDirs, run_id: &str) -> Result<()> {
-    let req: RunRequest = serde_json::from_str(
-        &std::fs::read_to_string(request_path(dirs, run_id))
-            .with_context(|| format!("no request file for {run_id}"))?,
-    )?;
+    // Anything that dies from here on writes a failure meta - INCLUDING a
+    // missing/corrupt request file, which used to `?` out before the wrapper
+    // and strand tailers in the very "vanished" this function exists to
+    // prevent.
+    let req: RunRequest = match std::fs::read_to_string(request_path(dirs, run_id))
+        .with_context(|| format!("no request file for {run_id}"))
+        .and_then(|t| serde_json::from_str(&t).context("unparseable request file"))
+    {
+        Ok(r) => r,
+        Err(e) => {
+            write_failure_meta(dirs, run_id, RunMeta::default(), &format!("{e:#}"));
+            return Err(e);
+        }
+    };
     let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
     // Drain silently; senders in execute_run ignore failures anyway.
     tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    let stage = req.stage.clone();
-    let feature = req.feature.clone();
-    let branch = req.branch.clone();
-    let agent = req.agent.label().to_string();
-    match execute_run(dirs, req, run_id, tx).await {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            let meta = RunMeta {
-                run_id: run_id.to_string(),
-                stage,
-                feature,
-                branch,
-                agent,
-                ok: false,
-                error: Some(format!("{e:#}")),
-                finished_at: Some(Utc::now()),
-                ..Default::default()
-            };
-            let meta_path = dirs.runs_dir().join(format!("{run_id}.meta.json"));
-            if let Ok(json) = serde_json::to_string_pretty(&meta) {
-                let _ = std::fs::write(&meta_path, json);
+    let identity = RunMeta {
+        stage: req.stage.clone(),
+        feature: req.feature.clone(),
+        branch: req.branch.clone(),
+        agent: req.agent.label().to_string(),
+        ..Default::default()
+    };
+    // A SIGTERM (kill_run, TUI cancel) must still land a meta: killed runs
+    // used to vanish from history and the cost accounting entirely. The
+    // select! drop of execute_run's future SIGKILLs the child
+    // (kill_on_drop) - it shares our process group and got the TERM anyway.
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .context("installing the SIGTERM handler")?;
+    tokio::select! {
+        res = execute_run(dirs, req, run_id, tx) => match res {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                write_failure_meta(dirs, run_id, identity, &format!("{e:#}"));
+                Err(e)
             }
-            let _ = std::fs::remove_file(status_path(dirs, run_id));
-            let _ = std::fs::remove_file(request_path(dirs, run_id));
-            Err(e)
+        },
+        _ = sigterm.recv() => {
+            write_failure_meta(dirs, run_id, identity, "cancelled (SIGTERM)");
+            anyhow::bail!("run {run_id} cancelled (SIGTERM)");
         }
     }
+}
+
+/// Land a failure meta + clean the sidecars: a tailer must always find an
+/// answer on disk, whatever killed the run.
+fn write_failure_meta(dirs: &RitualDirs, run_id: &str, identity: RunMeta, error: &str) {
+    let meta = RunMeta {
+        run_id: run_id.to_string(),
+        ok: false,
+        error: Some(error.to_string()),
+        finished_at: Some(Utc::now()),
+        ..identity
+    };
+    let meta_path = dirs.runs_dir().join(format!("{run_id}.meta.json"));
+    if let Ok(json) = serde_json::to_string_pretty(&meta) {
+        let _ = crate::fsx::atomic_write(&meta_path, json.as_bytes());
+    }
+    let _ = std::fs::remove_file(status_path(dirs, run_id));
+    let _ = std::fs::remove_file(request_path(dirs, run_id));
 }
 
 /// Follow a (possibly detached) run: replay the archive from the top, stream
@@ -287,8 +344,10 @@ pub async fn tail_run(
     tx: mpsc::Sender<AgentEvent>,
 ) -> Result<RunOutcome> {
     let archive_path = dirs.runs_dir().join(format!("{run_id}.jsonl"));
-    let mut offset: usize = 0;
-    let mut carry = String::new();
+    let mut offset: u64 = 0;
+    // RAW byte carry across polls: a multi-byte UTF-8 character torn at the
+    // read boundary must reassemble, not decode to U+FFFD garbage.
+    let mut carry: Vec<u8> = Vec::new();
     // The daemon needs a beat to exec and write its .status sidecar; until
     // we've seen it alive once (or the startup window passes), a missing
     // sidecar means "still starting", not "vanished".
@@ -296,22 +355,14 @@ pub async fn tail_run(
     let started = std::time::Instant::now();
     let mut seen_running = false;
     loop {
-        // Stream any new complete lines.
-        if let Ok(bytes) = tokio::fs::read(&archive_path).await
-            && bytes.len() > offset
-        {
-            let chunk = String::from_utf8_lossy(&bytes[offset..]).into_owned();
-            offset = bytes.len();
-            carry.push_str(&chunk);
-            while let Some(nl) = carry.find('\n') {
-                let line: String = carry.drain(..=nl).collect();
-                for ev in agent.parse(line.trim_end()) {
-                    let _ = tx.send(ev).await;
-                }
-            }
-        }
+        drain_archive(&archive_path, &mut offset, &mut carry, agent, &tx).await;
         match run_state(dirs, run_id) {
             RunState::Finished(meta) => {
+                // Final drain: the daemon writes its last archive lines and
+                // the meta back to back - events landing between our read
+                // above and the meta check would otherwise be dropped (the
+                // ANSWERS harvest depends on the Completed event arriving).
+                drain_archive(&archive_path, &mut offset, &mut carry, agent, &tx).await;
                 return Ok(RunOutcome {
                     meta: *meta,
                     archive: archive_path,
@@ -325,6 +376,7 @@ pub async fn tail_run(
                     // Meta may lag the process death by a beat.
                     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
                     if let RunState::Finished(meta) = run_state(dirs, run_id) {
+                        drain_archive(&archive_path, &mut offset, &mut carry, agent, &tx).await;
                         return Ok(RunOutcome {
                             meta: *meta,
                             archive: archive_path,
@@ -335,6 +387,38 @@ pub async fn tail_run(
             }
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+/// Read the archive INCREMENTALLY from `offset` (seek + read, not a whole-
+/// file reread 5x/second) and emit every complete line as parsed events;
+/// partial trailing bytes stay in `carry` for the next poll.
+async fn drain_archive(
+    archive_path: &std::path::Path,
+    offset: &mut u64,
+    carry: &mut Vec<u8>,
+    agent: AgentKind,
+    tx: &mpsc::Sender<AgentEvent>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    let Ok(mut f) = tokio::fs::File::open(archive_path).await else {
+        return;
+    };
+    if f.seek(std::io::SeekFrom::Start(*offset)).await.is_err() {
+        return;
+    }
+    let mut buf = Vec::new();
+    if f.read_to_end(&mut buf).await.is_err() || buf.is_empty() {
+        return;
+    }
+    *offset += buf.len() as u64;
+    carry.extend_from_slice(&buf);
+    while let Some(nl) = carry.iter().position(|b| *b == b'\n') {
+        let line: Vec<u8> = carry.drain(..=nl).collect();
+        let text = String::from_utf8_lossy(&line);
+        for ev in agent.parse(text.trim_end()) {
+            let _ = tx.send(ev).await;
+        }
     }
 }
 
@@ -375,6 +459,7 @@ pub async fn execute_run(
             pid: std::process::id(),
             stage: req.stage.clone(),
             branch: req.branch.clone(),
+            proc_start: proc_start_time(std::process::id()),
         })?,
     );
 
@@ -432,28 +517,53 @@ pub async fn execute_run(
     let stdout = child.stdout.take().context("no stdout")?;
     let stderr = child.stderr.take().context("no stderr")?;
 
-    // stderr -> events, concurrently with stdout (own redactor state).
+    // stderr -> events, concurrently with stdout (own redactor state), AND
+    // persisted to a sidecar log: the daemon drains the channel silently, so
+    // without the file an agent that dies with the real reason on stderr
+    // (auth error, bad flag) leaves nothing but "exit 1". Returns the last
+    // non-empty line so a failure meta can carry the actual cause.
     let tx_err = tx.clone();
     let redact_stderr = req.redact;
+    let stderr_log_path = runs_dir.join(format!("{run_id}.stderr.log"));
     let stderr_task = tokio::spawn(async move {
         let mut redactor = crate::redact::Redactor::new(redact_stderr);
         let mut lines = BufReader::new(stderr).lines();
+        let mut log: Option<tokio::fs::File> = None; // lazy: no empty litter
+        let mut last: Option<String> = None;
         while let Ok(Some(line)) = lines.next_line().await {
             if line.trim().is_empty() {
                 continue;
             }
             let line = redactor.line(&line);
+            if log.is_none() {
+                log = tokio::fs::File::create(&stderr_log_path).await.ok();
+            }
+            if let Some(f) = log.as_mut() {
+                let _ = f.write_all(line.as_bytes()).await;
+                let _ = f.write_all(b"\n").await;
+            }
+            last = Some(line.clone());
             let _ = tx_err.send(AgentEvent::Stderr { line }).await;
         }
+        last
     });
 
     // Redaction happens BEFORE the archive write: the file on disk must be
     // safe to commit/share. Parsing consumes the same redacted line, so the
-    // UI can never display what the archive doesn't contain.
+    // UI can never display what the archive doesn't contain. Byte-level
+    // reads with a LOSSY decode: one stray non-UTF8 byte on stdout must
+    // degrade like any other drift (the parsers are drift-tolerant), never
+    // abort the run and SIGKILL the agent mid-flight.
     let mut redactor = crate::redact::Redactor::new(req.redact);
-    let mut lines = BufReader::new(stdout).lines();
-    while let Some(line) = lines.next_line().await? {
-        let line = redactor.line(&line);
+    let mut reader = BufReader::new(stdout);
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        buf.clear();
+        if reader.read_until(b'\n', &mut buf).await? == 0 {
+            break;
+        }
+        let raw = String::from_utf8_lossy(&buf);
+        let line = redactor.line(raw.trim_end_matches(['\n', '\r']));
         archive.write_all(line.as_bytes()).await?;
         archive.write_all(b"\n").await?;
         for ev in req.agent.parse(&line) {
@@ -464,11 +574,16 @@ pub async fn execute_run(
     archive.flush().await?;
 
     let status = child.wait().await?;
-    let _ = stderr_task.await;
+    let last_stderr = stderr_task.await.ok().flatten();
 
     meta.finished_at = Some(Utc::now());
     meta.exit_code = status.code();
     meta.ok = status.success() && meta.error.is_none() && meta.completed_ok();
+    if !meta.ok && meta.error.is_none() {
+        // The real reason often lives ONLY on stderr; decode_failure would
+        // otherwise report a bare exit code.
+        meta.error = last_stderr.map(|e| e.chars().take(200).collect());
+    }
 
     // Chain link: computed last, over the final archive + meta content.
     let archive_bytes = tokio::fs::read(&archive_path).await.unwrap_or_default();
@@ -971,5 +1086,137 @@ mod tests {
         // Sidecars cleaned up: nothing left to resurrect.
         assert!(!request_path(&dirs, "r-dead").exists());
         assert!(!status_path(&dirs, "r-dead").exists());
+    }
+
+    #[tokio::test]
+    async fn a_corrupt_request_file_still_lands_a_failure_meta() {
+        // The read/parse used to `?` out BEFORE the failure-meta wrapper,
+        // stranding tailers in the exact "vanished" this fn exists to stop.
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        std::fs::create_dir_all(dirs.runs_dir()).unwrap();
+        std::fs::write(request_path(&dirs, "r-corrupt"), "{not json").unwrap();
+        assert!(daemon_main(&dirs, "r-corrupt").await.is_err());
+        let RunState::Finished(meta) = run_state(&dirs, "r-corrupt") else {
+            panic!("corrupt request must still read as Finished");
+        };
+        assert!(!meta.ok);
+        assert!(meta.error.unwrap().contains("request file"));
+    }
+
+    #[tokio::test]
+    async fn non_utf8_stdout_degrades_lossily_instead_of_aborting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        // One invalid byte mid-stream, then a normal line: the run must
+        // complete and archive BOTH lines (old code aborted with an io
+        // error and SIGKILLed the agent).
+        let script = tmp.path().join("emit.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'bad \\377 byte\\n'\nprintf 'clean line\\n'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let req = RunRequest {
+            agent: AgentKind::Claude,
+            argv: vec![script.display().to_string()],
+            env: vec![],
+            stdin: None,
+            stage: "dual-review".into(),
+            feature: "F".into(),
+            branch: "main".into(),
+            redact: false,
+            repro: None,
+            cwd: tmp.path().to_path_buf(),
+            wrapper: vec![],
+        };
+        let (tx, mut rx) = mpsc::channel(64);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let outcome = execute_run(&dirs, req, "r-utf8", tx).await.unwrap();
+        drain.await.unwrap();
+        assert_eq!(outcome.meta.exit_code, Some(0));
+        let archive = std::fs::read_to_string(outcome.archive).unwrap();
+        assert!(archive.contains("clean line"), "{archive}");
+        assert!(archive.contains("byte"), "{archive}");
+    }
+
+    #[tokio::test]
+    async fn stderr_is_persisted_and_harvested_into_a_failed_meta() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        let script = tmp.path().join("fail.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho 'auth error: token expired' >&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let req = RunRequest {
+            agent: AgentKind::Claude,
+            argv: vec![script.display().to_string()],
+            env: vec![],
+            stdin: None,
+            stage: "dual-review".into(),
+            feature: "F".into(),
+            branch: "main".into(),
+            redact: false,
+            repro: None,
+            cwd: tmp.path().to_path_buf(),
+            wrapper: vec![],
+        };
+        let (tx, mut rx) = mpsc::channel(64);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let outcome = execute_run(&dirs, req, "r-stderr", tx).await.unwrap();
+        drain.await.unwrap();
+        assert!(!outcome.meta.ok);
+        // The real reason lived only on stderr; the meta now carries it...
+        assert!(
+            outcome
+                .meta
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("token expired"),
+            "{:?}",
+            outcome.meta.error
+        );
+        // ...and the sidecar log has the full text.
+        let log = std::fs::read_to_string(dirs.runs_dir().join("r-stderr.stderr.log")).unwrap();
+        assert!(log.contains("auth error"), "{log}");
+    }
+
+    #[test]
+    fn a_recycled_pid_reads_vanished_and_gcs_the_sidecars() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        std::fs::create_dir_all(dirs.runs_dir()).unwrap();
+        // Our own (alive) pid but an impossible start time: the identity
+        // check must refuse it - this is exactly what PID reuse looks like.
+        let status = RunStatus {
+            pid: std::process::id(),
+            stage: "dual-review".into(),
+            branch: "main".into(),
+            proc_start: Some(u64::MAX),
+        };
+        std::fs::write(
+            status_path(&dirs, "r-recycled"),
+            serde_json::to_string(&status).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(request_path(&dirs, "r-recycled"), "{}").unwrap();
+        assert!(matches!(run_state(&dirs, "r-recycled"), RunState::Vanished));
+        assert!(
+            !status_path(&dirs, "r-recycled").exists(),
+            "stale status sidecar is GC'd"
+        );
+        assert!(!request_path(&dirs, "r-recycled").exists());
+        // An OLD sidecar without proc_start keeps the pid-only semantics.
+        let legacy = r#"{"pid":LIVE,"stage":"x","branch":"main"}"#
+            .replace("LIVE", &std::process::id().to_string());
+        std::fs::write(status_path(&dirs, "r-legacy"), legacy).unwrap();
+        assert!(matches!(run_state(&dirs, "r-legacy"), RunState::Running(_)));
     }
 }

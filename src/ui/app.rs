@@ -6136,6 +6136,7 @@ mod tests {
             pid: std::process::id(),
             stage: "spec-chat".into(),
             branch: "main".into(),
+            proc_start: None,
         };
         app.resume_run("r-chat".into(), chat_status, &tx);
         assert!(app.running.is_none());
@@ -6145,6 +6146,7 @@ mod tests {
             pid: std::process::id(),
             stage: "plan-review".into(),
             branch: "main".into(),
+            proc_start: None,
         };
         app.resume_run("r-noreq".into(), status, &tx);
         assert_eq!(app.running, Some(StageId::PlanReview));

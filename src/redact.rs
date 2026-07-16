@@ -38,6 +38,24 @@ fn patterns() -> &'static Vec<Pattern> {
     })
 }
 
+fn pem_complete() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"-----BEGIN[A-Za-z0-9 ]*PRIVATE KEY-----.*?-----END[A-Za-z0-9 ]*-----").unwrap()
+    })
+}
+fn pem_open() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"-----BEGIN[A-Za-z0-9 ]*PRIVATE KEY-----.*$").unwrap())
+}
+fn pem_end_prefix() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^.*?-----END[A-Za-z0-9 ]*-----").unwrap())
+}
+fn is_json_event(line: &str) -> bool {
+    serde_json::from_str::<serde::de::IgnoredAny>(line.trim()).is_ok()
+}
+
 /// Stateful so multi-line PEM blocks survive line-at-a-time processing.
 #[derive(Debug, Default)]
 pub struct Redactor {
@@ -57,22 +75,44 @@ impl Redactor {
         if !self.enabled {
             return line.to_string();
         }
-        // PEM block state machine.
+        // PEM block state machine, BOUNDED: the archive is one JSON event
+        // per line, so a parseable JSON line while armed means the "block"
+        // was stdout bleed that never closed - disarm and process it
+        // normally. (A lone BEGIN marker used to swallow every subsequent
+        // line including the result event: run outcome flipped to failed
+        // and the whole transcript was destroyed.)
         if self.in_pem {
-            if line.contains("-----END") {
+            if is_json_event(line) {
                 self.in_pem = false;
+            } else if let Some(m) = pem_end_prefix().find(line) {
+                self.in_pem = false;
+                let tail = self.scrub(&line[m.end()..]);
+                return format!("[REDACTED:pem]{tail}");
+            } else {
+                return "[REDACTED:pem]".to_string();
             }
-            return "[REDACTED:pem]".to_string();
         }
-        if line.contains("-----BEGIN") && line.contains("PRIVATE KEY") {
-            // Single-line PEM (JSON-escaped) still ends here; multi-line arms the state.
-            if !line.contains("-----END") {
-                self.in_pem = true;
-            }
-            return "[REDACTED:pem]".to_string();
-        }
+        self.scrub(line)
+    }
 
+    /// One line, PEM spans redacted IN PLACE (never the whole line: the
+    /// event's JSON structure around the secret must survive), then the
+    /// pattern + entropy passes.
+    fn scrub(&mut self, line: &str) -> String {
         let mut out = line.to_string();
+        if out.contains("PRIVATE KEY") && out.contains("-----BEGIN") {
+            out = pem_complete()
+                .replace_all(&out, "[REDACTED:pem]")
+                .into_owned();
+            if pem_open().is_match(&out) {
+                // BEGIN without an END on this line: redact to EOL, and arm
+                // the multi-line state ONLY for non-JSON lines (a complete
+                // JSON event cannot continue onto the next line).
+                let arm = !is_json_event(line);
+                out = pem_open().replace(&out, "[REDACTED:pem]").into_owned();
+                self.in_pem = arm;
+            }
+        }
         for p in patterns() {
             if p.re.is_match(&out) {
                 out =
@@ -176,6 +216,39 @@ mod tests {
             one("-----BEGIN CERTIFICATE-----"),
             "-----BEGIN CERTIFICATE-----"
         );
+    }
+
+    #[test]
+    fn a_pem_inside_a_json_event_keeps_the_event_parseable() {
+        // The secret span is redacted IN PLACE: the result event's structure
+        // (and thus the run outcome) must survive.
+        let mut r = Redactor::new(true);
+        let line = r#"{"type":"result","is_error":false,"result":"key: -----BEGIN PRIVATE KEY-----MIIEvQIBADANBg-----END PRIVATE KEY----- done"}"#;
+        let out = r.line(line);
+        assert!(!out.contains("MIIEvQ"), "{out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("still JSON");
+        assert_eq!(v["type"], "result");
+        // And the state machine is NOT armed by a complete span.
+        assert_eq!(r.line("next line"), "next line");
+    }
+
+    #[test]
+    fn a_lone_begin_marker_never_swallows_the_rest_of_the_stream() {
+        // A grep hit / tool result showing ONLY the BEGIN line, as one JSON
+        // event: the next events (including the final result) must survive.
+        let mut r = Redactor::new(true);
+        let hit = r#"{"type":"tool_result","content":"-----BEGIN RSA PRIVATE KEY-----"}"#;
+        let out = r.line(hit);
+        assert!(!out.contains("BEGIN RSA"), "{out}");
+        let result = r#"{"type":"result","is_error":false,"result":"ok"}"#;
+        assert_eq!(r.line(result), result, "result event must not be eaten");
+
+        // Raw (non-JSON) bleed still arms the state, and a later JSON event
+        // disarms it even without an END marker.
+        let mut r = Redactor::new(true);
+        assert_eq!(r.line("-----BEGIN PRIVATE KEY-----"), "[REDACTED:pem]");
+        assert_eq!(r.line("MIIEbody"), "[REDACTED:pem]");
+        assert_eq!(r.line(result), result, "JSON event bounds the block");
     }
 
     #[test]
