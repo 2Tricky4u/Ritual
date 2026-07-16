@@ -95,6 +95,16 @@ pub enum SkillDiff {
     },
 }
 
+/// `~/.claude`, honoring the `RITUAL_CLAUDE_HOME` test seam. EVERY consumer
+/// (init --skills, doctor drift, provenance skill hashes) must resolve
+/// through this or repro/doctor can disagree about the same environment.
+pub fn claude_home() -> Option<std::path::PathBuf> {
+    match std::env::var_os("RITUAL_CLAUDE_HOME") {
+        Some(h) => Some(std::path::PathBuf::from(h)),
+        None => dirs::home_dir().map(|h| h.join(".claude")),
+    }
+}
+
 /// Compare every vendored skill against the installed copy under
 /// `<claude_home>/skills/<name>/SKILL.md`, a read-only companion to
 /// `install()` (doctor only hashes; this says WHERE they diverge).
@@ -227,6 +237,56 @@ mod tests {
         assert!(tdd.contains("red-only"), "ritual's tests-red stop point");
         let pr = body("pr");
         assert!(pr.contains("status --porcelain"), "dirty-tree PR warning");
+    }
+
+    /// The MACHINE contracts the Rust code parses out of skill output: a
+    /// well-meaning skill edit that renames a verdict, a findings filename
+    /// suffix, or a coverage schema key passes `./check.sh` and every E2E
+    /// test (the fake agents are shell scripts), then silently breaks
+    /// triage, reset-plan's cleanup, and the coverage reconcile in
+    /// production. Pin every load-bearing string.
+    #[test]
+    fn skill_machine_contracts_survive_edits() {
+        let body = |name: &str| {
+            SKILLS
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, b)| *b)
+                .unwrap()
+        };
+        // Findings filename suffixes: globbed/matched by coverage supersede,
+        // reset-plan, and the audit judge-window filter.
+        for (skill, suffix) in [
+            ("plan-review", "-plan-review.json"),
+            ("dual-review", "-dual-review.json"),
+            ("coverage", "-coverage.json"),
+        ] {
+            assert!(
+                body(skill).contains(suffix),
+                "{skill} must name its findings file *{suffix}"
+            );
+        }
+        // Verdict vocabularies: findings::verdict_confirmed/_retracted.
+        let plan = body("plan-review");
+        for v in ["accepted", "rebutted", "unresolved"] {
+            assert!(plan.contains(v), "plan-review verdict dialect: {v}");
+        }
+        let dual = body("dual-review");
+        for v in ["confirmed", "unconfirmed", "refuted"] {
+            assert!(dual.contains(v), "dual-review verdict dialect: {v}");
+        }
+        // Coverage schema keys parsed by coverage.rs.
+        let cov = body("coverage");
+        for key in ["satisfied", "deliverable"] {
+            assert!(cov.contains(key), "coverage schema key: {key}");
+        }
+        // The findings-dir env contract every headless review relies on.
+        for skill in ["plan-review", "dual-review", "coverage"] {
+            assert!(
+                body(skill).contains("RITUAL_FINDINGS_DIR"),
+                "{skill} must honor RITUAL_FINDINGS_DIR"
+            );
+        }
     }
 
     #[test]

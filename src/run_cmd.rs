@@ -755,7 +755,7 @@ pub fn audit(
     }
 
     let findings_before = list_findings(&dirs.findings_dir());
-    let mut cmd = stages::audit_judge_command(cfg, payload);
+    let mut cmd = stages::audit_judge_command(cfg, &dirs.findings_dir(), payload);
     cmd.env.push((
         "RITUAL_FINDINGS_DIR".to_string(),
         dirs.findings_dir().display().to_string(),

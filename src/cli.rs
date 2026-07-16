@@ -118,7 +118,7 @@ pub enum Command {
     },
     /// Run a pipeline stage (plan-review, dual-review, ...)
     Run {
-        /// Stage name: spec | plan | plan-review | tests-red | implement | dual-review
+        /// Stage name: spec | plan | plan-review | tests-red | implement | dual-review | coverage
         stage: String,
         /// Stage argument (plan path for plan-review, base ref for dual-review)
         arg: Option<String>,
@@ -157,7 +157,7 @@ pub enum Command {
     VerifyLog,
     /// Run a headless stage N times and score the results (model/prompt comparison)
     Bench {
-        /// Stage: plan-review | dual-review
+        /// Stage: any headless one (plan-review | dual-review | coverage)
         stage: String,
         /// Number of repetitions
         #[arg(long, default_value_t = 3)]

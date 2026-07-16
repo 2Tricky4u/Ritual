@@ -117,7 +117,7 @@
 
 ritual is built on one bet, backed by the research: **external feedback is the quality engine**. Tests, checks, mutation kills, and cross-model review beat any single model talking to itself. Everything here exists to make that loop fast, auditable, and cheap to repeat:
 
-- A **per-branch pipeline** (`spec → plan → plan-review → tests-red → implement → dual-review`) where the adversarial stages run a *different vendor's* model against Claude's work
+- A **per-branch pipeline** (`spec → plan → plan-review → tests-red → implement → dual-review → coverage`) where the adversarial stages run a *different vendor's* model against Claude's work
 - **Runs are daemons**: archived raw before parsing, resumable after any crash, tamper-evident forever
 - **Findings are the currency**: every gate (models, mutation testing, secret scanning, a third reviewer) emits the same anchored JSON, adjudicated with two keys and enforced by one exit-code contract
 
@@ -138,13 +138,13 @@ ritual is built on one bet, backed by the research: **external feedback is the q
 
 ### The loop
 
-- **The pipeline**: per-branch stages `spec → plan → plan-review → tests-red → implement → dual-review`; one-key launch; headless stages stream live; interactive stages hand you a real attached `claude` session and resume the TUI on exit.
+- **The pipeline**: per-branch stages `spec → plan → plan-review → tests-red → implement → dual-review → coverage`; one-key launch; headless stages stream live; interactive stages hand you a real attached `claude` session and resume the TUI on exit.
 - **Chat to author the spec/plan** (`s`): a split view with the live document on the left (focused section highlighted in place) and a conversation on the right: type an instruction and Claude edits `spec.md` (or `plan.md`) in place while you watch, scopable to the whole doc or one `##` section (`Tab` to switch; a missing plan is *drafted from the spec*). `Ctrl+Z`/`Alt+Z` undo/redo (persisted 10-deep stack), `Ctrl+X` cancel, `Alt+Enter` multi-line, messages queue while an edit runs, and reopening chat reattaches to a still-running edit. The agent is hard-scoped at the permission layer: it can read the project but write only the targeted document. Also headless: `ritual chat "<msg>" [--plan] [--section …]`.
 - **Findings lifecycle**: on the findings tab, `f` marks fixed and `d` dismisses (write-through to the JSON; `v` shows/hides resolved); the selected finding shows the verbatim source **snippet** it anchors to. The exit-code/CI contract follows: a confirmed critical blocks until resolved. `ritual pr-comment [N] [--inline]` posts the open findings to the branch's GitHub PR, redacted.
 - **Quality gates**: `ritual mutants` mutates only your diff (cargo-mutants) and turns every mutant the tests failed to kill into an anchored finding (a proven test gap, advisory); `ritual secrets` gitleaks-scans exactly what changed (incl. untracked files) and its critical findings **block until dismissed or fingerprinted** (auto-run before every dual-review). `.ritual/invariants.md` is the project constitution: every bullet becomes an acceptance criterion re-injected into each review stage. `ritual lessons` distills your f/d dispositions into review memory the critic reads first. It stops re-flagging what you already dismissed.
 - **Whole-project audit** (`ritual audit`, optional): every other gate reviews a *change*; this one reviews the *system*. Blind parallel review lanes, one per flow/tech (`--discover` enumerates them into an editable `.ritual/audit-lanes.md`) plus an always-on global-overview lane for cross-flow contracts, adjudicated by an adversarial judge that demands an independent Codex verdict per finding. Lands standard findings (stage `audit`) that triage like any review. Run it at milestones, not per commit.
 - **Third reviewer, ensemble-style**, optional CodeRabbit CLI review before each dual-review: its comments land as *unconfirmed* single-source findings that never block; the dual-review skill verifies or refutes each one. Three agreeing sources is the strongest signal there is.
-- **Reproducible workbench**: the whole multi-LLM setup (13 skills incl. `/spec` and the optional `/consensus`, the code-reviewer agent, both hooks) is vendored in `workbench/` and installed by `ritual init --skills`; `ritual skills diff` shows exactly where installed copies diverge. An optional third-model **consensus tier** (`[consensus] enabled`, pal MCP + Gemini) lets plan-review escalate one contested finding for arbitration.
+- **Reproducible workbench**: the whole multi-LLM setup (14 skills incl. `/spec` and the optional `/consensus`, the code-reviewer agent, both hooks) is vendored in `workbench/` and installed by `ritual init --skills`; `ritual skills diff` shows exactly where installed copies diverge. An optional third-model **consensus tier** (`[consensus] enabled`, pal MCP + Gemini) lets plan-review escalate one contested finding for arbitration.
 
 ### Running things
 
@@ -344,7 +344,7 @@ See the full [ROADMAP.md][roadmap-url] for the design rationale behind each item
 <!-- DEVELOPMENT -->
 ## Development
 
-`./check.sh` = fmt + clippy `-D warnings` + tests (294 across unit/CLI/snapshot suites, incl. proptest property tests); `bash tests/e2e_live.sh` drives the installed binary through 80 lifecycle checks token-free. Builds land in `/var/tmp/ritual-target` (see `.cargo/config.toml`). The repo dogfoods its own workflow (`CLAUDE.md`); `demo.tape` renders the demo GIF to `assets/demo.gif` via [vhs][vhs-url] (`vhs demo.tape`).
+`./check.sh` = fmt + clippy `-D warnings` + tests (546 across unit/CLI/snapshot suites, incl. proptest property tests); `bash tests/e2e_live.sh` drives the installed binary through 80 lifecycle checks token-free. Builds land in `/var/tmp/ritual-target` (see `.cargo/config.toml`). The repo dogfoods its own workflow (`CLAUDE.md`); `demo.tape` renders the demo GIF to `assets/demo.gif` via [vhs][vhs-url] (`vhs demo.tape`).
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -386,7 +386,7 @@ conditions.
 [version-shield]: https://img.shields.io/badge/version-0.10.1-9d7cd8?style=for-the-badge
 [license-shield]: https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-a9b665?style=for-the-badge
 [license-url]: #license
-[tests-shield]: https://img.shields.io/badge/cargo_tests-420_passing-73daca?style=for-the-badge
+[tests-shield]: https://img.shields.io/badge/cargo_tests-546_passing-73daca?style=for-the-badge
 [e2e-shield]: https://img.shields.io/badge/live_driver-80%2F80-7aa2f7?style=for-the-badge
 [chain-shield]: https://img.shields.io/badge/audit-tamper--evident-e0af68?style=for-the-badge
 [zero-token-shield]: https://img.shields.io/badge/testing-zero_tokens-bb9af7?style=for-the-badge

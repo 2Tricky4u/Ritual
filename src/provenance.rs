@@ -96,10 +96,13 @@ pub fn collect(cfg: &Config, dirs: &RitualDirs) -> ReproBundle {
     let codex_version = cmd_line(&cfg.codex_cmd[0], &["--version"], root);
 
     let mut skill_hashes = BTreeMap::new();
-    if let Some(home) = dirs::home_dir() {
+    // Resolve through the shared seam-aware helper: hashing a DIFFERENT
+    // claude home than doctor/init use would make repro's "skill files
+    // changed" verdict disagree with doctor about the same environment.
+    if let Some(home) = crate::workbench::claude_home() {
         // Every vendored workbench skill (the installed set is the contract).
         for (skill, _) in crate::workbench::SKILLS {
-            let p = home.join(format!(".claude/skills/{skill}/SKILL.md"));
+            let p = home.join(format!("skills/{skill}/SKILL.md"));
             if let Ok(bytes) = std::fs::read(&p) {
                 skill_hashes.insert(skill.to_string(), sha256_hex(&bytes));
             }

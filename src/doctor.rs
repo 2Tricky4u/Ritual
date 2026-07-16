@@ -417,10 +417,7 @@ fn hooks_check() -> CheckResult {
 
 /// `~/.claude`, honoring the same test seam as `init --skills`.
 fn claude_home() -> Option<std::path::PathBuf> {
-    match std::env::var_os("RITUAL_CLAUDE_HOME") {
-        Some(h) => Some(std::path::PathBuf::from(h)),
-        None => dirs::home_dir().map(|h| h.join(".claude")),
-    }
+    workbench::claude_home()
 }
 
 /// Disk pressure on the project filesystem: a chronically full disk is a
@@ -458,6 +455,7 @@ fn budget_check(cfg: &Config) -> CheckResult {
         ("finding-fix", cfg.budget_finding_fix_usd),
         ("code-fix", cfg.budget_code_fix_usd),
         ("coverage", cfg.budget_coverage_usd),
+        ("audit (per leg)", cfg.budget_audit_usd),
     ] {
         if per_run > daily {
             over.push(format!("{name} (${per_run})"));

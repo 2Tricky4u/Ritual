@@ -22,6 +22,8 @@ test designer**, and **second reviewer**. That is the pipeline.
 - **implement**: Claude implements until `check.sh` is green
 - **dual-review**: both models review the diff independently;
   findings merged
+- **coverage**: a read-only LLM-as-Judge checks every `## Deliverables`
+  item against the actually-built tree and files a gap per miss
 
 Cross-confirmed findings (both models agree, `◆ both`) are the strong
 signal: treat them as blockers. Single-source minor findings are
@@ -372,7 +374,7 @@ or pin one: `nvim_server = "/path/to/socket"`, or launch with
 - `ritual`: the dashboard
 - `ritual init`: scaffold .ritual/, check.sh, CLAUDE.md
   (`--skills` also installs the vendored workbench into `~/.claude`:
-  all 13 skills, the code-reviewer agent, both hooks; one clone
+  all 14 skills, the code-reviewer agent, both hooks; one clone
   reproduces the whole setup)
 - `ritual doctor`: check every prerequisite (`--deep` runs checks)
 - `ritual status`: pipeline state (`--json`)
@@ -544,7 +546,7 @@ worktree: `ritual new --worktree feat/audio` (own checkout, shared
 FEATURES section. `⟨[⟩` / `⟨]⟩` cycle features: needs-you ones sort
 first, flagged with a yellow ``.
 
-**2. Write the spec.** The PIPELINE section lists the six stages with
+**2. Write the spec.** The PIPELINE section lists the seven stages with
 one highlighted. On the greeter, `⟨j⟩`/`⟨k⟩` move that highlight;
 land on `spec` and press `⟨enter⟩`. ritual opens `spec.md` in your
 `$EDITOR` (the TUI hands over the terminal, then takes it back on

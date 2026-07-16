@@ -652,7 +652,11 @@ pub fn audit_lane_command(
 /// dies at E2BIG). Confirmation requires refutation-resistant evidence or an
 /// independent cross-vendor (Codex) verdict - the judge must never rubber-
 /// stamp its own vendor's candidates (self-preference bias).
-pub fn audit_judge_command(cfg: &Config, reports_payload: String) -> StageCommand {
+pub fn audit_judge_command(
+    cfg: &Config,
+    findings_dir: &Path,
+    reports_payload: String,
+) -> StageCommand {
     let prompt = "Adjudicate the whole-project audit reports arriving below. They were \
          written by independent, blind review lanes and OVER-REPORT by design.\n\n\
          For EACH candidate finding, in this order:\n\
@@ -669,7 +673,7 @@ pub fn audit_judge_command(cfg: &Config, reports_payload: String) -> StageComman
          3. A finding is `confirmed` ONLY when you reproduced/traced it AND it \
          survived refutation, OR codex independently agrees. Everything else \
          is `unconfirmed`.\n\n\
-         Then write ONE findings file to `${RITUAL_FINDINGS_DIR}/<UTC \
+         Then write ONE findings file to FINDINGS_DIR below as `<UTC \
          yyyymmddTHHMMSSZ>-audit.json` (never modify an existing file):\n\
          {\"ritual_findings\": 1, \"stage\": \"audit\", \"branch\": \"<git \
          branch --show-current, or empty>\", \"generated_at\": \"<ISO8601 \
@@ -684,6 +688,11 @@ pub fn audit_judge_command(cfg: &Config, reports_payload: String) -> StageComman
          table: finding | lane(s) | evidence | verdict.\n\n\
          LANE REPORTS FOLLOW:"
         .to_string();
+    // The ABSOLUTE findings dir rides in the prompt (also exported as
+    // RITUAL_FINDINGS_DIR by the caller): a no-shell agent cannot expand the
+    // env idiom, and its relative fallback lands in the WRONG .ritual from a
+    // linked worktree.
+    let prompt = format!("{prompt}\n\nFINDINGS_DIR: {}", findings_dir.display());
     // The prompt itself is bounded, but the reports are not: prompt AND
     // payload both travel on stdin (`-p` with no positional reads stdin).
     let payload = format!("{prompt}\n\n{reports_payload}");
@@ -897,7 +906,16 @@ pub fn build(
                     claude,
                     vec![
                         "-p".into(),
-                        format!("/coverage {}", plan.display()),
+                        // The ABSOLUTE findings dir rides in the prompt (env
+                        // is also set): a no-shell agent can't expand the
+                        // skill's ${RITUAL_FINDINGS_DIR} idiom, and its
+                        // relative fallback lands in the WRONG .ritual from
+                        // a linked worktree.
+                        format!(
+                            "/coverage {}\nFINDINGS_DIR (absolute; write the findings JSON here): {}",
+                            plan.display(),
+                            dirs.findings_dir().display()
+                        ),
                         "--output-format".into(),
                         "stream-json".into(),
                         "--verbose".into(),
@@ -1950,19 +1968,21 @@ mod tests {
         let (_tmp, mut cfg, _dirs) = setup();
         cfg.models.insert("audit-judge".into(), "opus".into());
         let reports = "== lane runner ==\nGIANT-REPORT-MARKER\n".repeat(4);
-        let cmd = audit_judge_command(&cfg, reports);
+        let cmd = audit_judge_command(&cfg, Path::new("/abs/proj/.ritual/findings"), reports);
         assert!(cmd.needs_codex, "cross-vendor verdicts need codex MCP");
         // The unbounded payload rides on stdin, never argv (E2BIG).
         let payload = cmd.stdin.as_deref().expect("payload on stdin");
         assert!(payload.contains("GIANT-REPORT-MARKER"));
         assert!(!cmd.argv.iter().any(|a| a.contains("GIANT-REPORT-MARKER")));
-        // The adjudication contract.
+        // The adjudication contract. The findings dir is ABSOLUTE in the
+        // prompt: a no-shell agent can't expand an env idiom, and its
+        // relative fallback lands in the wrong .ritual from a worktree.
         for needle in [
             "REFUTE",
             "codex",
             "confirmed|unconfirmed",
             "\"stage\": \"audit\"",
-            "RITUAL_FINDINGS_DIR",
+            "FINDINGS_DIR: /abs/proj/.ritual/findings",
         ] {
             assert!(payload.contains(needle), "judge contract missing {needle}");
         }
