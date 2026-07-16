@@ -1,0 +1,27 @@
+---
+source: tests/ui_snapshots.rs
+assertion_line: 541
+expression: out
+---
+"                            │  live   findings    history    plan    guide              "
+"  PIPELINE ──────────────── │─────────────────────────────────────────────────────────────"
+"  ○ spec                    │ I have finished writing the failing tests for the parser    "
+"  ○ plan                    │ and they all fail for the right reason: the drift-tolerant  "
+"  ○ plan-review             │ branch is not yet implemented, so unknown events panic      "
+"  ○ tests-red               │ instead of becoming Raw.                                    "
+"  ○ implement               │                                                             "
+"  ○ dual-review             │                                                             "
+"  ○ coverage                │                                                             "
+"  » next: spec              │                                                             "
+"                            │                                                             "
+" 󰚩 AGENTS ───────────────── │                                                             "
+"  󰚩 claude …                │                                                             "
+"  󰚩 codex …                 │                                                             "
+"  󱘖 bridge …                │                                                             "
+"   nvim …                   │                                                             "
+"   check ?                  │                                                             "
+"                            │                                                             "
+"   detached                 │                                                             "
+"                            │                                                             "
+"                            │                                                             "
+" RITUAL   detached  detached                                                          "

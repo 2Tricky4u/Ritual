@@ -1,6 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
-assertion_line: 497
+assertion_line: 508
 expression: out
 ---
 "                            │  live   findings    history    plan    guide              "
@@ -14,14 +14,14 @@ expression: out
 "   coverage                 │     chat  s: chat to write/edit the spec or plan live       "
 "  » next: plan              │     runs  daemons: quit freely, reattach · a takeover       "
 "  spec.md changed after this│ findings  enter details · F/m triage · d dismiss · / filter "
-"                            │    gates  mutants · secrets · lessons · invariants          "
-" 󰚩 AGENTS ───────────────── │    money  daily budget · per-run caps · costs               "
-"  󰚩 claude …                │   safety  redaction · verify-log chain · repro              "
-"  󰚩 codex …                 │       ci  --ci → JUnit · --json + exit codes                "
-"  󱘖 bridge …                │ parallel  new --worktree · [ ] switch features              "
-"   nvim …                   │     more  ps · attach · doctor · clean · pr-comment         "
-"   check ?                  │    guide  5: the detailed guide & tips, in-app              "
-"                            │                                                             "
-"   detached                 │     enter  run stage    :  palette    ?  keys    q  quit    "
-"                            │                                                             "
+"    ran - rerun plan        │    gates  mutants · secrets · lessons · invariants          "
+"                            │    money  daily budget · per-run caps · costs               "
+" 󰚩 AGENTS ───────────────── │   safety  redaction · verify-log chain · repro              "
+"  󰚩 claude …                │       ci  --ci → JUnit · --json + exit codes                "
+"  󰚩 codex …                 │ parallel  new --worktree · [ ] switch features              "
+"  󱘖 bridge …                │     more  ps · attach · doctor · clean · pr-comment         "
+"   nvim …                   │    guide  5: the detailed guide & tips, in-app              "
+"   check ?                  │                                                             "
+"                            │     enter  run stage    :  palette    ?  keys    q  quit    "
+"   detached                 │                                                             "
 " RITUAL   detached  t                                                                 "

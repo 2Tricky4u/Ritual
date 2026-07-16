@@ -519,6 +519,29 @@ fn dashboard_sidebar_stale_stage_ascii() {
 }
 
 #[test]
+fn dashboard_live_wraps_long_agent_output() {
+    // A long assistant line used to clip at the right edge - readable up to the
+    // pane width, then cut. It now word-wraps across rows; the tail of the
+    // sentence is visible instead of lost.
+    use ritual::runner::events::AgentEvent;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_app(&tmp);
+    app.tab = ritual::ui::app::Tab::Live;
+    app.stream.push(AgentEvent::Text {
+        text: concat!(
+            "I have finished writing the failing tests for the parser and they ",
+            "all fail for the right reason: the drift-tolerant branch is not yet ",
+            "implemented, so unknown events panic instead of becoming Raw.",
+        )
+        .into(),
+    });
+    let out = render(&app);
+    // The tail of the sentence renders (it was clipped before wrapping).
+    assert!(out.contains("Raw."), "long line must wrap, not clip: {out}");
+    insta::assert_snapshot!(out);
+}
+
+#[test]
 fn dashboard_stage_detail_stale() {
     // `i` on a Done-but-stale stage: status + finished + staleness reason +
     // the rerun suggestion.

@@ -411,14 +411,19 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             .as_deref()
             .or_else(|| g.warnings.first().map(String::as_str))
         {
-            lines.push(fill_row(
-                vec![Span::styled(
-                    format!("  {note}"),
-                    Style::default().fg(t.warn()).bg(bg),
-                )],
-                w,
-                bg,
-            ));
+            // Wrap across the narrow sidebar instead of clipping mid-word: the
+            // 2-space lead matches the rows above, continuation rows hang under
+            // the text (indent 2 within the w-2 content budget).
+            for row in wrap_plain(note, w.saturating_sub(2) as usize, 2) {
+                lines.push(fill_row(
+                    vec![Span::styled(
+                        format!("  {row}"),
+                        Style::default().fg(t.warn()).bg(bg),
+                    )],
+                    w,
+                    bg,
+                ));
+            }
         }
     }
     lines.push(Line::default());
@@ -1037,7 +1042,19 @@ fn draw_live(f: &mut Frame, app: &App, area: Rect) {
             .iter()
             .map(|e| event_line(t, e, stream_area.width))
             .collect();
-        f.render_widget(Paragraph::new(lines), stream_area);
+        // Wrap long agent output instead of clipping it at the right edge, then
+        // scroll so the newest wrapped rows stay pinned to the bottom (a wrapped
+        // window can exceed `height` rows; scroll hides the overflow at the top,
+        // preserving the follow-tail). `wrapped_rows` mirrors ratatui's wrapper.
+        let inner_w = stream_area.width as usize;
+        let total: u16 = lines.iter().map(|l| wrapped_rows(l, inner_w)).sum();
+        let scroll_y = total.saturating_sub(stream_area.height);
+        f.render_widget(
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .scroll((scroll_y, 0)),
+            stream_area,
+        );
     }
 
     if let Some((rect, tail)) = check_area {
@@ -2356,6 +2373,55 @@ fn content_sized_rect(frame: Rect, lines: &[Line], min_width: u16) -> Rect {
     )
 }
 
+/// Greedy word-wrap `text` into rows no wider than `width` columns. The first
+/// row starts at column 0; every continuation row is prefixed with `indent`
+/// spaces (a hanging indent so a wrapped sentence reads as one block). A word
+/// longer than the row budget hard-splits. Used for the narrow sidebar
+/// guidance strip, where a single `fill_row` clips the sentence mid-word.
+fn wrap_plain(text: &str, width: usize, indent: usize) -> Vec<String> {
+    let width = width.max(1);
+    let indent = indent.min(width - 1);
+    let cont_budget = width - indent; // usable columns on a continuation row
+    // Break into chunks that fit any row (hard-split words wider than a
+    // continuation row) so a chunk placed on a fresh line always fits.
+    let mut chunks: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        let chars: Vec<char> = word.chars().collect();
+        let mut i = 0;
+        while chars.len() - i > cont_budget {
+            chunks.push(chars[i..i + cont_budget].iter().collect());
+            i += cont_budget;
+        }
+        chunks.push(chars[i..].iter().collect());
+    }
+    let mut rows: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for chunk in chunks {
+        let budget = if rows.is_empty() { width } else { cont_budget };
+        let projected = if line.is_empty() {
+            chunk.chars().count()
+        } else {
+            line.chars().count() + 1 + chunk.chars().count()
+        };
+        if !line.is_empty() && projected > budget {
+            rows.push(std::mem::take(&mut line));
+        }
+        if line.is_empty() {
+            line = chunk;
+        } else {
+            line.push(' ');
+            line.push_str(&chunk);
+        }
+    }
+    rows.push(line);
+    for (i, row) in rows.iter_mut().enumerate() {
+        if i > 0 {
+            *row = format!("{}{row}", " ".repeat(indent));
+        }
+    }
+    rows
+}
+
 /// Rows one Line occupies under greedy word wrap at `width` columns (mirrors
 /// ratatui's WordWrapper for the plain prose these floats hold; a word wider
 /// than the panel char-wraps across rows).
@@ -2642,5 +2708,36 @@ mod tests {
         // Plain single-space text is unchanged by the rewrite.
         assert_eq!(wrapped_rows(&Line::from("ab cd"), 5), 1);
         assert_eq!(wrapped_rows(&Line::from("ab cd"), 4), 2);
+    }
+
+    #[test]
+    fn wrap_plain_wraps_the_sidebar_note_without_clipping() {
+        // The real warning that was clipped to "62 confirmed finding(s) op":
+        // 26-col content budget (SIDEBAR_W 28 minus the 2-space lead).
+        let rows = wrap_plain("62 confirmed finding(s) open (tab 2)", 26, 2);
+        assert!(rows.len() >= 2, "must wrap, got {rows:?}");
+        // No row exceeds the budget, so nothing is clipped by the render.
+        assert!(rows.iter().all(|r| r.chars().count() <= 26), "{rows:?}");
+        // The whole message survives once the hanging indent is stripped.
+        let joined: String = rows
+            .iter()
+            .map(|r| r.trim_start())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(joined, "62 confirmed finding(s) open (tab 2)");
+        // First row carries no indent; continuations hang under it.
+        assert!(!rows[0].starts_with(' '));
+        assert!(rows[1].starts_with("  "));
+    }
+
+    #[test]
+    fn wrap_plain_hard_splits_an_overlong_word_and_survives_degenerate_width() {
+        // A word wider than the row hard-splits rather than overflowing.
+        let rows = wrap_plain("supercalifragilistic", 8, 2);
+        assert!(rows.iter().all(|r| r.chars().count() <= 8), "{rows:?}");
+        assert_eq!(rows.concat().replace(' ', ""), "supercalifragilistic");
+        // Degenerate widths never panic (indent clamps below width).
+        assert_eq!(wrap_plain("x", 1, 4), vec!["x".to_string()]);
+        assert_eq!(wrap_plain("", 10, 2), vec![String::new()]);
     }
 }
