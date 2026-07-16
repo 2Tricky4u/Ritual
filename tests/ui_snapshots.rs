@@ -380,7 +380,7 @@ fn whichkey_sections_advertise_exactly_what_works() {
         app.finding_detail = false;
         assert_eq!(
             names(&app),
-            vec![(ctx, n), ("actions", 7), ("global", 7), ("move", 6)],
+            vec![(ctx, n), ("actions", 8), ("global", 7), ("move", 6)],
             "sections for {ctx}"
         );
         // Confirm (Enter launches/opens) is advertised on EVERY tab.
@@ -406,6 +406,17 @@ fn whichkey_sections_advertise_exactly_what_works() {
             .1
             .contains(&WkEntry::Act(ResetPlan))
     );
+
+    // The stage-detail modal advertises only what stage_detail_input honors.
+    app.stage_detail = true;
+    let stage = whichkey_sections(&app);
+    assert_eq!(stage.len(), 2);
+    assert_eq!(stage[0].0, "stage");
+    assert!(stage[0].1.contains(&WkEntry::Lit {
+        keys: "esc/q/i",
+        desc: "close"
+    }));
+    app.stage_detail = false;
 
     // The finding-detail modal advertises only what detail_input honors,
     // including the literal close keys.
@@ -504,6 +515,32 @@ fn dashboard_sidebar_stale_stage_ascii() {
     app.cfg.theme.icons = ritual::theme::IconSet::Ascii;
     let out = render(&app);
     assert!(out.contains("[~]"), "ascii stale marker: {out}");
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn dashboard_stage_detail_stale() {
+    // `i` on a Done-but-stale stage: status + finished + staleness reason +
+    // the rerun suggestion.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_stale_app(&tmp);
+    app.selected = 1; // plan (stale: spec touched after it ran)
+    app.stage_detail = true;
+    let out = render(&app);
+    assert!(out.contains("spec.md changed after this ran"), "{out}");
+    assert!(out.contains("re-run"), "{out}");
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn dashboard_stage_detail_blocked() {
+    // `i` on coverage with no plan: the deliverables/launch blocker shows.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_app(&tmp);
+    app.selected = 6; // coverage
+    app.stage_detail = true;
+    let out = render(&app);
+    assert!(out.contains("plan.md missing"), "{out}");
     insta::assert_snapshot!(out);
 }
 
@@ -899,6 +936,16 @@ fn rendering_survives_hostile_sizes_in_every_state() {
                     });
                 }
                 a.stream_scroll = Some(4990);
+                (t, a)
+            }),
+        ),
+        (
+            "stage-detail",
+            Box::new(|| {
+                let t = tempfile::tempdir().unwrap();
+                let mut a = setup_app(&t);
+                a.stage_detail = true;
+                a.selected = 6;
                 (t, a)
             }),
         ),

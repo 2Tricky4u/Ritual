@@ -48,6 +48,7 @@ pub enum Action {
     ToggleResolved,
     Settings,
     ResetPlan,
+    StageDetail,
     RunStage(StageId),
     /// Re-run a failed stage with `[retry] models[i]` (palette-only, dynamic).
     RetryStage(StageId, usize),
@@ -125,6 +126,11 @@ pub const ACTIONS: &[(&str, Action, &str)] = &[
         "reset-plan",
         Action::ResetPlan,
         "reset plan back to the spec (palette-only)",
+    ),
+    (
+        "stage-detail",
+        Action::StageDetail,
+        "stage: details & guidance",
     ),
 ];
 
@@ -286,6 +292,7 @@ impl Default for Keymap {
             ("u", "doc-undo"),
             ("v", "toggle-resolved"),
             ("S", "settings"),
+            ("i", "stage-detail"),
         ];
         let map = defaults
             .iter()

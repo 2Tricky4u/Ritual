@@ -238,6 +238,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.finding_detail {
         draw_finding_detail(f, app);
     }
+    if app.stage_detail {
+        draw_stage_detail(f, app);
+    }
     if app.dismiss_prompt.is_some() {
         draw_dismiss_prompt(f, app);
     }
@@ -1498,6 +1501,148 @@ fn draw_statusline(f: &mut Frame, app: &App, area: Rect) {
 // overlays
 // ---------------------------------------------------------------------------
 
+/// The `i` stage-detail overlay: status + when it finished, the last run's
+/// cost/model, WHY it is stale, what blocks it, and what running it unlocks.
+/// Reads only the cached guidance - the render path never computes.
+fn draw_stage_detail(f: &mut Frame, app: &App) {
+    let t = &app.cfg.theme;
+    let id = app.selected_stage();
+    let stage = app
+        .state
+        .features
+        .get(&app.slug)
+        .map(|feat| feat.stage(id))
+        .unwrap_or_default();
+    let (icon, icon_color) = stage_icon_color(t, stage.status);
+    let status_word = match stage.status {
+        StageStatus::Pending => "pending",
+        StageStatus::Running => "running",
+        StageStatus::Done => "done",
+        StageStatus::Failed => "failed",
+        StageStatus::NeedsAttention => "needs attention",
+        StageStatus::Skipped => "skipped",
+    };
+
+    let mut lines: Vec<Line> = vec![Line::default()];
+    let mut head = vec![
+        Span::styled(format!(" {icon} "), Style::default().fg(icon_color)),
+        Span::styled(
+            status_word,
+            Style::default().fg(icon_color).add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if let Some(fin) = stage.finished_at {
+        head.push(Span::styled(
+            format!(
+                "  finished {}",
+                crate::guidance::rel_time(fin, chrono::Utc::now())
+            ),
+            Style::default().fg(t.muted()),
+        ));
+    }
+    if !stage.runs.is_empty() {
+        head.push(Span::styled(
+            format!("  x{} run(s)", stage.runs.len()),
+            Style::default().fg(t.comment()),
+        ));
+    }
+    lines.push(Line::from(head));
+
+    // The last run's receipts, straight from its meta.
+    if let Some(meta) = stage
+        .runs
+        .last()
+        .and_then(|rid| app.metas.iter().find(|m| &m.run_id == rid))
+    {
+        let cost = meta
+            .total_cost_usd
+            .map(|c| format!("${c:.2}"))
+            .unwrap_or_else(|| "$-".into());
+        let model = meta.model.as_deref().unwrap_or("?");
+        lines.push(Line::from(Span::styled(
+            format!("   last run: {cost} · {model}"),
+            Style::default().fg(t.comment()),
+        )));
+    }
+
+    let guidance = app.guidance.as_ref().and_then(|g| g.stages.get(&id));
+    let stale = guidance.and_then(|g| g.stale);
+    let blockers: &[String] = guidance.map(|g| g.blockers.as_slice()).unwrap_or(&[]);
+    if let Some(reason) = stale {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            format!(" {} {} - re-run to refresh", t.icon_stale(), reason.text()),
+            Style::default().fg(t.warn()),
+        )));
+    } else if stage.status == StageStatus::Done
+        && matches!(
+            id,
+            crate::state::StageId::DualReview | crate::state::StageId::Coverage
+        )
+        && stage.fingerprint.is_none()
+    {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            " (no tree fingerprint recorded - code staleness unknown)",
+            Style::default().fg(t.comment()).add_modifier(Modifier::DIM),
+        )));
+    }
+    if !blockers.is_empty() {
+        lines.push(Line::default());
+        for b in blockers {
+            lines.push(Line::from(Span::styled(
+                format!(" ! {b}"),
+                Style::default().fg(t.error()),
+            )));
+        }
+    }
+
+    lines.push(Line::default());
+    let unlocks = PIPELINE
+        .iter()
+        .skip_while(|s| **s != id)
+        .nth(1)
+        .map(|s| s.label());
+    if let Some(next_label) = unlocks {
+        lines.push(Line::from(Span::styled(
+            format!(" unlocks: {next_label}"),
+            Style::default().fg(t.muted()),
+        )));
+    }
+    let suggested = if !blockers.is_empty() {
+        "resolve the blocker first".to_string()
+    } else if app.guidance.as_ref().and_then(|g| g.next) == Some(id) {
+        "run it now (enter)".to_string()
+    } else if stale.is_some() {
+        "re-run to refresh (enter)".to_string()
+    } else if stage.status == StageStatus::Done {
+        "nothing to do here".to_string()
+    } else {
+        "run when its turn comes (enter runs it anyway)".to_string()
+    };
+    lines.push(Line::from(Span::styled(
+        format!(" suggested: {suggested}"),
+        Style::default().fg(t.info()),
+    )));
+
+    lines.push(Line::default());
+    lines.push(Line::from(vec![
+        keycap(t, "enter"),
+        Span::styled(" run  ", Style::default().fg(t.comment())),
+        keycap(t, "j/k"),
+        Span::styled(" stage  ", Style::default().fg(t.comment())),
+        keycap(t, "esc/q/i"),
+        Span::styled(" close", Style::default().fg(t.comment())),
+    ]));
+
+    let area = content_sized_rect(f.area(), &lines, 46);
+    let inner = float_panel(f, t, area, &format!("stage · {}", id.label()));
+    if inner.height < 2 {
+        return;
+    }
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
 /// The finding detail overlay (Enter on the findings tab): everything the
 /// findings JSON records about the cursor's finding, wrapped to the panel.
 fn draw_finding_detail(f: &mut Frame, app: &App) {
@@ -1743,6 +1888,24 @@ pub fn whichkey_sections(app: &App) -> Vec<(&'static str, Vec<WkEntry>)> {
     // subset (the finding actions + up/down + help/close), swallowing tabs,
     // palette, settings, scrolling and feature-nav - so advertise ONLY what
     // works here, not the base-layer global/move sections.
+    if app.stage_detail {
+        return vec![
+            (
+                "stage",
+                vec![
+                    Lit {
+                        keys: "enter",
+                        desc: "run this stage",
+                    },
+                    Lit {
+                        keys: "esc/q/i",
+                        desc: "close",
+                    },
+                ],
+            ),
+            ("move", vec![Act(Up), Act(Down)]),
+        ];
+    }
     if app.finding_detail {
         return vec![
             (
@@ -1794,6 +1957,7 @@ pub fn whichkey_sections(app: &App) -> Vec<(&'static str, Vec<WkEntry>)> {
     // Tab-agnostic actions: verified to work identically on every tab
     // (no tab guard in dispatch).
     let shared: Vec<WkEntry> = vec![
+        Act(StageDetail),
         Act(Cancel),
         Act(CheckFast),
         Act(CheckFull),

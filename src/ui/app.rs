@@ -265,6 +265,8 @@ pub struct App {
     /// Cached pipeline guidance for the VIEWED feature; recomputed at event
     /// cadence (never per frame) and only read by the renderer.
     pub guidance: Option<crate::guidance::PipelineGuidance>,
+    /// The `i` stage-detail overlay (status, staleness, blockers, next).
+    pub stage_detail: bool,
     /// Latest off-thread git probe results (tree fingerprint + dual-review
     /// preflight) folded into guidance recomputes.
     guidance_probe: crate::guidance::Probe,
@@ -485,6 +487,7 @@ impl App {
             history_scroll: 0,
             view_max: ViewMax::default(),
             guidance: None,
+            stage_detail: false,
             guidance_probe: crate::guidance::Probe::default(),
             probe_running: false,
             doc_mtimes: (None, None),
@@ -1041,6 +1044,10 @@ impl App {
             self.detail_input(key, tx);
             return;
         }
+        if self.stage_detail {
+            self.stage_detail_input(key, tx);
+            return;
+        }
         if self.chat.is_some() {
             self.chat_input(key, tx);
             return;
@@ -1242,6 +1249,8 @@ impl App {
             Action::QueueAllCode => self.queue_all_code(),
             Action::DocUndo => self.doc_undo(),
             Action::Settings => self.toggle_settings(),
+            // Works from every tab: the sidebar selection always exists.
+            Action::StageDetail => self.stage_detail = !self.stage_detail,
             Action::ResetPlan => {
                 if self.fix_running() || self.chat_running() {
                     self.status_msg = Some("a fix/chat is running; wait before resetting".into());
@@ -2572,6 +2581,31 @@ impl App {
         self.visible_findings()
             .into_iter()
             .nth(self.selected_finding)
+    }
+
+    /// Keys while the `i` stage-detail overlay is open. Stateless like the
+    /// finding overlay (renders the sidebar selection); j/k move the stage
+    /// cursor directly (nav() would scroll the underlying tab), Enter closes
+    /// and DELEGATES to on_enter - the overlay informs, it never blocks a
+    /// launch or rerun.
+    fn stage_detail_input(&mut self, key: KeyEvent, tx: &mpsc::Sender<AppMsg>) {
+        if matches!(key.code, KeyCode::Esc) {
+            self.stage_detail = false;
+            return;
+        }
+        match self.cfg.keymap.resolve(key.code, key.modifiers) {
+            Some(Action::Down) => self.selected = (self.selected + 1) % PIPELINE.len(),
+            Some(Action::Up) => {
+                self.selected = (self.selected + PIPELINE.len() - 1) % PIPELINE.len();
+            }
+            Some(Action::Confirm) => {
+                self.stage_detail = false;
+                self.on_enter(tx);
+            }
+            Some(Action::StageDetail) | Some(Action::Quit) => self.stage_detail = false,
+            Some(Action::Help) => self.show_help = true, // paints on top
+            _ => {}
+        }
     }
 
     /// Keys while the finding detail overlay is open: a whitelist of the
@@ -6121,6 +6155,50 @@ mod tests {
         assert!(app.running.is_none(), "no run may start offline");
         assert!(
             app.status_msg.as_deref().unwrap_or("").contains("offline"),
+            "{:?}",
+            app.status_msg
+        );
+    }
+
+    #[test]
+    fn stage_detail_overlay_toggles_navigates_and_delegates_enter() {
+        let (_t, mut app, tx, _rx) = test_app();
+        let press = |app: &mut App, tx: &mpsc::Sender<AppMsg>, code: KeyCode| {
+            app.on_input(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), tx);
+        };
+        // i toggles from any tab.
+        app.tab = Tab::Plan;
+        press(&mut app, &tx, KeyCode::Char('i'));
+        assert!(app.stage_detail);
+        // j/k move the SIDEBAR selection directly (not the plan scroll).
+        app.selected = 0;
+        press(&mut app, &tx, KeyCode::Char('j'));
+        assert_eq!(app.selected, 1);
+        assert_eq!(app.plan_scroll, 0, "underlying tab untouched");
+        press(&mut app, &tx, KeyCode::Char('k'));
+        assert_eq!(app.selected, 0);
+        // ? paints help on top.
+        press(&mut app, &tx, KeyCode::Char('?'));
+        assert!(app.show_help);
+        app.show_help = false;
+        // q closes; i reopens; esc closes.
+        press(&mut app, &tx, KeyCode::Char('q'));
+        assert!(!app.stage_detail, "q closes the overlay, not the app");
+        assert!(!app.quit);
+        press(&mut app, &tx, KeyCode::Char('i'));
+        press(&mut app, &tx, KeyCode::Esc);
+        assert!(!app.stage_detail);
+        // Enter closes AND delegates to on_enter (busy guard message proves
+        // the launch path ran).
+        app.running = Some(StageId::Plan);
+        press(&mut app, &tx, KeyCode::Char('i'));
+        press(&mut app, &tx, KeyCode::Enter);
+        assert!(!app.stage_detail);
+        assert!(
+            app.status_msg
+                .as_deref()
+                .unwrap_or("")
+                .contains("already active"),
             "{:?}",
             app.status_msg
         );
