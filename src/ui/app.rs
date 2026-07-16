@@ -240,6 +240,9 @@ pub struct App {
     /// must attribute status/findings to this, never to `self.branch` - the
     /// user is free to peek at other features (`[`/`]`) while a run is live.
     pub running_branch: Option<String>,
+    /// Set (to the branch) when the running check.sh verifies a provisional
+    /// Implement Done: a red result downgrades that stage to NeedsAttention.
+    pub check_gates_implement: Option<String>,
     pub spinner: usize,
     pub show_help: bool,
     pub status_msg: Option<String>,
@@ -438,6 +441,7 @@ impl App {
             agents: Default::default(),
             running: None,
             running_branch: None,
+            check_gates_implement: None,
             spinner: 0,
             show_help: false,
             status_msg: None,
@@ -788,6 +792,20 @@ impl App {
                 } else {
                     CheckState::Red { tail }
                 };
+                // The post-implement verification gate (after_attached): a red
+                // tree downgrades the provisional Done on the SPAWN branch.
+                if let Some(branch) = self.check_gates_implement.take()
+                    && !ok
+                {
+                    self.set_stage_for(
+                        &branch,
+                        StageId::Implement,
+                        StageStatus::NeedsAttention,
+                        None,
+                    );
+                    self.status_msg =
+                        Some("check.sh red after implement: needs attention (c to re-run)".into());
+                }
             }
             AppMsg::AgentsStatus(status) => self.agents = *status,
             AppMsg::FileChanged => {
@@ -2184,7 +2202,12 @@ impl App {
     }
 
     /// Post-processing after an attached (interactive) child exits.
-    pub fn after_attached(&mut self, stage: Option<StageId>, child_ok: bool) {
+    pub fn after_attached(
+        &mut self,
+        stage: Option<StageId>,
+        child_ok: bool,
+        tx: &mpsc::Sender<AppMsg>,
+    ) {
         let Some(stage) = stage else { return };
         let status = match stage {
             StageId::Spec => {
@@ -2216,6 +2239,16 @@ impl App {
             }
         };
         self.set_stage(stage, status, None);
+        // CLI parity: `ritual run implement` requires a green check.sh, so the
+        // TUI verifies too - asynchronously (check.sh can take minutes and
+        // this is the render loop), downgrading to NeedsAttention on red.
+        if stage == StageId::Implement && child_ok {
+            self.run_check(tx, false);
+            if self.check == CheckState::Running {
+                self.check_gates_implement = Some(self.branch.clone());
+                self.status_msg = Some("implement done; check.sh verifying...".into());
+            }
+        }
         self.reload_artifacts();
     }
 
@@ -4520,7 +4553,7 @@ pub async fn run(
             if let Some(w) = &watcher {
                 w.paused.store(false, std::sync::atomic::Ordering::SeqCst);
             }
-            app.after_attached(req.stage, ok);
+            app.after_attached(req.stage, ok, &tx);
             input = Some(InputTask::spawn(tx.clone()));
         }
     }
@@ -7547,12 +7580,12 @@ mod tests {
 
         // Only comments/blank lines -> stays pending.
         std::fs::write(&spec, "# title\n<!-- note -->\n\n").unwrap();
-        app.after_attached(Some(StageId::Spec), true);
+        app.after_attached(Some(StageId::Spec), true, &_tx);
         assert_eq!(app.stage_status(StageId::Spec), StageStatus::Pending);
 
         // Real content -> done.
         std::fs::write(&spec, "# title\n\nImplement the widget.\n").unwrap();
-        app.after_attached(Some(StageId::Spec), true);
+        app.after_attached(Some(StageId::Spec), true, &_tx);
         assert_eq!(app.stage_status(StageId::Spec), StageStatus::Done);
     }
 
@@ -7560,23 +7593,23 @@ mod tests {
     fn after_attached_plan_requires_a_written_file() {
         let (_t, mut app, _tx, _rx) = test_app();
         // No plan.md yet -> needs attention.
-        app.after_attached(Some(StageId::Plan), true);
+        app.after_attached(Some(StageId::Plan), true, &_tx);
         assert_eq!(app.stage_status(StageId::Plan), StageStatus::NeedsAttention);
 
         // Write the plan -> done.
         let plan = app.dirs.plan_file(&app.slug);
         std::fs::create_dir_all(plan.parent().unwrap()).unwrap();
         std::fs::write(&plan, "# Plan\n").unwrap();
-        app.after_attached(Some(StageId::Plan), true);
+        app.after_attached(Some(StageId::Plan), true, &_tx);
         assert_eq!(app.stage_status(StageId::Plan), StageStatus::Done);
     }
 
     #[test]
     fn after_attached_review_stage_follows_child_exit() {
         let (_t, mut app, _tx, _rx) = test_app();
-        app.after_attached(Some(StageId::DualReview), true);
+        app.after_attached(Some(StageId::DualReview), true, &_tx);
         assert_eq!(app.stage_status(StageId::DualReview), StageStatus::Done);
-        app.after_attached(Some(StageId::DualReview), false);
+        app.after_attached(Some(StageId::DualReview), false, &_tx);
         assert_eq!(app.stage_status(StageId::DualReview), StageStatus::Failed);
     }
 }

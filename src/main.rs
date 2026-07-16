@@ -82,7 +82,7 @@ fn main() -> Result<()> {
             // -> exit 1. A human marking one fixed/dismissed unblocks it.
             let blocking = loaded.iter().flat_map(|l| &l.file.findings).any(|f| {
                 f.severity == findings::Severity::Critical
-                    && f.verdict == "confirmed"
+                    && findings::verdict_confirmed(&f.verdict)
                     && !f.resolved()
             });
             if blocking {

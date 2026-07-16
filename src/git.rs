@@ -171,11 +171,22 @@ fn render_file(cwd: &Path, rel: &Path) -> String {
 /// with no commits. `extra_paths` (the findings' target files) are content-
 /// hashed unconditionally - even gitignored targets stay observable.
 pub fn snapshot(cwd: &Path, extra_paths: &[PathBuf]) -> Result<GitSnapshot> {
-    let base = git_opt(cwd, &["stash", "create"])
-        .filter(|s| !s.is_empty())
-        .or_else(|| git_opt(cwd, &["rev-parse", "HEAD"]).filter(|s| !s.is_empty()))
-        .unwrap_or_else(|| EMPTY_TREE.to_string());
+    // HEAD first: on an unborn HEAD `stash create` cannot work and the
+    // empty-tree sentinel is the correct (harmless) base.
     let head = git_opt(cwd, &["rev-parse", "HEAD"]).filter(|s| !s.is_empty());
+    let base = match &head {
+        None => EMPTY_TREE.to_string(),
+        Some(h) => {
+            // Fail CLOSED (module contract above): a FAILED `stash create`
+            // (mid-merge index, index.lock, no committer identity) must be an
+            // error - collapsing it to "clean tree" silently rebases the
+            // change gate onto HEAD and attributes the user's own dirty
+            // edits to the fixer.
+            let stash = git(cwd, &["stash", "create"])
+                .context("git stash create (snapshot base; fail closed)")?;
+            if stash.is_empty() { h.clone() } else { stash }
+        }
+    };
     let untracked_before = untracked(cwd)?;
     let before_hashes = untracked_before
         .iter()
@@ -347,6 +358,28 @@ mod tests {
         std::fs::write(p.join(file), body).unwrap();
         git(p, &["add", file]).unwrap();
         git(p, &["commit", "-qm", "x"]).unwrap();
+    }
+
+    #[test]
+    fn snapshot_fails_closed_when_stash_create_fails() {
+        let t = init_repo();
+        let p = t.path();
+        commit(p, "a.rs", "x\n");
+        std::fs::write(p.join("a.rs"), "dirty\n").unwrap(); // tree IS dirty
+        // A held index lock makes `stash create` fail while rev-parse still
+        // works: the old code collapsed that to base=HEAD, silently blaming
+        // the user's dirty edits on the fixer. Must be an Err now.
+        std::fs::write(p.join(".git/index.lock"), "").unwrap();
+        let err = snapshot(p, &[]).expect_err("stash failure must fail closed");
+        assert!(format!("{err:#}").contains("stash create"), "{err:#}");
+    }
+
+    #[test]
+    fn snapshot_on_an_unborn_head_uses_the_empty_tree() {
+        let t = init_repo(); // no commits: rev-parse HEAD fails, stash impossible
+        let snap = snapshot(t.path(), &[]).expect("unborn HEAD is harmless");
+        assert_eq!(snap.base, EMPTY_TREE);
+        assert!(snap.head.is_none());
     }
 
     #[test]

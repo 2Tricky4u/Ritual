@@ -2048,3 +2048,47 @@ fn audit_fails_loudly_when_no_lane_reports() {
         .failure()
         .stderr(predicate::str::contains("nothing to judge"));
 }
+
+#[test]
+fn findings_gate_blocks_on_every_confirmed_dialect() {
+    // The scriptability contract: a critical finding blocks with verdict
+    // "confirmed" AND with plan-review's dialect "accepted" (the gate used a
+    // bare string compare and let "accepted" through while `complete`
+    // blocked on it - two gates disagreeing on the same file).
+    let tmp = setup_project();
+    let dir = tmp.path().join(".ritual/findings");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("20260716T000000Z-plan-review.json"),
+        r#"{"ritual_findings":1,"stage":"plan-review","branch":"main","findings":[
+            {"id":1,"severity":"critical","title":"gap","plan_step":"Step 1",
+             "scenario":"s","sources":["claude"],"verdict":"accepted","action":"pending"}]}"#,
+    )
+    .unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("findings")
+        .assert()
+        .code(1);
+}
+
+#[test]
+fn a_crashed_tests_red_session_is_failed_not_done() {
+    let tmp = setup_project();
+    let fake = fake_agent();
+    // The interactive /tdd session dies (exit 3): the stage must record
+    // Failed - "Done" would claim red tests exist when none were written.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", &fake)
+        .env("FAKE_AGENT_EXIT", "3")
+        .args(["run", "tests-red"])
+        .assert()
+        .failure();
+    let state = std::fs::read_to_string(tmp.path().join(".ritual/state.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&state).unwrap();
+    let status = &json["features"]["main"]["stages"]["tests_red"]["status"];
+    assert_eq!(status, "failed", "state records the crash: {state}");
+}

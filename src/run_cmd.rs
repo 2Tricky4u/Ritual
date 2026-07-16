@@ -929,13 +929,21 @@ fn run_interactive(
             // auto-advance Implement to Done when the session ran to completion
             // AND the tree is green; a bailed session with a coincidentally
             // green tree must not silently mark implement done.
-            if status.success() && check_green(&dirs.work_root, cfg.check_timeout_secs) {
-                set_stage(st, branch, StageId::Implement, StageStatus::Done, None);
-                println!("check.sh green: tests-red and implement both done");
+            if !status.success() {
+                // A crashed/killed session wrote no reviewed red tests -
+                // Done here would be a lie (the TUI marks the same exit
+                // Failed; the two entry points must agree).
+                println!("tests-red session exited with an error");
+                StageStatus::Failed
             } else {
-                println!("failing tests in place, ready to implement");
+                if check_green(&dirs.work_root, cfg.check_timeout_secs) {
+                    set_stage(st, branch, StageId::Implement, StageStatus::Done, None);
+                    println!("check.sh green: tests-red and implement both done");
+                } else {
+                    println!("failing tests in place, ready to implement");
+                }
+                StageStatus::Done
             }
-            StageStatus::Done
         }
         StageId::Implement => {
             if check_green(&dirs.work_root, cfg.check_timeout_secs) {
@@ -955,6 +963,13 @@ fn run_interactive(
     };
     set_stage(st, branch, stage, new_status, None);
     st.save(dirs)?;
+    // Scriptability parity with the headless path: a crashed session is a
+    // nonzero exit (NeedsAttention keeps 0 - the stage ran, work remains).
+    anyhow::ensure!(
+        new_status != StageStatus::Failed,
+        "stage '{}' failed (session exited with an error)",
+        stage.label()
+    );
     Ok(())
 }
 

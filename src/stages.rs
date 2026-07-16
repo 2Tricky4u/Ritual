@@ -39,8 +39,12 @@ const CODE_FIX_TOOLS: &str = "Task Read Glob Grep Edit Write MultiEdit Bash";
 /// Hard denials layered over the fixer's Bash grant: the prompt already
 /// forbids these, but only HEAD movement was mechanically detected - a
 /// `git push`/`git clean` that leaves HEAD in place was prompt-discipline
-/// only. Denials beat allows in the permission engine. (The plan-fix needs
-/// no list: its `doc_chat_tools` grant has no Bash at all.)
+/// only. Denials beat allows in the permission engine; probe-verified on
+/// CLI 2.1.205 (a bare `Bash` allow + this exact space-separated list:
+/// `git commit` denied, `git log` allowed). The plan-fix needs no list -
+/// its `doc_chat_tools` grant excludes Bash, though the CLI's built-in
+/// SAFE read-only command list (echo, git log/status...) still executes
+/// under dontAsk even with no Bash grant at all (probe-verified).
 const CODE_FIX_DISALLOWED_TOOLS: &str =
     "Bash(git push:*) Bash(git commit:*) Bash(git reset:*) Bash(git rebase:*) Bash(git clean:*)";
 /// The re-review is strictly READ-ONLY with NO shell: it inspects the change
@@ -66,9 +70,13 @@ fn plan_review_tools(cfg: &Config) -> String {
 /// `--permission-mode dontAsk` the current CLI (verified empirically on
 /// 2.1.205) never matches a path-scoped Edit/Write rule - every scoped edit is
 /// denied and the stage dies doing nothing. So the file tools are granted
-/// BARE and dontAsk still denies all other tools (no Bash, no Task); document
-/// scoping is enforced ritual-side by the section-confinement gate
-/// (`spec::edits_confined_multi`) and the coverage/plan-review re-judges.
+/// BARE. dontAsk denies other UN-granted tools (no unsafe Bash, no Task),
+/// but the CLI auto-allows its built-in SAFE read-only Bash list (echo,
+/// git log/status...) regardless of grants - verified on 2.1.205. Document
+/// scoping is therefore enforced ritual-side: the TUI batch path runs the
+/// section-confinement gate (`spec::edits_confined_multi`), the headless
+/// complete loop runs a git containment gate + undo revert, and the
+/// coverage/plan-review re-judges catch in-document drift.
 fn doc_chat_tools(_doc_path: &Path) -> String {
     "Read,Edit,Write".to_string()
 }
