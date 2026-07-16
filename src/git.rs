@@ -1,14 +1,21 @@
-//! Minimal git helpers for the code-fix batch: snapshot the worktree before a
-//! run, list what the run touched, produce a review diff, and scope-restore on
-//! a failed gate. Every command runs with `current_dir(cwd)` (the checkout),
-//! following the read-only inline style used elsewhere (`secrets::changed_files`).
+//! Minimal READ-ONLY git helpers for the code-fix batch: [`snapshot`] the
+//! worktree before a run, [`observed_change`] to see what the run touched
+//! (the evidence handed to the re-review), and [`head_moved`] to catch a
+//! rogue commit/reset. Nothing here mutates the tree - a failed batch is
+//! LEFT in the working tree and git is the undo.
 //!
-//! Restore is deliberately SCOPED to the files the fix touched so a user's
-//! unrelated working-tree changes survive an auto-revert. `git stash create`
-//! captures tracked modifications only; untracked files are handled explicitly.
-//! Known limitation: a fix that MODIFIES a pre-existing *untracked* file cannot
-//! be content-restored (it is not in the snapshot base); a newly-created
-//! untracked file IS reverted by deletion.
+//! `git diff` alone misses untracked files, so the snapshot content-hashes
+//! every untracked file (and any caller-supplied extra path, tracking/ignore
+//! status notwithstanding); an edit, creation, or deletion git cannot see is
+//! still observed. The gate contract is fail-CLOSED: an empty ChangeSet fails
+//! the batch, and callers must treat a git error as a failed gate, never as
+//! an empty-but-fine change.
+//!
+//! Every command runs with `current_dir(cwd)` (the checkout), following the
+//! read-only inline style used elsewhere (`secrets::changed_files`). Residual
+//! blind spots, documented not fixed: non-UTF8 *paths* pass through
+//! `from_utf8_lossy`, and ignored files that are neither findings targets nor
+//! tracked stay invisible.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -108,19 +115,49 @@ fn git_opt(cwd: &Path, args: &[&str]) -> Option<String> {
     }
 }
 
-fn lines_to_paths(s: &str) -> Vec<PathBuf> {
-    s.lines()
-        .map(str::trim)
+/// Split `-z` (NUL-separated) git output into paths: no trimming, no quoting
+/// to undo - `-z` makes git emit raw bytes, so names with spaces, quotes, or
+/// non-ASCII arrive literal instead of C-quoted (which `PathBuf::from` would
+/// treat as a nonexistent literal path and every caller would silently skip).
+fn nul_to_paths(s: &str) -> Vec<PathBuf> {
+    s.split('\0')
         .filter(|l| !l.is_empty())
         .map(PathBuf::from)
         .collect()
 }
 
 fn untracked(cwd: &Path) -> Result<Vec<PathBuf>> {
-    Ok(lines_to_paths(&git(
+    Ok(nul_to_paths(&git(
         cwd,
-        &["ls-files", "--others", "--exclude-standard"],
+        &[
+            "-c",
+            "core.quotepath=false",
+            "ls-files",
+            "-z",
+            "--others",
+            "--exclude-standard",
+        ],
     )?))
+}
+
+/// A file's contents for the review render: UTF-8 text verbatim, anything
+/// else (binary, unreadable) a labelled placeholder - never a silent empty
+/// string the reviewer would rubber-stamp as "nothing to see".
+fn render_file(cwd: &Path, rel: &Path) -> String {
+    let Ok(bytes) = std::fs::read(cwd.join(rel)) else {
+        return "(unreadable)".to_string();
+    };
+    match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(e) => {
+            let bytes = e.into_bytes();
+            format!(
+                "(binary, {} bytes, sha256={})",
+                bytes.len(),
+                crate::provenance::sha256_hex(&bytes)
+            )
+        }
+    }
 }
 
 /// Snapshot the current worktree state so a later `diff_since` can show what a
@@ -164,8 +201,7 @@ pub fn observed_change(cwd: &Path, snap: &GitSnapshot) -> Result<ChangeSet> {
             None => true, // brand-new untracked file
         };
         if moved {
-            let contents = std::fs::read_to_string(cwd.join(p)).unwrap_or_default();
-            untracked_changed.push((p.clone(), contents));
+            untracked_changed.push((p.clone(), render_file(cwd, p)));
         }
     }
     // A DELETION of a pre-existing untracked file is invisible to both git and
@@ -197,27 +233,6 @@ pub fn head_moved(cwd: &Path, snap: &GitSnapshot) -> bool {
     }
 }
 
-/// A human-readable diff of everything the run changed since the snapshot, for
-/// the re-review agent. `git diff` omits untracked files, so newly-created
-/// files are listed under a `NEW FILES:` trailer. NOTE: git cannot show
-/// modifications to files that are UNTRACKED in this repo (e.g. a code subtree
-/// that was never `git add`ed) - the reviewer is told to read the code directly
-/// to cover that gap.
-pub fn diff_since(cwd: &Path, snap: &GitSnapshot) -> Result<String> {
-    let mut out = git(cwd, &["-c", "core.quotepath=false", "diff", &snap.base])?;
-    let new_files: Vec<PathBuf> = untracked(cwd)?
-        .into_iter()
-        .filter(|p| !snap.untracked_before.contains(p))
-        .collect();
-    if !new_files.is_empty() {
-        out.push_str("\n\nNEW FILES:\n");
-        for p in new_files {
-            out.push_str(&format!("  {}\n", p.display()));
-        }
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,19 +261,34 @@ mod tests {
     }
 
     #[test]
-    fn diff_since_shows_hunks_and_new_files() {
+    fn untracked_handles_spaces_and_unicode_names() {
         let t = init_repo();
         let p = t.path();
-        commit(p, "a.rs", "one\n");
+        commit(p, "a.rs", "x\n");
         let snap = snapshot(p).unwrap();
-        std::fs::write(p.join("a.rs"), "two\n").unwrap();
-        std::fs::write(p.join("added.rs"), "brand new\n").unwrap();
-        let d = diff_since(p, &snap).unwrap();
-        assert!(d.contains("a.rs"), "modified file in diff");
-        assert!(d.contains("+two"), "hunk present");
+        // Names git would C-quote without -z: unicode and an inner space.
+        std::fs::write(p.join("spä ce.rs"), "hello\n").unwrap();
+        let cs = observed_change(p, &snap).unwrap();
         assert!(
-            d.contains("NEW FILES:") && d.contains("added.rs"),
-            "new file listed"
+            cs.untracked_changed
+                .iter()
+                .any(|(pp, c)| pp == Path::new("spä ce.rs") && c.contains("hello")),
+            "quoted-name file must arrive as a literal path: {:?}",
+            cs.untracked_changed
+        );
+    }
+
+    #[test]
+    fn render_carries_binary_placeholder() {
+        let t = init_repo();
+        let p = t.path();
+        commit(p, "a.rs", "x\n");
+        let snap = snapshot(p).unwrap();
+        std::fs::write(p.join("blob.bin"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
+        let r = observed_change(p, &snap).unwrap().render();
+        assert!(
+            r.contains("(binary, 4 bytes, sha256=") && !r.contains('\u{fffd}'),
+            "binary must render as a labelled placeholder, not lossy bytes: {r}"
         );
     }
 
