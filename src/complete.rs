@@ -91,11 +91,80 @@ pub fn plan_round(state: &mut DriveState, report: &CoverageReport, b: &Bounds) -
     RoundAction::Drive(batch)
 }
 
+/// Self-certification gate for the plan-fix: a checklist item the fix flipped
+/// from `- [ ]` to `- [x]`. CHECKED items are trusted by
+/// `coverage::reconcile_missing` and skipped by the judge, so an agent ticking
+/// its own deliverable fabricates completeness with zero verification - the
+/// caller reverts the plan when this returns Some. Duplicate item texts are
+/// handled by count (a flip raises the checked count of a previously
+/// unchecked text).
+pub fn illegal_tick(before: &str, after: &str) -> Option<String> {
+    fn items(text: &str, checked: bool) -> std::collections::HashMap<String, usize> {
+        let mark = if checked { "[x]" } else { "[ ]" };
+        let mut map = std::collections::HashMap::new();
+        for line in text.lines() {
+            let t = line.trim_start();
+            for pre in ["- ", "* "] {
+                if let Some(rest) = t.strip_prefix(pre)
+                    && rest.to_ascii_lowercase().starts_with(mark)
+                {
+                    *map.entry(rest[3..].trim().to_string()).or_insert(0usize) += 1;
+                }
+            }
+        }
+        map
+    }
+    let checked_before = items(before, true);
+    let unchecked_before = items(before, false);
+    for (item, n_after) in items(after, true) {
+        let n_before = checked_before.get(&item).copied().unwrap_or(0);
+        if n_after > n_before && unchecked_before.contains_key(&item) {
+            return Some(item);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::coverage::{CoverageReport, Gap};
     use crate::findings::Finding;
+
+    #[test]
+    fn illegal_tick_catches_a_self_certified_deliverable() {
+        let before = "## Deliverables\n- [ ] D1: parser handles drift\n- [x] D2: docs\n";
+        let after = "## Deliverables\n- [x] D1: parser handles drift\n- [x] D2: docs\n";
+        assert_eq!(
+            illegal_tick(before, after).as_deref(),
+            Some("D1: parser handles drift")
+        );
+        // Case-insensitive mark, `*` bullets, indentation.
+        let b2 = "  * [ ] item\n";
+        let a2 = "  * [X] item\n";
+        assert_eq!(illegal_tick(b2, a2).as_deref(), Some("item"));
+    }
+
+    #[test]
+    fn illegal_tick_allows_everything_else() {
+        // Unchanged, text edits, UNchecking, and adding new unchecked items
+        // are all legitimate plan-fix moves.
+        let before = "- [ ] D1\n- [x] D2\n";
+        assert_eq!(illegal_tick(before, before), None);
+        assert_eq!(
+            illegal_tick(before, "- [ ] D1 (reworded)\n- [x] D2\n"),
+            None
+        );
+        assert_eq!(illegal_tick(before, "- [ ] D1\n- [ ] D2\n"), None);
+        assert_eq!(illegal_tick(before, "- [ ] D1\n- [x] D2\n- [ ] D3\n"), None);
+        // A brand-new CHECKED item was never unchecked before: not a flip.
+        assert_eq!(illegal_tick(before, "- [ ] D1\n- [x] D2\n- [x] D9\n"), None);
+        // Duplicate texts: flipping one of two identical unchecked items IS
+        // caught (checked count rose for a text that was unchecked).
+        let dup_b = "- [ ] same\n- [ ] same\n";
+        let dup_a = "- [x] same\n- [ ] same\n";
+        assert_eq!(illegal_tick(dup_b, dup_a).as_deref(), Some("same"));
+    }
 
     fn report(ids: &[&str]) -> CoverageReport {
         CoverageReport {

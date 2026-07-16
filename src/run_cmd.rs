@@ -412,16 +412,22 @@ fn drive_gaps(
             })
             .collect();
         // Parity with the TUI code-fix: the prompt forbids commit/reset and
-        // promises ritual checks HEAD; headlessly we at least warn if the agent
-        // moved it (snapshot fails-open, so an unborn HEAD is harmless).
-        let snap = crate::git::snapshot(&dirs.work_root, &[]).ok();
+        // promises ritual FAILS the batch - enforce it. The snapshot is
+        // fail-closed (a git error aborts rather than gating against the
+        // wrong base); outside a work tree there is nothing to enforce.
+        let in_git = crate::git::in_work_tree(&dirs.work_root);
+        let snap = in_git
+            .then(|| crate::git::snapshot(&dirs.work_root, &[]))
+            .transpose()
+            .context("snapshotting before the code-fix (fail closed)")?;
         let cmd = stages::findings_code_fix_command(cfg, &briefs, invariants.as_deref());
         run_fix(cfg, dirs, branch, title, "code-fix", cmd)?;
         if let Some(snap) = snap
             && crate::git::head_moved(&dirs.work_root, &snap)
         {
-            println!(
-                "  warning: the code-fix agent moved HEAD (commit/reset); inspect with git reflog"
+            anyhow::bail!(
+                "the code-fix agent moved HEAD (commit/reset); batch rejected. \
+                 Inspect with `git reflog`, restore, then rerun `ritual complete`"
             );
         }
     }
@@ -458,9 +464,24 @@ fn drive_gaps(
             .collect();
         let plan_path = dirs.plan_file(slug);
         let spec = dirs.spec_file(slug);
-        // Headless: scoping rests on the command's plan.md tool-lock (Edit only
-        // that file), NOT the TUI's section-confinement gate; the next coverage
-        // pass re-judges, so a stray in-plan edit is caught by the loop.
+        // The bare Edit/Write grant has NO path lock (dontAsk never matched
+        // the scoped rules), so scoping is enforced ritual-side, mirroring
+        // the TUI batch: undo snapshot before, containment gate after -
+        // any change OUTSIDE plan.md rejects the batch, and a checklist item
+        // the agent ticked itself ([ ]->[x]) reverts the plan (checked items
+        // are TRUSTED by the coverage reconcile - self-certification would
+        // fabricate completeness). In-plan drift is caught by the re-judge.
+        let before = std::fs::read_to_string(&plan_path).unwrap_or_default();
+        let _ = crate::undo::push(dirs, slug, stages::DocKind::Plan.label(), &before);
+        let in_git = crate::git::in_work_tree(&dirs.work_root);
+        let plan_rel = plan_path
+            .strip_prefix(&dirs.work_root)
+            .unwrap_or(&plan_path)
+            .to_path_buf();
+        let snap = in_git
+            .then(|| crate::git::snapshot(&dirs.work_root, std::slice::from_ref(&plan_rel)))
+            .transpose()
+            .context("snapshotting before the plan-fix (fail closed)")?;
         let cmd = stages::findings_batch_fix_command(
             cfg,
             &plan_path,
@@ -470,6 +491,31 @@ fn drive_gaps(
             invariants.as_deref(),
         );
         run_fix(cfg, dirs, branch, title, "plan-fix", cmd)?;
+        if let Some(snap) = snap {
+            let change = crate::git::observed_change(&dirs.work_root, &snap)
+                .context("verifying the plan-fix change (fail closed)")?;
+            let leaked: Vec<String> = crate::git::changed_paths(&change)
+                .into_iter()
+                .filter(|p| *p != plan_rel)
+                .map(|p| p.display().to_string())
+                .collect();
+            if !leaked.is_empty() {
+                let _ = crate::undo::undo(dirs, slug, stages::DocKind::Plan.label(), &plan_path);
+                anyhow::bail!(
+                    "the plan-fix agent touched files outside plan.md ({}); \
+                     plan reverted - inspect the tree before rerunning `ritual complete`",
+                    leaked.join(", ")
+                );
+            }
+        }
+        let after = std::fs::read_to_string(&plan_path).unwrap_or_default();
+        if let Some(item) = crate::complete::illegal_tick(&before, &after) {
+            let _ = crate::undo::undo(dirs, slug, stages::DocKind::Plan.label(), &plan_path);
+            println!(
+                "  plan-fix tried to self-certify a deliverable (ticked \"{item}\"); \
+                 plan reverted, gap stays open"
+            );
+        }
     }
     Ok(())
 }

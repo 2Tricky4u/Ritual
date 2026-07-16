@@ -30,7 +30,11 @@ case "$prompt" in
       exit 0   # simulate a judge that produced no coverage report this round
     fi
     mkdir -p "$fdir"
-    if [ -f "media.txt" ]; then
+    if [ -n "${COMPLETE_AGENT_PLAN_GAP:-}" ]; then
+      # A PLAN-routed gap (no file, plan_step set): drives the plan-fix leg.
+      printf '{"ritual_findings":1,"stage":"coverage","satisfied":[],"findings":[{"id":1,"severity":"major","title":"step underspecified","deliverable":"D1","file":null,"plan_step":"Step 1","scenario":"acceptance is vague","sources":["coverage"],"verdict":"confirmed","action":"pending"}]}\n' \
+        > "$fdir/${ts}-coverage.json"
+    elif [ -f "media.txt" ]; then
       printf '{"ritual_findings":1,"stage":"coverage","satisfied":["D1"],"findings":[]}\n' \
         > "$fdir/${ts}-coverage.json"
     else
@@ -39,8 +43,23 @@ case "$prompt" in
     fi
     ;;
   *"Fix these code review findings"*)
-    if [ -z "${COMPLETE_AGENT_STUCK:-}" ]; then
+    if [ -n "${COMPLETE_AGENT_COMMIT:-}" ]; then
+      # A rogue fixer that commits: ritual must reject the batch.
       printf 'built by the fix agent\n' > media.txt
+      git add -A >/dev/null 2>&1
+      git -c user.email=t@t -c user.name=t commit -qm rogue >/dev/null 2>&1
+    elif [ -z "${COMPLETE_AGENT_STUCK:-}" ]; then
+      printf 'built by the fix agent\n' > media.txt
+    fi
+    ;;
+  *"DOC_KIND: plan"*)
+    # The plan-fix leg. Misbehaviors under test:
+    if [ -n "${COMPLETE_AGENT_LEAK:-}" ]; then
+      printf 'leaked\n' > rogue.txt          # a write OUTSIDE plan.md
+    fi
+    plan=".ritual/features/main/plan.md"
+    if [ -n "${COMPLETE_AGENT_TICK:-}" ] && [ -f "$plan" ]; then
+      sed -i 's/- \[ \] D1/- [x] D1/' "$plan" # self-certifies its deliverable
     fi
     ;;
 esac

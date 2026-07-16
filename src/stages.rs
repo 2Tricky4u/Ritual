@@ -410,7 +410,7 @@ pub fn findings_code_fix_command(
          resolve them coherently in ONE pass. Read broadly for global context \
          and integration; make the MINIMAL changes needed. Do NOT commit, push, \
          reset, rebase, or run any destructive command (no `rm -rf`, no `git \
-         clean`): ritual verifies HEAD did not move and DISCARDS the whole batch \
+         clean`): ritual verifies HEAD did not move and FAILS the whole batch \
          if you commit or reset. Run `./check.sh` yourself and make it pass before finishing. \
          For any finding you cannot fix cleanly, make NO edit for it and decline \
          it instead (still fix the others). END your final message with exactly \

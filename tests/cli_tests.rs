@@ -2049,6 +2049,110 @@ fn audit_fails_loudly_when_no_lane_reports() {
         .stderr(predicate::str::contains("nothing to judge"));
 }
 
+/// A project ready for the `complete` loop: green check.sh + a plan whose D1
+/// deliverable routes to `route`.
+fn setup_complete_project(route: &str) -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = setup_project();
+    let root = tmp.path();
+    std::fs::write(root.join("check.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(
+        root.join("check.sh"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let feat = root.join(".ritual/features/main");
+    std::fs::create_dir_all(&feat).unwrap();
+    std::fs::write(
+        feat.join("plan.md"),
+        format!("# Plan\n\n## Steps\n1. Step 1\n\n## Deliverables\n- [ ] D1: thing - accept: works - route: {route}\n"),
+    )
+    .unwrap();
+    tmp
+}
+
+#[test]
+fn complete_rejects_a_code_fix_that_commits() {
+    let tmp = setup_complete_project("media.txt");
+    // The repo needs a HEAD for head_moved to detect the rogue commit.
+    std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "init",
+            "--allow-empty",
+        ])
+        .current_dir(tmp.path())
+        .status()
+        .unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", complete_agent())
+        .env("RITUAL_CODEX_CMD", complete_agent())
+        .env("COMPLETE_AGENT_COMMIT", "1")
+        .args(["complete"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("moved HEAD").and(predicate::str::contains("reflog")));
+}
+
+#[test]
+fn complete_reverts_a_plan_fix_that_leaks_outside_the_plan() {
+    let tmp = setup_complete_project("plan");
+    let plan = tmp.path().join(".ritual/features/main/plan.md");
+    let before = std::fs::read_to_string(&plan).unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", complete_agent())
+        .env("RITUAL_CODEX_CMD", complete_agent())
+        .env("COMPLETE_AGENT_PLAN_GAP", "1")
+        .env("COMPLETE_AGENT_LEAK", "1")
+        .args(["complete"])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("outside plan.md").and(predicate::str::contains("rogue.txt")),
+        );
+    assert_eq!(
+        std::fs::read_to_string(&plan).unwrap(),
+        before,
+        "the plan is restored from the undo snapshot"
+    );
+}
+
+#[test]
+fn complete_reverts_a_plan_fix_that_self_certifies() {
+    let tmp = setup_complete_project("plan");
+    let plan = tmp.path().join(".ritual/features/main/plan.md");
+    // One round is enough: the gate must revert the tick and say so.
+    std::fs::write(
+        tmp.path().join(".ritual/config.toml"),
+        "complete_max_rounds = 1\n",
+    )
+    .unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", complete_agent())
+        .env("RITUAL_CODEX_CMD", complete_agent())
+        .env("COMPLETE_AGENT_PLAN_GAP", "1")
+        .env("COMPLETE_AGENT_TICK", "1")
+        .args(["complete"])
+        .assert()
+        .stdout(predicate::str::contains("self-certify"));
+    let after = std::fs::read_to_string(&plan).unwrap();
+    assert!(
+        after.contains("- [ ] D1"),
+        "the ticked deliverable is back to unchecked: {after}"
+    );
+}
+
 #[test]
 fn findings_gate_blocks_on_every_confirmed_dialect() {
     // The scriptability contract: a critical finding blocks with verdict

@@ -277,6 +277,35 @@ pub fn observed_change(cwd: &Path, snap: &GitSnapshot) -> Result<ChangeSet> {
     })
 }
 
+/// Every path a [`ChangeSet`] touches, repo-relative: the `b/` side of each
+/// `diff --git` header plus the changed/new/deleted untracked entries. Used
+/// by containment gates ("did the fix touch anything OUTSIDE its target?").
+pub fn changed_paths(change: &ChangeSet) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = change
+        .untracked_changed
+        .iter()
+        .map(|(p, _)| p.clone())
+        .collect();
+    for line in change.diff.lines() {
+        if let Some(rest) = line.strip_prefix("diff --git a/") {
+            // Split on the LAST " b/" so paths containing spaces survive;
+            // the b/ side also names a rename's destination.
+            if let Some(idx) = rest.rfind(" b/") {
+                out.push(PathBuf::from(&rest[idx + 3..]));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Is `cwd` inside a git WORK TREE? Checks stdout, not just the exit code -
+/// inside `.git/` or a bare repo the probe exits 0 and prints "false".
+pub fn in_work_tree(cwd: &Path) -> bool {
+    git_opt(cwd, &["rev-parse", "--is-inside-work-tree"]).as_deref() == Some("true")
+}
+
 /// Preflight for the dual-review stage, which reviews a git diff: refuse to
 /// spawn (and burn review budget) when there is provably nothing reviewable.
 /// Errors when `cwd` is not a git worktree (only THIS stage needs git), when
