@@ -52,13 +52,42 @@ fn cmd_line(bin: &str, args: &[&str], cwd: &Path) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Digest of the tree's dirt: the tracked `git diff HEAD` PLUS every
+/// untracked file's path and content hash. `git diff` alone omits untracked
+/// files, so two runs with different untracked inputs used to fingerprint
+/// identically - a repro bundle that couldn't tell its inputs apart.
+fn dirty_digest(root: &Path) -> Option<String> {
+    let diff = cmd_line("git", &["diff", "HEAD"], root)?;
+    let mut input = diff;
+    let untracked = cmd_line(
+        "git",
+        &[
+            "-c",
+            "core.quotepath=false",
+            "ls-files",
+            "-z",
+            "--others",
+            "--exclude-standard",
+        ],
+        root,
+    )
+    .unwrap_or_default();
+    let mut paths: Vec<&str> = untracked.split('\0').filter(|p| !p.is_empty()).collect();
+    paths.sort_unstable();
+    for p in paths {
+        let hash = std::fs::read(root.join(p))
+            .map(|b| sha256_hex(&b))
+            .unwrap_or_default();
+        input.push_str(&format!("\n{p}\n{hash}"));
+    }
+    (!input.is_empty()).then(|| sha256_hex(input.as_bytes()))
+}
+
 /// Best-effort collection: a missing tool yields None, never an error.
 pub fn collect(cfg: &Config, dirs: &RitualDirs) -> ReproBundle {
     let root = &dirs.work_root;
     let git_commit = cmd_line("git", &["rev-parse", "HEAD"], root);
-    let git_dirty_diff_sha256 = cmd_line("git", &["diff", "HEAD"], root)
-        .filter(|d| !d.is_empty())
-        .map(|d| sha256_hex(d.as_bytes()));
+    let git_dirty_diff_sha256 = dirty_digest(root);
     let claude_version = cmd_line(&cfg.claude_cmd[0], &["--version"], root);
     let codex_version = cmd_line(&cfg.codex_cmd[0], &["--version"], root);
 
@@ -521,5 +550,16 @@ mod tests {
         let b = collect(&cfg, &dirs);
         assert!(b.git_commit.is_some());
         assert!(b.git_dirty_diff_sha256.is_some(), "dirty diff hashed");
+
+        // Untracked files are part of the run's input: they must dirty the
+        // digest (git diff alone can't see them), and different untracked
+        // content must fingerprint differently.
+        git(&["checkout", "-q", "--", "f.txt"]); // tracked tree clean again
+        std::fs::write(tmp.path().join("extra.txt"), "input A\n").unwrap();
+        let a = collect(&cfg, &dirs).git_dirty_diff_sha256;
+        assert!(a.is_some(), "untracked-only dirt still digests");
+        std::fs::write(tmp.path().join("extra.txt"), "input B\n").unwrap();
+        let b2 = collect(&cfg, &dirs).git_dirty_diff_sha256;
+        assert_ne!(a, b2, "different untracked content, different digest");
     }
 }

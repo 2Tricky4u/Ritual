@@ -18,6 +18,8 @@ pub struct MutantsReport {
     pub findings_path: Option<PathBuf>,
     /// True when the diff against the base ref was empty.
     pub empty_diff: bool,
+    /// True when there is no git repo to diff: the gate skipped, not failed.
+    pub no_git: bool,
 }
 
 /// Mutation-kill gate over the current diff (Meta-ACH style): mutate only
@@ -27,6 +29,21 @@ pub struct MutantsReport {
 /// findings tab (f/d) is the adjudication surface.
 pub fn run(cfg: &Config, dirs: &RitualDirs, base: Option<&str>) -> Result<MutantsReport> {
     let base_ref = base.unwrap_or(&cfg.base_ref);
+
+    // The gate mutates the diff against `base_ref`; outside a git repo there
+    // is no diff to mutate - skip gracefully (ritual works in non-git dirs)
+    // instead of erroring the whole gate.
+    let in_repo = std::process::Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(&dirs.work_root)
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !in_repo {
+        return Ok(MutantsReport {
+            no_git: true,
+            ..Default::default()
+        });
+    }
 
     // Default `git diff` output keeps the b/ prefixes --in-diff matches on.
     let diff = std::process::Command::new("git")

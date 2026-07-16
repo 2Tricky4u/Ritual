@@ -103,7 +103,12 @@ fn main() -> Result<()> {
         },
         Some(Command::Mutants { base }) => {
             let r = ritual::mutants::run(&cfg, &dirs, base.as_deref())?;
-            if r.empty_diff {
+            if r.no_git {
+                println!(
+                    "not a git repo here: mutants gate skipped (it mutates the diff against {})",
+                    base.as_deref().unwrap_or(&cfg.base_ref)
+                );
+            } else if r.empty_diff {
                 println!(
                     "no diff against {}, nothing to mutate",
                     base.as_deref().unwrap_or(&cfg.base_ref)
