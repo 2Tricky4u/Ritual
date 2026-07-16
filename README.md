@@ -99,7 +99,7 @@
 ## About The Project
 
 ```
-╭ feature title ────────────╮╭ ritual ─────────────────────────────────────╮
+╭ feature title ────────────╮╭ ritual ──────────────────────────────────────╮
 │ > ! feat-auth              ││ live | findings | history | plan                 │
 │    main                    ││ * claude-fable-5                                 │
 │ ──────────────────────── ││ > mcp__codex__codex {"prompt":"critique..."}     │
