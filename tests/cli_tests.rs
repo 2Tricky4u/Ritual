@@ -2288,6 +2288,10 @@ fn a_crashed_tests_red_session_is_failed_not_done() {
         .unwrap()
         .current_dir(tmp.path())
         .env("RITUAL_CLAUDE_CMD", &fake)
+        // tests-red needs_codex: stub the `codex login status` preflight so the
+        // run reaches the /tdd session instead of bailing "not authenticated"
+        // (that bail happens before any state is saved - the CI-only failure).
+        .env("RITUAL_CODEX_CMD", &fake)
         .env("FAKE_AGENT_EXIT", "3")
         .args(["run", "tests-red"])
         .assert()
