@@ -1293,6 +1293,7 @@ impl App {
             agent: cmd.agent,
             argv: cmd.argv,
             env: cmd.env,
+            stdin: cmd.stdin,
             stage: stage.label().into(),
             feature: title,
             branch: self.branch.clone(),
@@ -1762,6 +1763,7 @@ impl App {
             agent: cmd.agent,
             argv: cmd.argv,
             env: cmd.env,
+            stdin: cmd.stdin,
             stage: stage_label.clone(),
             feature: title,
             branch: self.branch.clone(),
@@ -2814,7 +2816,7 @@ impl App {
             .filter(|af| self.finding_slug(af.file_idx) == self.slug)
             .filter(|af| {
                 af.finding.file.is_some()
-                    && af.finding.verdict.eq_ignore_ascii_case("confirmed")
+                    && crate::findings::verdict_confirmed(&af.finding.verdict)
                     && !af.finding.resolved()
                     && af.finding.answer.is_none()
             })
@@ -3331,6 +3333,7 @@ impl App {
             agent: cmd.agent,
             argv: cmd.argv,
             env: cmd.env,
+            stdin: cmd.stdin,
             stage: "plan-fix".into(),
             feature: title,
             branch: ctx.branch.clone(),
@@ -3727,6 +3730,7 @@ impl App {
             agent: cmd.agent,
             argv: cmd.argv,
             env: cmd.env,
+            stdin: cmd.stdin,
             stage: "code-fix".into(),
             feature: title,
             branch: ctx.branch.clone(),
@@ -3945,6 +3949,7 @@ impl App {
                     agent: cmd.agent,
                     argv: cmd.argv,
                     env: cmd.env,
+                    stdin: cmd.stdin,
                     stage: "code-fix-review".into(),
                     feature: title,
                     branch: ctx.branch.clone(),
@@ -5032,9 +5037,9 @@ mod tests {
         // Archive: fixed + prose preserved as reason.
         assert!(json.contains(r#""action": "fixed""#), "{json}");
         assert!(json.contains("Resolved by narrowing the scope."), "{json}");
-        // Refuted: dismissed with the rule's reason.
+        // Refuted: dismissed with the rule's verdict-specific reason.
         assert!(json.contains(r#""action": "dismissed""#), "{json}");
-        assert!(json.contains("withdrawn/refuted by review"), "{json}");
+        assert!(json.contains("refuted by review"), "{json}");
         // Confirmed plan -> ⚑A; confirmed code -> ⚑M (plus the pre-queued one).
         assert!(json.contains(r#""answer": "auto""#), "{json}");
         assert_eq!(json.matches(r#""answer": "manual""#).count(), 2, "{json}");

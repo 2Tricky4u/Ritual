@@ -60,6 +60,12 @@ pub struct RunRequest {
     /// `#[serde(default)]` keeps pre-0.5 request.json files loading.
     #[serde(default)]
     pub wrapper: Vec<String>,
+    /// Prompt payload written to the agent's stdin. Unbounded content (an
+    /// embedded diff) must ride here, never in argv: one oversized argv
+    /// element kills the exec with E2BIG ("Argument list too long").
+    /// `#[serde(default)]` keeps older request.json files loading.
+    #[serde(default)]
+    pub stdin: Option<String>,
 }
 
 /// Liveness sidecar written by the detached executor (`<run_id>.status`).
@@ -157,6 +163,34 @@ pub fn live_runs(dirs: &RitualDirs) -> Vec<(String, RunStatus)> {
     out
 }
 
+/// The path to re-exec ourselves. When the ritual binary is upgraded while a
+/// TUI is running, Linux reports `/proc/self/exe` as "<path> (deleted)" - the
+/// old inode is gone but the NEW binary sits at the original path, so strip
+/// the marker and use it. Same-version daemons aren't guaranteed then, but a
+/// working spawn beats "No such file or directory" on every run.
+fn self_exe() -> Result<PathBuf> {
+    resolve_exe(std::env::current_exe().context("resolving ritual binary")?)
+}
+
+fn resolve_exe(exe: PathBuf) -> Result<PathBuf> {
+    if exe.exists() {
+        return Ok(exe);
+    }
+    if let Some(orig) = exe
+        .to_str()
+        .and_then(|s| s.strip_suffix(" (deleted)"))
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+    {
+        return Ok(orig);
+    }
+    anyhow::bail!(
+        "the ritual binary was replaced or removed while running \
+         ({}); restart ritual",
+        exe.display()
+    )
+}
+
 /// Detach a run: persist the request, re-exec `ritual _spawn <run_id>` in its
 /// own session. The daemon writes the same archive/meta files the inline
 /// runner always did; callers follow along with [`tail_run`].
@@ -167,7 +201,7 @@ pub fn spawn_detached(dirs: &RitualDirs, req: &RunRequest, run_id: &str) -> Resu
         serde_json::to_string_pretty(req)?,
     )?;
 
-    let exe = std::env::current_exe().context("resolving ritual binary")?;
+    let exe = self_exe()?;
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -203,7 +237,10 @@ pub fn spawn_detached(dirs: &RitualDirs, req: &RunRequest, run_id: &str) -> Resu
 }
 
 /// Daemon side: load the persisted request and execute it. Events go nowhere;
-/// the archive on disk IS the stream.
+/// the archive on disk IS the stream. If the run dies before its meta lands
+/// (spawn failure, archive I/O), a failure meta is written HERE so tailers
+/// see the actual error instead of "vanished (daemon died before writing
+/// meta)" - the daemon's stderr goes to a log the user never watches.
 pub async fn daemon_main(dirs: &RitualDirs, run_id: &str) -> Result<()> {
     let req: RunRequest = serde_json::from_str(
         &std::fs::read_to_string(request_path(dirs, run_id))
@@ -212,7 +249,33 @@ pub async fn daemon_main(dirs: &RitualDirs, run_id: &str) -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
     // Drain silently; senders in execute_run ignore failures anyway.
     tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    execute_run(dirs, req, run_id, tx).await.map(|_| ())
+    let stage = req.stage.clone();
+    let feature = req.feature.clone();
+    let branch = req.branch.clone();
+    let agent = req.agent.label().to_string();
+    match execute_run(dirs, req, run_id, tx).await {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let meta = RunMeta {
+                run_id: run_id.to_string(),
+                stage,
+                feature,
+                branch,
+                agent,
+                ok: false,
+                error: Some(format!("{e:#}")),
+                finished_at: Some(Utc::now()),
+                ..Default::default()
+            };
+            let meta_path = dirs.runs_dir().join(format!("{run_id}.meta.json"));
+            if let Ok(json) = serde_json::to_string_pretty(&meta) {
+                let _ = std::fs::write(&meta_path, json);
+            }
+            let _ = std::fs::remove_file(status_path(dirs, run_id));
+            let _ = std::fs::remove_file(request_path(dirs, run_id));
+            Err(e)
+        }
+    }
 }
 
 /// Follow a (possibly detached) run: replay the archive from the top, stream
@@ -340,7 +403,11 @@ pub async fn execute_run(
     let mut cmd = Command::new(bin);
     cmd.args(args)
         .current_dir(&req.cwd)
-        .stdin(Stdio::null())
+        .stdin(if req.stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -350,6 +417,17 @@ pub async fn execute_run(
     let mut child = cmd
         .spawn()
         .with_context(|| format!("spawning {bin}: is it installed and on PATH?"))?;
+
+    // Feed the stdin payload concurrently with the stdout reads below (a
+    // sequential write could deadlock against a full stdout pipe) and CLOSE
+    // the pipe: the agent must see EOF or it waits for input forever.
+    if let Some(payload) = req.stdin.clone() {
+        let mut sin = child.stdin.take().context("no stdin")?;
+        tokio::spawn(async move {
+            let _ = sin.write_all(payload.as_bytes()).await;
+            let _ = sin.shutdown().await;
+        });
+    }
 
     let stdout = child.stdout.take().context("no stdout")?;
     let stderr = child.stderr.take().context("no stderr")?;
@@ -498,6 +576,7 @@ mod tests {
             agent: AgentKind::Codex,
             argv: vec!["codex".into(), "exec".into()],
             env: vec![],
+            stdin: None,
             stage: "plan-review".into(),
             feature: "F".into(),
             branch: "main".into(),
@@ -757,6 +836,7 @@ mod tests {
             agent: AgentKind::Claude,
             argv: vec![],
             env: vec![],
+            stdin: None,
             stage: "dual-review".into(),
             feature: "F".into(),
             branch: "main".into(),
@@ -795,5 +875,101 @@ mod tests {
             "wrapper leads the recorded argv"
         );
         assert_eq!(outcome.meta.argv[1], "sh");
+    }
+
+    /// A `stdin` payload reaches the agent's stdin with EOF (the child reads
+    /// it to completion) - the E2BIG-proof channel for unbounded prompts.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_run_pipes_the_stdin_payload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        let req = RunRequest {
+            agent: AgentKind::Claude,
+            argv: vec!["cat".into()],
+            env: vec![],
+            stdin: Some("first line\nsecond line\n".into()),
+            stage: "code-fix-review".into(),
+            feature: "F".into(),
+            branch: "main".into(),
+            redact: false,
+            repro: None,
+            cwd: tmp.path().to_path_buf(),
+            wrapper: vec![],
+        };
+        let (tx, mut rx) = mpsc::channel(64);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let outcome = execute_run(&dirs, req, "r-stdin", tx).await.unwrap();
+        drain.await.unwrap();
+        // `cat` echoes stdin verbatim; the archive proves the payload arrived
+        // AND that the pipe was closed (cat exits only on EOF).
+        let archive = std::fs::read_to_string(outcome.archive).unwrap();
+        assert!(archive.contains("first line"), "{archive}");
+        assert!(archive.contains("second line"));
+        assert_eq!(outcome.meta.exit_code, Some(0));
+    }
+
+    /// Upgrading the binary while a TUI runs leaves /proc/self/exe reading
+    /// "<path> (deleted)"; the spawn must fall back to the fresh binary at
+    /// the original path. Found live: every coverage/code-fix spawn died
+    /// with "No such file or directory" after an in-place upgrade.
+    #[test]
+    fn resolve_exe_survives_an_in_place_upgrade() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("ritual");
+        std::fs::write(&bin, "new binary").unwrap();
+
+        // Existing path: used as-is.
+        assert_eq!(resolve_exe(bin.clone()).unwrap(), bin);
+
+        // "<path> (deleted)" with a fresh binary at <path>: strip the marker.
+        let deleted = PathBuf::from(format!("{} (deleted)", bin.display()));
+        assert_eq!(resolve_exe(deleted).unwrap(), bin);
+
+        // Gone entirely: a clear error, not ENOENT at spawn.
+        let err = resolve_exe(tmp.path().join("missing")).unwrap_err();
+        assert!(format!("{err:#}").contains("restart ritual"), "{err:#}");
+    }
+
+    /// A daemon that dies before its meta lands (e.g. spawn failure) must
+    /// leave a FAILURE meta so tailers surface the real error instead of
+    /// "vanished (daemon died before writing meta)". Found live: the
+    /// code-fix re-review died at exec with E2BIG and the TUI could only
+    /// say the run vanished.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn daemon_writes_a_failure_meta_when_the_run_dies_early() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        std::fs::create_dir_all(dirs.runs_dir()).unwrap();
+        let req = RunRequest {
+            agent: AgentKind::Claude,
+            argv: vec!["definitely-not-a-real-binary-xyz".into()],
+            env: vec![],
+            stdin: None,
+            stage: "code-fix-review".into(),
+            feature: "F".into(),
+            branch: "main".into(),
+            redact: false,
+            repro: None,
+            cwd: tmp.path().to_path_buf(),
+            wrapper: vec![],
+        };
+        std::fs::write(
+            request_path(&dirs, "r-dead"),
+            serde_json::to_string(&req).unwrap(),
+        )
+        .unwrap();
+
+        assert!(daemon_main(&dirs, "r-dead").await.is_err());
+
+        let RunState::Finished(meta) = run_state(&dirs, "r-dead") else {
+            panic!("failure meta must make the run read as Finished");
+        };
+        assert!(!meta.ok);
+        let err = meta.error.expect("error recorded");
+        assert!(err.contains("spawning"), "{err}");
+        assert_eq!(meta.stage, "code-fix-review");
+        // Sidecars cleaned up: nothing left to resurrect.
+        assert!(!request_path(&dirs, "r-dead").exists());
+        assert!(!status_path(&dirs, "r-dead").exists());
     }
 }

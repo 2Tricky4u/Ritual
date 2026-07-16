@@ -29,7 +29,7 @@ fn latest_dual_review(findings_dir: &Path) -> Option<LoadedFindings> {
 fn build_body(file: &FindingsFile) -> (String, usize) {
     let mut rows = Vec::new();
     for f in &file.findings {
-        if f.verdict != "confirmed" || f.resolved() {
+        if !crate::findings::verdict_confirmed(&f.verdict) || f.resolved() {
             continue; // dismissed/fixed findings stay off the PR
         }
         let sources = if f.cross_confirmed() {
@@ -170,7 +170,7 @@ fn post_inline(cfg: &Config, file: &FindingsFile, pr: u32) {
     let redactor = |s: &str| Redactor::new(cfg.redaction).text(s);
     let (mut ok, mut failed) = (0usize, 0usize);
     for f in &file.findings {
-        if f.verdict != "confirmed" || f.resolved() {
+        if !crate::findings::verdict_confirmed(&f.verdict) || f.resolved() {
             continue;
         }
         let (Some(path), Some(line)) = (&f.file, f.line) else {

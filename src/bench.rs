@@ -63,6 +63,7 @@ pub fn bench(
             agent: cmd.agent,
             argv: cmd.argv,
             env: cmd.env,
+            stdin: cmd.stdin,
             stage: stage.label().into(),
             feature: title.clone(),
             branch: branch.clone(),

@@ -19,7 +19,7 @@ fn xml_escape(s: &str) -> String {
 /// already resolved (fixed/dismissed) by a human.
 fn is_failure(f: &Finding) -> bool {
     matches!(f.severity, Severity::Critical | Severity::Major)
-        && f.verdict == "confirmed"
+        && crate::findings::verdict_confirmed(&f.verdict)
         && !f.resolved()
 }
 

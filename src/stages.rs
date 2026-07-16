@@ -23,6 +23,10 @@ pub struct StageCommand {
     pub env: Vec<(String, String)>,
     /// Whether this stage talks to Codex via MCP (needs codex auth preflight).
     pub needs_codex: bool,
+    /// Prompt payload piped to the agent's stdin instead of argv. Anything
+    /// unbounded (an embedded diff) MUST travel here: a single oversized argv
+    /// element kills the exec with E2BIG ("Argument list too long").
+    pub stdin: Option<String>,
 }
 
 const PLAN_REVIEW_TOOLS: &str =
@@ -183,6 +187,7 @@ pub fn doc_chat_command(
         .concat(),
         env: vec![],
         needs_codex: false,
+        stdin: None,
     };
     // Per-document model routing ([models] spec / plan).
     if let Some(model) = cfg.models.get(kind.label()) {
@@ -301,6 +306,7 @@ pub fn findings_batch_fix_command(
         .concat(),
         env: vec![],
         needs_codex: false,
+        stdin: None,
     };
     if let Some(model) = cfg.models.get(DocKind::Plan.label()) {
         cmd.argv.push("--model".into());
@@ -418,6 +424,7 @@ pub fn findings_code_fix_command(
         .concat(),
         env: vec![],
         needs_codex: false,
+        stdin: None,
     };
     if let Some(model) = cfg.models.get("code") {
         cmd.argv.push("--model".into());
@@ -461,6 +468,10 @@ pub fn code_fix_review_command(
          (or) REGRESSIONS: <one-line description of what breaks>",
         code_findings_block(briefs),
     );
+    // The prompt embeds the FULL diff (unbounded), so it rides on stdin: a
+    // big change set in argv dies at exec with E2BIG ("Argument list too
+    // long") and the daemon vanishes before writing meta. `-p` with no
+    // positional prompt reads the prompt from stdin.
     let mut cmd = StageCommand {
         mode: Mode::Headless,
         agent: AgentKind::Claude,
@@ -468,7 +479,6 @@ pub fn code_fix_review_command(
             cfg.claude_cmd.clone(),
             vec![
                 "-p".into(),
-                prompt,
                 "--output-format".into(),
                 "stream-json".into(),
                 "--verbose".into(),
@@ -483,6 +493,7 @@ pub fn code_fix_review_command(
         .concat(),
         env: vec![],
         needs_codex: false,
+        stdin: Some(prompt),
     };
     if let Some(model) = cfg.models.get("code") {
         cmd.argv.push("--model".into());
@@ -529,6 +540,7 @@ pub fn build(
             argv: vec![],
             env: vec![],
             needs_codex: false,
+            stdin: None,
         },
         StageId::Plan => {
             let spec = dirs.spec_file(slug);
@@ -553,6 +565,7 @@ pub fn build(
                 .concat(),
                 env: vec![],
                 needs_codex: false,
+                stdin: None,
             }
         }
         StageId::PlanReview => {
@@ -585,6 +598,7 @@ pub fn build(
                 .concat(),
                 env: vec![findings_env],
                 needs_codex: true,
+                stdin: None,
             }
         }
         StageId::TestsRed => {
@@ -596,13 +610,17 @@ pub fn build(
                 tail.push("--session-id".into());
                 tail.push(sid.to_string());
             }
-            tail.push(format!("/tdd {}", plan.display()));
+            // red-only: the skill runs the full red->green loop by default,
+            // but this stage must STOP at failing tests - implementation
+            // belongs to the `implement` stage, which resumes this session.
+            tail.push(format!("/tdd {} red-only", plan.display()));
             StageCommand {
                 mode: Mode::Interactive,
                 agent: AgentKind::Claude,
                 argv: [claude, tail].concat(),
                 env: vec![],
                 needs_codex: true,
+                stdin: None,
             }
         }
         StageId::Implement => {
@@ -622,6 +640,7 @@ pub fn build(
                 argv: [claude, tail].concat(),
                 env: vec![],
                 needs_codex: false,
+                stdin: None,
             }
         }
         StageId::DualReview => {
@@ -650,6 +669,7 @@ pub fn build(
                 .concat(),
                 env: vec![findings_env],
                 needs_codex: true,
+                stdin: None,
             }
         }
         StageId::Coverage => {
@@ -681,6 +701,7 @@ pub fn build(
                 .concat(),
                 env: vec![findings_env],
                 needs_codex: false,
+                stdin: None,
             }
         }
     };
@@ -1316,9 +1337,32 @@ mod tests {
             !cmd.argv[i + 1].contains("Bash"),
             "reviewer has no shell (can't mutate the tree or run git)"
         );
-        let prompt = cmd.argv.iter().find(|a| a.contains("REVIEW:")).unwrap();
+        // The prompt embeds the FULL (unbounded) diff, so it must ride on
+        // stdin, never argv: a big diff in argv kills the exec with E2BIG.
+        // Regression: run 20260716T114958540Z-f22-1-code-fix-review died at
+        // spawn with "Argument list too long".
+        let prompt = cmd.stdin.as_deref().expect("prompt rides on stdin");
+        assert!(prompt.contains("REVIEW:"));
         assert!(prompt.contains("diff --git a/x b/x"));
         assert!(prompt.contains("REGRESSIONS:"));
         assert!(prompt.contains("src/state.rs:42"));
+        assert!(
+            !cmd.argv.iter().any(|a| a.contains("REVIEW:")),
+            "no prompt in argv"
+        );
+        // `-p` with no positional prompt = read the prompt from stdin.
+        assert!(cmd.argv.contains(&"-p".to_string()));
+    }
+
+    #[test]
+    fn tests_red_stage_is_red_only() {
+        let (_tmp, cfg, dirs) = setup();
+        let cmd = build(StageId::TestsRed, &cfg, &dirs, "s", None, None, None).unwrap();
+        let prompt = cmd.argv.last().unwrap();
+        assert!(prompt.starts_with("/tdd "));
+        assert!(
+            prompt.contains("red-only"),
+            "tests-red must tell the skill to stop at failing tests: {prompt}"
+        );
     }
 }

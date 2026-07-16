@@ -1532,7 +1532,7 @@ fn draw_finding_detail(f: &mut Frame, app: &App) {
             R::QueueAuto => "recommended: queue for claude - confirmed plan finding",
             R::QueueManual => "recommended: fix manually - confirmed code finding",
             R::Archive => "recommended: archive - resolution already recorded in action",
-            R::Dismiss(_) => "recommended: dismiss - withdrawn/refuted by review",
+            R::Dismiss(_) => "recommended: dismiss - retracted by the review itself",
             R::NeedsYou => "recommended: your judgment - no safe default",
         };
         lines.push(Line::from(Span::styled(
@@ -2048,21 +2048,58 @@ fn draw_implement_hint(f: &mut Frame, app: &App) {
     );
 }
 
+/// Size a confirm float to its content so the bottom key-hint row is never
+/// clipped: wide enough for the longest line when the frame allows (no
+/// wrapping), and when the frame is narrower, tall enough for the
+/// word-wrapped rows.
+fn content_sized_rect(frame: Rect, lines: &[Line], min_width: u16) -> Rect {
+    let max_w = frame.width.saturating_sub(2).max(3);
+    let content_w = lines.iter().map(|l| l.width()).max().unwrap_or(1) as u16 + 2;
+    let width = content_w.clamp(min_width.min(max_w), max_w);
+    let inner_w = usize::from(width.saturating_sub(2).max(1));
+    let rows: u16 = lines.iter().map(|l| wrapped_rows(l, inner_w)).sum();
+    centered_rect(
+        frame,
+        width,
+        (rows + 2).min(frame.height.saturating_sub(2)).max(1),
+    )
+}
+
+/// Rows one Line occupies under greedy word wrap at `width` columns (mirrors
+/// ratatui's WordWrapper for the plain prose these floats hold; a word wider
+/// than the panel char-wraps across rows).
+fn wrapped_rows(line: &Line, width: usize) -> u16 {
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    let mut rows: u16 = 1;
+    let mut cur = 0usize;
+    for word in text.split_whitespace() {
+        let w = word.chars().count();
+        if w > width {
+            if cur > 0 {
+                rows += 1;
+            }
+            let full = (w - 1) / width;
+            rows += full as u16;
+            cur = w - full * width;
+            continue;
+        }
+        let need = if cur == 0 { w } else { w + 1 };
+        if cur + need > width {
+            rows += 1;
+            cur = w;
+        } else {
+            cur += need;
+        }
+    }
+    rows
+}
+
 /// The `t` triage confirm: what one `y` stages - dispositions only, the
 /// plan still mutates exclusively through F-apply.
 fn draw_triage_confirm(f: &mut Frame, app: &App) {
     let t = &app.cfg.theme;
     let Some(c) = &app.triage_confirm else { return };
     let total = c.archive + c.queue_auto + c.queue_manual + c.dismiss;
-    let area = centered_rect(
-        f.area(),
-        62.min(f.area().width.saturating_sub(2)).max(1),
-        5.min(f.area().height.saturating_sub(2)).max(1),
-    );
-    let inner = float_panel(f, t, area, "apply recommended triage");
-    if inner.height == 0 {
-        return;
-    }
     let mut lines = vec![Line::from(Span::styled(
         format!("apply recommended triage to {total} finding(s)?"),
         Style::default().fg(t.fg()).add_modifier(Modifier::BOLD),
@@ -2086,6 +2123,13 @@ fn draw_triage_confirm(f: &mut Frame, app: &App) {
         keycap(t, "esc"),
         Span::raw(" cancel"),
     ]));
+    // Size the panel to the content: a fixed height clips the y/esc key
+    // line off the bottom whenever the optional warning line is present.
+    let area = content_sized_rect(f.area(), &lines, 62);
+    let inner = float_panel(f, t, area, "apply recommended triage");
+    if inner.height == 0 {
+        return;
+    }
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
@@ -2094,15 +2138,6 @@ fn draw_triage_confirm(f: &mut Frame, app: &App) {
 fn draw_apply_confirm(f: &mut Frame, app: &App) {
     let t = &app.cfg.theme;
     let Some(c) = &app.apply_confirm else { return };
-    let area = centered_rect(
-        f.area(),
-        58.min(f.area().width.saturating_sub(2)).max(1),
-        5.min(f.area().height.saturating_sub(2)).max(1),
-    );
-    let inner = float_panel(f, t, area, "apply answers");
-    if inner.height == 0 {
-        return;
-    }
     // One type per apply: plan findings (section-gated, u-revertable) run
     // first; code findings run on the next apply.
     let headline = if c.plan_count > 0 {
@@ -2154,6 +2189,13 @@ fn draw_apply_confirm(f: &mut Frame, app: &App) {
     keys.push(keycap(t, "esc"));
     keys.push(Span::raw(" cancel"));
     lines.push(Line::from(keys));
+    // Size the panel to the content: a fixed height clips the y/u/esc key
+    // line off the bottom whenever an optional note line is present.
+    let area = content_sized_rect(f.area(), &lines, 58);
+    let inner = float_panel(f, t, area, "apply answers");
+    if inner.height == 0 {
+        return;
+    }
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 

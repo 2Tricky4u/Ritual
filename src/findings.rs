@@ -201,7 +201,7 @@ pub fn has_open_confirmed(loaded: &[LoadedFindings], slug: &str) -> bool {
                 .file
                 .findings
                 .iter()
-                .any(|f| !f.resolved() && f.verdict.eq_ignore_ascii_case("confirmed"))
+                .any(|f| !f.resolved() && verdict_confirmed(&f.verdict))
     })
 }
 
@@ -297,6 +297,25 @@ pub enum Recommendation {
     NeedsYou,
 }
 
+/// The review skills speak different verdict dialects for the same judgment:
+/// dual-review emits `confirmed|unconfirmed|refuted`, plan-review emits
+/// `accepted|rebutted|unresolved`. Every consumer must treat the synonyms
+/// alike or plan findings silently fall out of triage/gates.
+pub fn verdict_confirmed(verdict: &str) -> bool {
+    matches!(
+        verdict.to_ascii_lowercase().as_str(),
+        "confirmed" | "accepted"
+    )
+}
+
+/// The review itself retracted the finding (all dialects).
+pub fn verdict_retracted(verdict: &str) -> bool {
+    matches!(
+        verdict.to_ascii_lowercase().as_str(),
+        "withdrawn" | "refuted" | "rebutted"
+    )
+}
+
 /// The deterministic recommended disposition for a finding, or None when it
 /// is already handled (resolved, triaged, or declined by a batch run - a
 /// declined finding must NOT be auto-requeued, that would loop).
@@ -310,13 +329,13 @@ pub fn recommend(f: &Finding) -> Option<Recommendation> {
     if is_prose_action(&f.action) {
         return Some(Recommendation::Archive);
     }
-    let verdict = f.verdict.to_ascii_lowercase();
-    if matches!(verdict.as_str(), "withdrawn" | "refuted") {
-        return Some(Recommendation::Dismiss(
-            "withdrawn/refuted by review".into(),
-        ));
+    if verdict_retracted(&f.verdict) {
+        return Some(Recommendation::Dismiss(format!(
+            "{} by review",
+            f.verdict.to_ascii_lowercase()
+        )));
     }
-    if verdict == "confirmed" {
+    if verdict_confirmed(&f.verdict) {
         if f.file.is_none() && f.plan_step.is_some() {
             return Some(Recommendation::QueueAuto);
         }
@@ -723,6 +742,21 @@ mod tests {
             recommend(&mk(r#"{"title":"t","verdict":"Withdrawn"}"#)),
             Some(Dismiss(_))
         ));
+        // plan-review speaks accepted/rebutted/unresolved: same dispositions.
+        assert_eq!(
+            recommend(&mk(
+                r#"{"title":"t","plan_step":"D3","verdict":"accepted"}"#
+            )),
+            Some(QueueAuto)
+        );
+        assert_eq!(
+            recommend(&mk(r#"{"title":"t","verdict":"rebutted"}"#)),
+            Some(Dismiss("rebutted by review".into()))
+        );
+        assert_eq!(
+            recommend(&mk(r#"{"title":"t","verdict":"unresolved"}"#)),
+            Some(NeedsYou)
+        );
         // Unconfirmed / no location -> the human decides.
         assert_eq!(
             recommend(&mk(r#"{"title":"t","verdict":"unconfirmed"}"#)),

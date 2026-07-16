@@ -241,6 +241,25 @@ fn dashboard_triage_confirm() {
     insta::assert_snapshot!(render(&app));
 }
 
+/// The worst-case apply confirm (code findings + a note line): the y/u/esc
+/// key row must stay visible - a fixed panel height used to clip it.
+#[test]
+fn dashboard_apply_confirm_code_findings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_app(&tmp);
+    app.tab = Tab::Findings;
+    app.apply_confirm = Some(ritual::ui::app::ApplyConfirm {
+        slug: "detached".into(),
+        count: 4,
+        plan_count: 0,
+        code_count: 4,
+        skipped_other_features: 1,
+        anchor_lost: 0,
+        unqueue: None,
+    });
+    insta::assert_snapshot!(render(&app));
+}
+
 #[test]
 fn dashboard_finding_detail_code_finding() {
     let tmp = tempfile::tempdir().unwrap();
