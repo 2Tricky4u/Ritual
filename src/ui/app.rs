@@ -1259,6 +1259,12 @@ impl App {
                 });
             }
             Mode::Interactive => {
+                // Interactive stages spend tokens too (spec's $EDITOR arm
+                // above is the only agent-free launch).
+                if let Err(e) = stages::ensure_online(&self.cfg) {
+                    self.status_msg = Some(format!("{e:#}"));
+                    return;
+                }
                 // Now that the launch is committed, persist tests-red's pinned
                 // session id so a later `implement` resumes this exact
                 // conversation (survives quitting mid-run).
@@ -1303,6 +1309,10 @@ impl App {
     /// the last run's meta; interactive stages (tests-red/implement) use the
     /// session id ritual pinned on the stage.
     fn takeover(&mut self) {
+        if let Err(e) = stages::ensure_online(&self.cfg) {
+            self.status_msg = Some(format!("{e:#}"));
+            return;
+        }
         let stage = self.selected_stage();
         let st = self.state.features.get(&self.slug).map(|f| f.stage(stage));
         let from_run = st.as_ref().and_then(|s| s.runs.last()).and_then(|rid| {
@@ -1336,6 +1346,10 @@ impl App {
         run_cwd: std::path::PathBuf,
         tx: &mpsc::Sender<AppMsg>,
     ) {
+        if let Err(e) = stages::ensure_online(&self.cfg) {
+            self.status_msg = Some(format!("{e:#}"));
+            return;
+        }
         if let Some((spent, budget)) = crate::run_cmd::budget_exceeded(&self.cfg, &self.dirs) {
             self.status_msg = Some(format!(
                 "daily budget reached (${spent:.2}/${budget:.2}); run `ritual run {} --force` to override",
@@ -1780,6 +1794,12 @@ impl App {
     /// transcript. Never touches `self.running`/`run_task`; the pipeline is
     /// independent of the chat.
     fn spawn_doc_chat(&mut self, message: String, tx: &mpsc::Sender<AppMsg>) {
+        if let Err(e) = stages::ensure_online(&self.cfg) {
+            if let Some(chat) = self.chat.as_mut() {
+                chat.transcript.push(ChatTurn::System(format!("{e:#}")));
+            }
+            return;
+        }
         if let Some((spent, budget)) = crate::run_cmd::budget_exceeded(&self.cfg, &self.dirs) {
             if let Some(chat) = self.chat.as_mut() {
                 chat.transcript.push(ChatTurn::System(format!(
@@ -3314,6 +3334,9 @@ impl App {
         &mut self,
         slug: &str,
     ) -> Result<(stages::StageCommand, BatchFixCtx), String> {
+        if let Err(e) = stages::ensure_online(&self.cfg) {
+            return Err(format!("{e:#}"));
+        }
         if self.fix_running() {
             return Err("a plan fix is already running".into());
         }
@@ -3737,6 +3760,9 @@ impl App {
         &mut self,
         slug: &str,
     ) -> Result<(stages::StageCommand, CodeFixCtx), String> {
+        if let Err(e) = stages::ensure_online(&self.cfg) {
+            return Err(format!("{e:#}"));
+        }
         if self.fix_running() {
             return Err("a fix is already running".into());
         }
@@ -5835,6 +5861,31 @@ mod tests {
         assert_eq!(app.filter, "", "ctrl+w must not insert a literal 'w'");
         app.on_input(ctrl_c, &tx);
         assert!(app.quit, "ctrl-c must quit while the filter edits");
+    }
+
+    #[test]
+    fn offline_surfaces_a_status_message_instead_of_spawning() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.cfg.offline = true;
+        app.spawn_headless(
+            StageId::DualReview,
+            stages::StageCommand {
+                mode: stages::Mode::Headless,
+                agent: runner::AgentKind::Claude,
+                argv: vec!["true".into()],
+                env: vec![],
+                needs_codex: false,
+                stdin: None,
+            },
+            app.dirs.work_root.clone(),
+            &tx,
+        );
+        assert!(app.running.is_none(), "no run may start offline");
+        assert!(
+            app.status_msg.as_deref().unwrap_or("").contains("offline"),
+            "{:?}",
+            app.status_msg
+        );
     }
 
     #[test]

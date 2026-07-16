@@ -530,6 +530,7 @@ fn run_fix(
     stage_label: &str,
     cmd: stages::StageCommand,
 ) -> Result<()> {
+    stages::ensure_online(cfg)?;
     let req = RunRequest {
         agent: cmd.agent,
         argv: cmd.argv,
@@ -571,6 +572,7 @@ pub fn audit(
     lanes_file: Option<&Path>,
 ) -> Result<()> {
     anyhow::ensure!(dirs.exists(), "no .ritual/ here; run `ritual init` first");
+    stages::ensure_online(cfg)?;
     if let Some((spent, budget)) = budget_exceeded(cfg, dirs) {
         anyhow::bail!(
             "daily budget reached (${spent:.2}/${budget:.2}); raise budget_daily_usd to override"
@@ -933,6 +935,7 @@ fn run_interactive(
     st: &mut State,
     branch: &str,
 ) -> Result<()> {
+    stages::ensure_online(cfg)?;
     let slug = state::branch_slug(branch);
     let plan_mtime_before = mtime(&dirs.plan_file(&slug));
 
@@ -1030,6 +1033,7 @@ fn run_headless(
     title: &str,
     ci: bool,
 ) -> Result<()> {
+    stages::ensure_online(cfg)?;
     // Pre-review gates run BEFORE the findings snapshot so their artifacts
     // don't count as the agent run's own output: refresh the review memory
     // the dual-review skill reads, then the gitleaks pass over changed files.
@@ -1177,6 +1181,7 @@ pub fn run_doc_chat(
 ) -> Result<()> {
     anyhow::ensure!(dirs.exists(), "no .ritual/ here; run `ritual init` first");
     anyhow::ensure!(!message.trim().is_empty(), "usage: ritual chat <message>");
+    stages::ensure_online(cfg)?;
 
     if let Some((spent, budget)) = budget_exceeded(cfg, dirs)
         && !force

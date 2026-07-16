@@ -2154,6 +2154,40 @@ fn complete_reverts_a_plan_fix_that_self_certifies() {
 }
 
 #[test]
+fn offline_blocks_agent_runs_before_any_spawn() {
+    let tmp = setup_project();
+    std::fs::write(tmp.path().join(".ritual/config.toml"), "offline = true\n").unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .args(["run", "dual-review"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("offline = true blocks agent runs"));
+    // Nothing was spawned: no run artifacts at all.
+    let spawned = std::fs::read_dir(tmp.path().join(".ritual/runs"))
+        .map(|d| d.count())
+        .unwrap_or(0);
+    assert_eq!(spawned, 0, "offline must block BEFORE the daemon spawns");
+    // Chat and audit refuse identically.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["chat", "hello"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("offline = true blocks agent runs"));
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["audit", "--discover"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("offline = true blocks agent runs"));
+}
+
+#[test]
 fn findings_gate_blocks_on_every_confirmed_dialect() {
     // The scriptability contract: a critical finding blocks with verdict
     // "confirmed" AND with plan-review's dialect "accepted" (the gate used a

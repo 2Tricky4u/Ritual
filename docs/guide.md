@@ -518,8 +518,9 @@ skill. `ritual doctor` shows the pal server's status.
   kept verbatim (post-redaction) even when parsing fails.
 - If a run looks stuck, quit the TUI and reopen. Reattach is free.
   `a` (takeover) turns any headless run into an interactive session.
-- Worktrees + `offline = false` on hotel wifi: queue specs and plans
-  locally, fire reviews when you're back on a real connection.
+- Worktrees + `offline = true` on hotel wifi: agent runs are blocked, so
+  you can queue specs and edit plans locally, then flip it back and fire
+  the reviews on a real connection.
 - `NO_COLOR=1 ritual status` / `--ascii` for logs and plain terminals:
   every state is readable without color.
 

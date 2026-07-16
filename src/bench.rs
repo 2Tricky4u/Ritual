@@ -32,6 +32,7 @@ pub fn bench(
     let stage =
         StageId::parse(stage_str).with_context(|| format!("unknown stage '{stage_str}'"))?;
     anyhow::ensure!(dirs.exists(), "no .ritual/ here; run `ritual init` first");
+    crate::stages::ensure_online(cfg)?;
 
     // Golden file: JSON array of expected finding titles (substring match).
     let golden_titles: Vec<String> = match golden {

@@ -229,7 +229,7 @@ pub static CATALOG: &[SettingDef] = &[
     SettingDef {
         key: "offline",
         label: "offline",
-        doc: "skip cloud auth preflights/probes",
+        doc: "block agent runs + skip cloud auth probes",
         group: "behavior",
         kind: SettingKind::Bool,
         get: |c| Some(c.offline.to_string()),

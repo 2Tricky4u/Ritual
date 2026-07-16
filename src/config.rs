@@ -65,7 +65,8 @@ pub struct FileConfig {
     pub fallback_model: Option<String>,
     /// Hard ceiling on any check.sh invocation (hung boards, wedged builds).
     pub check_timeout_secs: Option<u64>,
-    /// Air-gapped mode: skip cloud auth preflights/probes entirely.
+    /// Air-gapped mode: BLOCK agent runs entirely (metered/plane connections)
+    /// and skip cloud auth preflights/probes.
     pub offline: Option<bool>,
     /// Terminal background shows through the main pane (chadrc parity).
     pub transparency: Option<bool>,

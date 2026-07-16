@@ -959,6 +959,17 @@ pub fn build(
     Ok(cmd)
 }
 
+/// `offline = true` blocks every agent spawn (metered/plane mode) - the
+/// promise the guide has always made. The auth-preflight skips elsewhere
+/// stay: preflights are moot once runs are blocked.
+pub fn ensure_online(cfg: &Config) -> Result<()> {
+    anyhow::ensure!(
+        !cfg.offline,
+        "offline = true blocks agent runs (settings: S -> offline, or [offline] in .ritual/config.toml)"
+    );
+    Ok(())
+}
+
 /// Codex auth preflight: `codex login status` exits 0 when logged in.
 pub fn codex_ready(cfg: &Config) -> bool {
     let Some((bin, args)) = cfg.codex_cmd.split_first() else {
