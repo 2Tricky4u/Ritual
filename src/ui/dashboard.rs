@@ -1,4 +1,7 @@
-//! All drawing. Pure: reads App, writes the frame. No state mutations.
+//! All drawing. Pure: reads App, writes the frame. No state mutations -
+//! with ONE deliberate exception: viewport extents land in `App.view_max`
+//! (Cell) so the input path can clamp scrolls and implement G=bottom; the
+//! renderer is the only place those extents are known.
 //!
 //! Visual language: NvChad/base46, borderless panels separated by background
 //! shades (darker sidebar, statusline_bg bottom bar), powerline statusline
@@ -620,7 +623,7 @@ fn draw_chat_preview(f: &mut Frame, app: &App, chat: &ChatState, area: Rect) {
         ))),
         rows[0],
     );
-    draw_markdown_scrolled(f, t, rows[1], &full, 0, focus.as_ref());
+    let _ = draw_markdown_scrolled(f, t, rows[1], &full, 0, focus.as_ref());
 }
 
 /// The conversation: header + windowed transcript + a cursored input line.
@@ -1191,12 +1194,14 @@ fn draw_history(f: &mut Frame, app: &App, area: Rect) {
         );
         return;
     }
+    // Scrollable: j/k move `history_scroll`; the renderer reports the extent
+    // so the input path can clamp and implement G=last page.
+    let rows = (area.height as usize).saturating_sub(1);
+    let max_scroll = metas.len().saturating_sub(rows.max(1));
+    app.view_max.history.set(max_scroll);
+    let offset = app.history_scroll.min(max_scroll);
     let mut lines: Vec<Line> = vec![Line::default()];
-    for (i, m) in metas
-        .iter()
-        .take((area.height as usize).saturating_sub(1))
-        .enumerate()
-    {
+    for (i, m) in metas.iter().skip(offset).take(rows).enumerate() {
         let row_bg = if i % 2 == 1 { t.bg_row() } else { t.bg() };
         let (icon, color) = if m.ok {
             (t.icon_done(), t.ok())
@@ -1248,13 +1253,15 @@ fn draw_plan(f: &mut Frame, app: &App, area: Rect) {
         (None, Some(s)) => format!("*(no plan yet; spec below)*\n\n{s}"),
         (None, None) => "no spec or plan yet; press enter on the spec stage".into(),
     };
-    draw_markdown_scrolled(f, &app.cfg.theme, area, &text, app.plan_scroll, None);
+    let max = draw_markdown_scrolled(f, &app.cfg.theme, area, &text, app.plan_scroll, None);
+    app.view_max.plan.set(max);
 }
 
 /// In-app manual: detailed guide + tips, embedded at compile time.
 fn draw_guide(f: &mut Frame, app: &App, area: Rect) {
     let text = include_str!("../../docs/guide.md");
-    draw_markdown_scrolled(f, &app.cfg.theme, area, text, app.guide_scroll, None);
+    let max = draw_markdown_scrolled(f, &app.cfg.theme, area, text, app.guide_scroll, None);
+    app.view_max.guide.set(max);
 }
 
 /// Themed markdown (pulldown-cmark) with j/k scrolling and a top-right
@@ -1268,7 +1275,7 @@ fn draw_markdown_scrolled(
     text: &str,
     scroll: usize,
     focus: Option<&std::ops::Range<usize>>,
-) {
+) -> usize {
     let rendered = crate::ui::markdown::render(text, t, area.width);
     let total = rendered.lines.len();
     let max_scroll = total.saturating_sub(area.height as usize);
@@ -1309,6 +1316,7 @@ fn draw_markdown_scrolled(
             );
         }
     }
+    max_scroll
 }
 
 // ---------------------------------------------------------------------------

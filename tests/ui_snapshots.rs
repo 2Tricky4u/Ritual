@@ -332,6 +332,33 @@ fn dashboard_running_with_budget() {
 }
 
 #[test]
+fn dashboard_history_scrolled_to_bottom() {
+    // 30 runs on a 22-row frame: the oldest are beyond one screen and were
+    // unreachable before history gained a scroll model. An over-large scroll
+    // clamps to the renderer-reported extent (last page: oldest visible).
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".ritual/runs")).unwrap();
+    for i in 0..30u32 {
+        std::fs::write(
+            tmp.path()
+                .join(format!(".ritual/runs/20260712T{i:06}Z-x.meta.json")),
+            format!(
+                r#"{{"run_id":"r{i:02}","stage":"run-{i:02}","ok":true,"total_cost_usd":0.1,"started_at":"2026-07-12T00:{:02}:00Z"}}"#,
+                i % 60
+            ),
+        )
+        .unwrap();
+    }
+    let mut app = setup_app(&tmp);
+    app.tab = Tab::History;
+    app.history_scroll = 999; // renderer clamps to the real extent
+    let _ = render(&app); // first pass populates view_max
+    let out = render(&app);
+    assert!(out.contains("run-00"), "oldest run reachable: {out}");
+    insta::assert_snapshot!(out);
+}
+
+#[test]
 fn dashboard_statusline_spend_sparkline() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(tmp.path().join(".ritual/runs")).unwrap();

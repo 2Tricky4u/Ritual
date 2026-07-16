@@ -57,7 +57,7 @@ suggestions.
 - **4 plan**: rendered plan.md (falls back to spec)
 - **5 guide**: this page
 
-`tab` cycles; `j/k` scroll or select; `g` top; `G` follow the tail.
+`tab` cycles; `j/k` scroll or select; `g` top; `G` bottom (Live: follow the tail).
 `/` opens a live filter on the findings/history lists (type to narrow,
 Enter to keep it and navigate, Esc to clear; it drops when you leave
 the tab). The statusline carries a spend sparkline of recent runs, and

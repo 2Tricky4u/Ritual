@@ -69,7 +69,7 @@ pub const ACTIONS: &[(&str, Action, &str)] = &[
     ("down", Action::Down, "move down"),
     ("up", Action::Up, "move up"),
     ("scroll-top", Action::ScrollTop, "scroll to top"),
-    ("follow", Action::Follow, "follow stream tail"),
+    ("follow", Action::Follow, "jump to end / follow tail"),
     ("confirm", Action::Confirm, "run selected stage / open item"),
     ("cancel", Action::Cancel, "cancel running stage"),
     ("check-fast", Action::CheckFast, "run check.sh fast"),

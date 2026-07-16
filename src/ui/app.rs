@@ -253,6 +253,13 @@ pub struct App {
     pub palette: Option<PaletteState>,
     pub plan_scroll: usize,
     pub guide_scroll: usize,
+    /// History-tab list scroll (rows skipped from the top).
+    pub history_scroll: usize,
+    /// Viewport-derived scroll maxima, written by the RENDERER each frame
+    /// (interior mutability: draw takes &App) and read by nav()/ScrollTop/
+    /// Follow to clamp and to implement G=bottom. One frame stale at worst;
+    /// G before a tab's first render lands at top and self-corrects.
+    pub view_max: ViewMax,
     pub chat: Option<ChatState>,
     /// The `S` settings editor overlay (None = closed).
     pub settings: Option<SettingsState>,
@@ -299,6 +306,17 @@ pub struct App {
 pub struct PaletteState {
     pub input: String,
     pub selected: usize,
+}
+
+/// Viewport-derived scroll maxima (rendered lines minus height), one per
+/// scrollable tab whose extent only the renderer knows. Written by draw()
+/// through interior mutability - the render path takes &App - and read by
+/// the input path to clamp j/k and implement G=bottom.
+#[derive(Debug, Default)]
+pub struct ViewMax {
+    pub plan: std::cell::Cell<usize>,
+    pub guide: std::cell::Cell<usize>,
+    pub history: std::cell::Cell<usize>,
 }
 
 /// The `implement` launch prompt-overlay. An interactive `claude --resume`
@@ -451,6 +469,8 @@ impl App {
             palette: None,
             plan_scroll: 0,
             guide_scroll: 0,
+            history_scroll: 0,
+            view_max: ViewMax::default(),
             chat: None,
             settings: None,
             implement_hint: None,
@@ -1065,12 +1085,28 @@ impl App {
             Action::TabGuide => self.tab = Tab::Guide,
             Action::Down => self.nav(1),
             Action::Up => self.nav(-1),
+            // g/G jump to the top/bottom of whatever the CURRENT tab focuses
+            // (the which-key `move` section advertises them everywhere, so
+            // they must work everywhere). G=bottom uses the renderer-reported
+            // extents in view_max; on the Live stream it means follow-tail.
             Action::ScrollTop => match self.tab {
                 Tab::Plan => self.plan_scroll = 0,
                 Tab::Guide => self.guide_scroll = 0,
-                _ => self.stream_scroll = Some(0),
+                Tab::History => self.history_scroll = 0,
+                Tab::Findings => self.selected_finding = 0,
+                Tab::Live if self.stream.is_empty() => self.selected = 0,
+                Tab::Live => self.stream_scroll = Some(0),
             },
-            Action::Follow => self.stream_scroll = None,
+            Action::Follow => match self.tab {
+                Tab::Plan => self.plan_scroll = self.view_max.plan.get(),
+                Tab::Guide => self.guide_scroll = self.view_max.guide.get(),
+                Tab::History => self.history_scroll = self.view_max.history.get(),
+                Tab::Findings => {
+                    self.selected_finding = self.visible_findings().len().saturating_sub(1);
+                }
+                Tab::Live if self.stream.is_empty() => self.selected = PIPELINE.len() - 1,
+                Tab::Live => self.stream_scroll = None,
+            },
             Action::Confirm => self.on_enter(tx),
             Action::Cancel => self.cancel_run(tx),
             Action::CheckFast => self.run_check(tx, true),
@@ -1169,14 +1205,20 @@ impl App {
                 };
             }
             Tab::Plan => {
-                self.plan_scroll = (self.plan_scroll as i32 + delta).max(0) as usize;
+                // Clamped to the renderer-reported extent so j past the end
+                // doesn't need invisible k presses to come back.
+                self.plan_scroll = ((self.plan_scroll as i32 + delta).max(0) as usize)
+                    .min(self.view_max.plan.get());
             }
             Tab::Guide => {
-                self.guide_scroll = (self.guide_scroll as i32 + delta).max(0) as usize;
+                self.guide_scroll = ((self.guide_scroll as i32 + delta).max(0) as usize)
+                    .min(self.view_max.guide.get());
             }
-            _ => {
-                self.selected =
-                    (self.selected as i32 + delta).rem_euclid(PIPELINE.len() as i32) as usize;
+            Tab::History => {
+                // Scroll the run list (older runs were unreachable before);
+                // the pipeline cursor stays reachable on Live and via `i`.
+                self.history_scroll = ((self.history_scroll as i32 + delta).max(0) as usize)
+                    .min(self.view_max.history.get());
             }
         }
     }
@@ -5838,6 +5880,84 @@ mod tests {
     }
 
     #[test]
+    fn g_and_shift_g_jump_top_and_bottom_on_every_tab() {
+        let (_t, mut app, tx, _rx) = test_app();
+        let press = |app: &mut App, tx: &mpsc::Sender<AppMsg>, c: char| {
+            app.on_input(
+                Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+                tx,
+            );
+        };
+
+        // Live greeter (empty stream): first/last pipeline stage.
+        app.tab = Tab::Live;
+        app.selected = 2;
+        press(&mut app, &tx, 'g');
+        assert_eq!(app.selected, 0);
+        press(&mut app, &tx, 'G');
+        assert_eq!(app.selected, PIPELINE.len() - 1);
+
+        // Live stream: g = first page (renderer clamps), G = follow tail.
+        for i in 0..30 {
+            app.stream.push(crate::runner::events::AgentEvent::Text {
+                text: format!("e{i}"),
+            });
+        }
+        press(&mut app, &tx, 'g');
+        assert_eq!(app.stream_scroll, Some(0));
+        press(&mut app, &tx, 'G');
+        assert_eq!(app.stream_scroll, None);
+
+        // History: scrolls the run list, clamped to the renderer's extent
+        // (was: silently corrupted the Live scroll while moving the pipeline
+        // cursor - runs beyond one screen were unreachable).
+        app.tab = Tab::History;
+        app.view_max.history.set(25);
+        press(&mut app, &tx, 'G');
+        assert_eq!(app.history_scroll, 25);
+        press(&mut app, &tx, 'j');
+        assert_eq!(app.history_scroll, 25, "j clamps at the extent");
+        press(&mut app, &tx, 'g');
+        assert_eq!(app.history_scroll, 0);
+        press(&mut app, &tx, 'k');
+        assert_eq!(app.history_scroll, 0, "k clamps at the top");
+
+        // Plan/Guide: G jumps to the renderer-reported bottom, j/k clamp.
+        app.tab = Tab::Plan;
+        app.view_max.plan.set(40);
+        press(&mut app, &tx, 'G');
+        assert_eq!(app.plan_scroll, 40);
+        press(&mut app, &tx, 'j');
+        assert_eq!(app.plan_scroll, 40);
+        app.tab = Tab::Guide;
+        app.view_max.guide.set(7);
+        press(&mut app, &tx, 'G');
+        assert_eq!(app.guide_scroll, 7);
+        press(&mut app, &tx, 'g');
+        assert_eq!(app.guide_scroll, 0);
+
+        // Findings: first/last visible finding.
+        std::fs::create_dir_all(app.dirs.findings_dir()).unwrap();
+        std::fs::write(
+            app.dirs
+                .findings_dir()
+                .join("20260716T000000Z-dual-review.json"),
+            r#"{"ritual_findings":1,"stage":"dual-review","findings":[
+                {"id":1,"severity":"major","title":"a","file":"src/a.rs","line":1,
+                 "scenario":"s","sources":["claude"],"verdict":"confirmed","action":"pending"},
+                {"id":2,"severity":"minor","title":"b","file":"src/b.rs","line":2,
+                 "scenario":"s","sources":["claude"],"verdict":"confirmed","action":"pending"}]}"#,
+        )
+        .unwrap();
+        app.reload_artifacts();
+        app.tab = Tab::Findings;
+        press(&mut app, &tx, 'G');
+        assert_eq!(app.selected_finding, app.visible_findings().len() - 1);
+        press(&mut app, &tx, 'g');
+        assert_eq!(app.selected_finding, 0);
+    }
+
+    #[test]
     fn ctrl_c_quits_from_inside_every_text_modal_and_chords_do_not_type() {
         let ctrl_c = Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         // Palette open: Ctrl-C used to append a literal 'c' to the filter.
@@ -6845,6 +6965,10 @@ mod tests {
     #[test]
     fn nav_scrolls_the_tab_specific_buffer() {
         let (_t, mut app, tx, _rx) = test_app();
+        // Scrolls clamp to the renderer-reported extents; pretend a frame
+        // was drawn with room to scroll.
+        app.view_max.plan.set(10);
+        app.view_max.guide.set(10);
 
         app.tab = Tab::Plan;
         app.dispatch(Action::Down, &tx);
@@ -6912,14 +7036,20 @@ mod tests {
     }
 
     #[test]
-    fn nav_wraps_pipeline_selection_on_history_tab() {
+    fn nav_scrolls_the_history_list_not_the_pipeline() {
+        // Behavior change (which-key honesty work): j/k on History scroll
+        // the run list - the pipeline cursor stays reachable on the Live
+        // greeter and via the stage-detail overlay.
         let (_t, mut app, tx, _rx) = test_app();
-        app.tab = Tab::History; // the tab that drives sidebar selection
-        app.selected = 0;
-        app.dispatch(Action::Up, &tx); // wrap backwards to the last stage
-        assert_eq!(app.selected, PIPELINE.len() - 1);
-        app.dispatch(Action::Down, &tx); // wrap forward to the first
-        assert_eq!(app.selected, 0);
+        app.tab = Tab::History;
+        app.view_max.history.set(5);
+        app.selected = 3;
+        app.dispatch(Action::Down, &tx);
+        app.dispatch(Action::Down, &tx);
+        assert_eq!(app.history_scroll, 2);
+        assert_eq!(app.selected, 3, "pipeline cursor untouched from History");
+        app.dispatch(Action::Up, &tx);
+        assert_eq!(app.history_scroll, 1);
     }
 
     #[test]
