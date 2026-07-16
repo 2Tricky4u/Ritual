@@ -205,6 +205,30 @@ pub fn install(claude_home: &Path, force: bool) -> Result<InstallReport> {
 mod tests {
     use super::*;
 
+    /// The git contracts the pipeline relies on must not silently drift out
+    /// of the vendored skills: dual-review reviews the WORKING TREE (a
+    /// committed-only diff skipped every uncommitted implementation), tdd
+    /// commits only its own test files, and pr flags uncommitted work.
+    #[test]
+    fn skill_git_contracts_survive_edits() {
+        let body = |name: &str| {
+            SKILLS
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, b)| *b)
+                .unwrap()
+        };
+        let dual = body("dual-review");
+        assert!(dual.contains("merge-base"), "worktree-vs-merge-base diff");
+        assert!(dual.contains("ls-files --others"), "untracked files read");
+        let tdd = body("tdd");
+        assert!(!tdd.contains("Commit the failing tests if in a git repo"));
+        assert!(tdd.contains("git add <each test file path>"));
+        assert!(tdd.contains("red-only"), "ritual's tests-red stop point");
+        let pr = body("pr");
+        assert!(pr.contains("status --porcelain"), "dirty-tree PR warning");
+    }
+
     #[test]
     fn install_covers_all_dispositions_and_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();

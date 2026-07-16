@@ -10,7 +10,7 @@ The description is evidence-based: it reflects `git diff <base>...HEAD` and the 
 
 ## Procedure
 
-1. Determine base (`main` unless given), then read `git log <base>..HEAD --oneline` and `git diff <base>...HEAD --stat`; read the full diff for anything non-obvious.
+1. Determine base (`main` unless given), then read `git log <base>..HEAD --oneline` and `git diff <base>...HEAD --stat`; read the full diff for anything non-obvious. Also run `git status --porcelain`: if it is non-empty, warn prominently in your output that uncommitted/untracked changes exist and are NOT part of this PR (the committed-only diff is correct for a PR, but the human must know the branch isn't fully committed).
 2. Compose:
    - **Title**: imperative, ≤72 chars, the user-visible outcome.
    - **Summary**: 2-4 sentences - what changed and why, written for a reviewer who hasn't read the code.

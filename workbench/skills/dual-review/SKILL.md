@@ -1,7 +1,7 @@
 ---
 name: dual-review
 description: Independent two-model review of the current diff - Claude's code-reviewer subagent and OpenAI Codex review the same changes without seeing each other's findings, then results are merged and only confirmed findings are fixed. Use before committing significant changes.
-argument-hint: "[base ref, e.g. main - omit to review uncommitted changes]"
+argument-hint: "[base ref, e.g. main - the whole feature (committed + uncommitted) is reviewed; omit to review uncommitted changes only]"
 ---
 
 # Dual-model review gate
@@ -10,7 +10,7 @@ Two reviewers from different vendors have decorrelated blind spots. The independ
 
 ## Procedure
 
-1. **Scope the diff.** Uncommitted changes by default; if a base ref argument was given, use `git diff <base>...HEAD`.
+1. **Scope the diff.** Uncommitted changes by default. If a base ref argument was given, review the WORKING TREE against the merge-base - `BASE=$(git merge-base <base> HEAD) && git diff $BASE` - so uncommitted implementation is reviewed too (committed-only `<base>...HEAD` silently skips everything not yet committed), **plus** untracked files: list them with `git ls-files --others --exclude-standard` and read each one directly. If `merge-base` fails (unborn HEAD, unknown base), fall back to `git diff HEAD` plus the untracked files.
 
 2. **Run both reviews independently - in parallel, same input:**
    - **Claude side:** launch the `code-reviewer` subagent on the diff.
