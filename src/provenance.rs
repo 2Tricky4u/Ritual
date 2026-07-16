@@ -88,6 +88,19 @@ fn dirty_digest(root: &Path) -> Option<String> {
 }
 
 /// Best-effort collection: a missing tool yields None, never an error.
+/// Compact tree identity for staleness comparison: "HEADsha:dirtydigest".
+/// None outside a git work tree - callers must treat None as "unknown",
+/// never as "clean" or "changed". Cost: 2-3 git subprocesses; call at
+/// event cadence (stage completion, debounced refresh), never per frame.
+pub fn tree_fingerprint(root: &Path) -> Option<String> {
+    if !crate::git::in_work_tree(root) {
+        return None;
+    }
+    let head = cmd_line("git", &["rev-parse", "HEAD"], root).unwrap_or_else(|| "unborn".into());
+    let dirty = dirty_digest(root).unwrap_or_else(|| "clean".into());
+    Some(format!("{head}:{dirty}"))
+}
+
 pub fn collect(cfg: &Config, dirs: &RitualDirs) -> ReproBundle {
     let root = &dirs.work_root;
     let git_commit = cmd_line("git", &["rev-parse", "HEAD"], root);
@@ -455,6 +468,21 @@ mod tests {
         std::fs::write(p.join("input-a.txt"), "b\n").unwrap();
         let db = dirty_digest(p).expect("digest on unborn HEAD");
         assert_ne!(da, db, "different untracked content must differ");
+    }
+
+    #[test]
+    fn tree_fingerprint_tracks_edits_and_is_none_outside_git() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(tree_fingerprint(tmp.path()), None, "non-git = unknown");
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        let clean = tree_fingerprint(tmp.path()).expect("git tree fingerprints");
+        std::fs::write(tmp.path().join("input.txt"), "changed\n").unwrap();
+        let dirty = tree_fingerprint(tmp.path()).expect("still Some");
+        assert_ne!(clean, dirty, "an edit must change the fingerprint");
     }
 
     #[test]

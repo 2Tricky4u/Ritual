@@ -83,6 +83,12 @@ pub struct StageState {
     /// `--resume` the exact conversation instead of "most recent in cwd".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Tree fingerprint (HEAD sha + dirty digest) captured when the stage
+    /// reached a terminal status. Guidance compares it against the current
+    /// tree to flag Done-but-stale review stages. None = unknown (legacy
+    /// state, non-git dirs, reconciled runs) - NEVER reported stale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -508,6 +514,42 @@ mod tests {
             loaded.features["feat-x"].stage(StageId::TestsRed).status,
             StageStatus::Done
         );
+        // Same contract for fields added later: legacy = None, never stale.
+        assert_eq!(
+            loaded.features["feat-x"]
+                .stage(StageId::TestsRed)
+                .fingerprint,
+            None
+        );
+    }
+
+    #[test]
+    fn stage_fingerprint_round_trips_and_stays_optional() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = RitualDirs::new(tmp.path());
+        std::fs::create_dir_all(tmp.path().join(".ritual")).unwrap();
+        let mut st = State::default();
+        let f = st.feature_for_branch_mut("main");
+        f.stages.insert(
+            StageId::DualReview,
+            StageState {
+                status: StageStatus::Done,
+                fingerprint: Some("abc123:deadbeef".into()),
+                ..Default::default()
+            },
+        );
+        st.save(&dirs).unwrap();
+        let loaded = State::load(&dirs).unwrap();
+        assert_eq!(
+            loaded.features["main"]
+                .stage(StageId::DualReview)
+                .fingerprint
+                .as_deref(),
+            Some("abc123:deadbeef")
+        );
+        // Absent fingerprints are skipped on disk (old binaries stay happy).
+        let text = std::fs::read_to_string(dirs.state_file()).unwrap();
+        assert_eq!(text.matches("fingerprint").count(), 1, "{text}");
     }
 
     #[test]

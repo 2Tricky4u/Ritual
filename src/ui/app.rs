@@ -642,13 +642,20 @@ impl App {
     /// Where a run for the currently selected feature must execute: the
     /// current checkout if branches match, else that branch's worktree.
     fn run_cwd(&self) -> Option<std::path::PathBuf> {
+        self.checkout_for(&self.branch)
+    }
+
+    /// The checkout an EXPLICIT branch's runs execute in (worktree-aware).
+    /// Used at run completion too, so a stage's tree fingerprint reflects
+    /// the tree the run actually ran in, not the viewed feature's.
+    fn checkout_for(&self, branch: &str) -> Option<std::path::PathBuf> {
         let checked_out = state::current_branch(&self.dirs.work_root);
-        if checked_out.as_deref() == Some(self.branch.as_str()) || self.branch == "detached" {
+        if checked_out.as_deref() == Some(branch) || branch == "detached" {
             return Some(self.dirs.work_root.clone());
         }
         state::worktrees(&self.dirs.work_root)
             .into_iter()
-            .find(|(b, _)| *b == self.branch)
+            .find(|(b, _)| *b == branch)
             .map(|(_, p)| p)
     }
 
@@ -678,7 +685,15 @@ impl App {
         // delta, so the TUI's save can't clobber it (the load-once TUI otherwise
         // overwrites the whole file with a stale snapshot).
         self.reload_state();
-        crate::run_cmd::set_stage(&mut self.state, branch, stage, status, run_id);
+        let tree = self.checkout_for(branch);
+        crate::run_cmd::set_stage(
+            &mut self.state,
+            branch,
+            stage,
+            status,
+            run_id,
+            tree.as_deref(),
+        );
         let _ = self.state.save(&self.dirs);
         self.state_mtime = std::fs::metadata(self.dirs.state_file())
             .and_then(|m| m.modified())
@@ -2125,7 +2140,9 @@ impl App {
             }
         }
         for (branch, stage, status) in fixes {
-            crate::run_cmd::set_stage(&mut self.state, &branch, stage, status, None);
+            // tree=None: these runs finished UNWATCHED and the tree has
+            // drifted since - a now-fingerprint would be a lie.
+            crate::run_cmd::set_stage(&mut self.state, &branch, stage, status, None, None);
         }
         let _ = self.state.save(&self.dirs);
     }
@@ -7520,6 +7537,7 @@ mod tests {
             StageId::DualReview,
             StageStatus::Running,
             None,
+            None,
         );
         // A concurrent CLI process completes plan-review (and, wrongly, flips
         // dual-review to Failed) and saves to disk.
@@ -7530,12 +7548,14 @@ mod tests {
             StageId::PlanReview,
             StageStatus::Done,
             None,
+            None,
         );
         crate::run_cmd::set_stage(
             &mut disk,
             &app.branch,
             StageId::DualReview,
             StageStatus::Failed,
+            None,
             None,
         );
         disk.save(&app.dirs).unwrap();
@@ -7565,6 +7585,7 @@ mod tests {
             &app.branch,
             StageId::Plan,
             StageStatus::Done,
+            None,
             None,
         );
 

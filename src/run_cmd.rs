@@ -891,6 +891,7 @@ pub fn budget_exceeded(cfg: &Config, dirs: &RitualDirs) -> Option<(f64, f64)> {
 /// would clobber whatever the TUI (or another CLI command) wrote meanwhile.
 /// Parity with the TUI's `set_stage` (commit 40fd595 fixed only that side).
 /// On a load error the in-memory snapshot is kept (never lose our own delta).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn set_stage_persist(
     dirs: &RitualDirs,
     st: &mut State,
@@ -898,26 +899,36 @@ pub(crate) fn set_stage_persist(
     stage: StageId,
     status: StageStatus,
     run_id: Option<String>,
+    tree: Option<&Path>,
 ) -> Result<()> {
     if let Ok(fresh) = State::load(dirs) {
         *st = fresh;
     }
-    set_stage(st, branch, stage, status, run_id);
+    set_stage(st, branch, stage, status, run_id, tree);
     st.save(dirs)
 }
 
+/// The single stage-status mutator (TUI and CLI both funnel here). `tree` is
+/// the checkout the stage ran in: a TERMINAL status stamps its fingerprint
+/// so guidance can flag Done-but-stale review stages; pass None where the
+/// tree is unknown or has drifted since (the stamp is overwritten with None
+/// then - a stale fingerprint must never lie).
 pub(crate) fn set_stage(
     st: &mut State,
     branch: &str,
     stage: StageId,
     status: StageStatus,
     run_id: Option<String>,
+    tree: Option<&Path>,
 ) {
     let feature = st.feature_for_branch_mut(branch);
     let entry = feature.stages.entry(stage).or_default();
     match status {
         StageStatus::Running => entry.started_at = Some(Utc::now()),
-        _ => entry.finished_at = Some(Utc::now()),
+        _ => {
+            entry.finished_at = Some(Utc::now());
+            entry.fingerprint = tree.and_then(crate::provenance::tree_fingerprint);
+        }
     }
     entry.status = status;
     if let Some(id) = run_id {
@@ -952,7 +963,7 @@ fn run_spec_stage(
     } else {
         StageStatus::Pending
     };
-    set_stage(st, branch, StageId::Spec, new_status, None);
+    set_stage(st, branch, StageId::Spec, new_status, None, None);
     st.save(dirs)?;
     println!(
         "spec {} ({})",
@@ -978,7 +989,7 @@ fn run_interactive(
     let slug = state::branch_slug(branch);
     let plan_mtime_before = mtime(&dirs.plan_file(&slug));
 
-    set_stage(st, branch, stage, StageStatus::Running, None);
+    set_stage(st, branch, stage, StageStatus::Running, None, None);
     st.save(dirs)?;
 
     // Interactive `--resume` ignores a positional prompt, so hand the user the
@@ -1025,7 +1036,14 @@ fn run_interactive(
                 StageStatus::Failed
             } else {
                 if check_green(&dirs.work_root, cfg.check_timeout_secs) {
-                    set_stage(st, branch, StageId::Implement, StageStatus::Done, None);
+                    set_stage(
+                        st,
+                        branch,
+                        StageId::Implement,
+                        StageStatus::Done,
+                        None,
+                        Some(&dirs.work_root),
+                    );
                     println!("check.sh green: tests-red and implement both done");
                 } else {
                     println!("failing tests in place, ready to implement");
@@ -1049,7 +1067,7 @@ fn run_interactive(
             }
         }
     };
-    set_stage(st, branch, stage, new_status, None);
+    set_stage(st, branch, stage, new_status, None, Some(&dirs.work_root));
     st.save(dirs)?;
     // Scriptability parity with the headless path: a crashed session is a
     // nonzero exit (NeedsAttention keeps 0 - the stage ran, work remains).
@@ -1088,7 +1106,7 @@ fn run_headless(
     }
     let findings_before = list_findings(&dirs.findings_dir());
 
-    set_stage_persist(dirs, st, branch, stage, StageStatus::Running, None)?;
+    set_stage_persist(dirs, st, branch, stage, StageStatus::Running, None, None)?;
 
     let req = RunRequest {
         agent: cmd.agent,
@@ -1142,6 +1160,7 @@ fn run_headless(
         stage,
         new_status,
         Some(outcome.meta.run_id.clone()),
+        Some(&dirs.work_root),
     )?;
 
     // CI mode: JUnit XML from the findings this run produced.
@@ -1303,6 +1322,7 @@ pub fn run_doc_chat(
             stage_id,
             StageStatus::Done,
             Some(run_id),
+            None,
         )?;
         println!("{} updated ({})", kind.label(), doc_path.display());
     } else {
@@ -1461,6 +1481,7 @@ mod tests {
             StageId::PlanReview,
             StageStatus::Running,
             None,
+            None,
         );
         let running = st.features["main"].stage(StageId::PlanReview);
         assert_eq!(running.status, StageStatus::Running);
@@ -1474,11 +1495,78 @@ mod tests {
             StageId::PlanReview,
             StageStatus::Done,
             Some("run-42".into()),
+            None,
         );
         let done = st.features["main"].stage(StageId::PlanReview);
         assert_eq!(done.status, StageStatus::Done);
         assert!(done.finished_at.is_some());
         assert_eq!(done.runs, vec!["run-42".to_string()]);
+    }
+
+    #[test]
+    fn set_stage_stamps_the_tree_fingerprint_on_terminal_status_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "x",
+                "--allow-empty",
+            ][..],
+        ] {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(tmp.path())
+                .output()
+                .unwrap();
+        }
+        let mut st = State::default();
+        // Running never stamps.
+        set_stage(
+            &mut st,
+            "main",
+            StageId::DualReview,
+            StageStatus::Running,
+            None,
+            Some(tmp.path()),
+        );
+        assert_eq!(
+            st.features["main"].stage(StageId::DualReview).fingerprint,
+            None
+        );
+        // Done in a git tree stamps "HEAD:digest".
+        set_stage(
+            &mut st,
+            "main",
+            StageId::DualReview,
+            StageStatus::Done,
+            None,
+            Some(tmp.path()),
+        );
+        let fp = st.features["main"]
+            .stage(StageId::DualReview)
+            .fingerprint
+            .expect("stamped on Done");
+        assert!(fp.contains(':'), "{fp}");
+        // A later terminal status with tree=None OVERWRITES to None (a stale
+        // fingerprint must never lie).
+        set_stage(
+            &mut st,
+            "main",
+            StageId::DualReview,
+            StageStatus::Failed,
+            None,
+            None,
+        );
+        assert_eq!(
+            st.features["main"].stage(StageId::DualReview).fingerprint,
+            None
+        );
     }
 
     #[test]
