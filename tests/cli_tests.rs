@@ -2154,6 +2154,73 @@ fn complete_reverts_a_plan_fix_that_self_certifies() {
 }
 
 #[test]
+fn a_second_audit_refuses_while_lanes_are_live() {
+    let tmp = setup_project();
+    std::fs::write(tmp.path().join(".ritual/audit-lanes.md"), "## solo\ns\n").unwrap();
+    // A live audit lane (our own pid: definitely alive).
+    let runs = tmp.path().join(".ritual/runs");
+    std::fs::create_dir_all(&runs).unwrap();
+    std::fs::write(
+        runs.join("20260716T000001Z-1-1-audit-lane-solo.status"),
+        format!(
+            r#"{{"pid":{},"stage":"audit-lane-solo","branch":"main"}}"#,
+            std::process::id()
+        ),
+    )
+    .unwrap();
+    audit_cmd(&tmp).arg("audit").assert().failure().stderr(
+        predicate::str::contains("already running").and(predicate::str::contains("ritual ps")),
+    );
+}
+
+#[test]
+fn discover_backs_up_a_hand_edited_lanes_file() {
+    let tmp = setup_project();
+    let lanes = tmp.path().join(".ritual/audit-lanes.md");
+    std::fs::write(&lanes, "## curated\nhand-written scope\n").unwrap();
+    audit_cmd(&tmp)
+        .env("FAKE_AGENT_WRITE_GLOB", r"[^ ]*audit-lanes\.md")
+        .env("FAKE_AGENT_WRITE_CONTENT", "## discovered\nnew scope\n")
+        .args(["audit", "--discover"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("backed up"));
+    let bak = std::fs::read_to_string(tmp.path().join(".ritual/audit-lanes.md.bak")).unwrap();
+    assert!(bak.contains("curated"), "the curated file survives: {bak}");
+}
+
+#[test]
+fn audit_ignores_foreign_findings_landing_in_the_judge_window() {
+    let tmp = setup_project();
+    std::fs::write(tmp.path().join(".ritual/audit-lanes.md"), "## solo\ns\n").unwrap();
+    // The "judge" writes a file that does NOT match the -audit.json naming
+    // contract (as a concurrent dual-review in another worktree would):
+    // the audit must not stamp/count it - and must then fail loudly because
+    // the judge itself wrote nothing.
+    audit_cmd(&tmp)
+        .env("FAKE_AGENT_WRITE_GLOB", r"[^ ]*/audit/[^ ]*\.md")
+        .env(
+            "FAKE_AGENT_FINDINGS",
+            ".ritual/findings/20260716T235958Z-dual-review.json",
+        )
+        .env("FAKE_AGENT_FINDINGS_IF_ARG", "mcp__codex__codex")
+        .arg("audit")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("wrote no findings file"));
+    // The foreign file was left alone: branch NOT stamped to this repo's.
+    let text = std::fs::read_to_string(
+        tmp.path()
+            .join(".ritual/findings/20260716T235958Z-dual-review.json"),
+    )
+    .unwrap();
+    assert!(
+        text.contains(r#""branch": "test-branch""#),
+        "foreign file untouched: {text}"
+    );
+}
+
+#[test]
 fn offline_blocks_agent_runs_before_any_spawn() {
     let tmp = setup_project();
     std::fs::write(tmp.path().join(".ritual/config.toml"), "offline = true\n").unwrap();

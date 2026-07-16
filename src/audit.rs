@@ -31,16 +31,21 @@ pub struct LaneSelection {
 
 /// Parse `audit-lanes.md`: exactly-`##` headings start lanes (deeper `###`
 /// stays description text), content before the first heading is ignored,
-/// empty-named headings are skipped, duplicate names (case-insensitive)
-/// keep the first occurrence. An empty-description lane is kept - the name
-/// alone scopes it.
+/// empty-named headings are skipped, headings inside ``` fences are content,
+/// and duplicate names keep the first occurrence. An empty-description lane
+/// is kept - the name alone scopes it.
 pub fn parse_lanes(text: &str) -> Vec<Lane> {
     let mut lanes: Vec<Lane> = Vec::new();
     let mut current: Option<Lane> = None;
+    let mut in_fence = false;
     for line in text.lines() {
         let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            // A `##` inside a fenced example must not become a PAID lane.
+            in_fence = !in_fence;
+        }
         let hashes = trimmed.chars().take_while(|c| *c == '#').count();
-        if hashes == 2 {
+        if hashes == 2 && !in_fence {
             if let Some(lane) = current.take() {
                 lanes.push(lane);
             }
@@ -66,10 +71,14 @@ pub fn parse_lanes(text: &str) -> Vec<Lane> {
     for lane in &mut lanes {
         lane.description = lane.description.trim().to_string();
     }
-    // Duplicate names would collide on report paths; keep the first.
+    // Dedupe by the lowercased SLUG - the report-path/stage-label
+    // equivalence class: "tui stuff" and "tui-stuff" map to the same report
+    // file (and "Runner"/"runner" collide on case-insensitive filesystems),
+    // so the loser's paid work would be silently clobbered and the judge
+    // double-fed one report under two names.
     let mut seen: Vec<String> = Vec::new();
     lanes.retain(|l| {
-        let key = l.name.to_lowercase();
+        let key = crate::state::branch_slug(&l.name).to_lowercase();
         if seen.contains(&key) {
             false
         } else {
@@ -103,6 +112,28 @@ pub fn select_lanes(parsed: Vec<Lane>, max_lanes: usize) -> LaneSelection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_heading_inside_a_code_fence_is_content_not_a_paid_lane() {
+        let lanes = parse_lanes(
+            "## real\nscope with an example:\n```md\n## not a lane\nbody\n```\nmore scope\n",
+        );
+        assert_eq!(lanes.len(), 1, "{lanes:?}");
+        assert_eq!(lanes[0].name, "real");
+        assert!(lanes[0].description.contains("## not a lane"));
+        assert!(lanes[0].description.contains("more scope"));
+    }
+
+    #[test]
+    fn lanes_dedupe_by_slug_not_just_lowercased_name() {
+        // "tui stuff" and "tui-stuff" share a report path/stage label
+        // (branch_slug); keeping both would let one clobber the other's
+        // paid report and double-feed the judge.
+        let lanes = parse_lanes("## tui stuff\nfirst\n## tui-stuff\nsecond\n## other\n");
+        assert_eq!(lanes.len(), 2, "{lanes:?}");
+        assert_eq!(lanes[0].name, "tui stuff", "first occurrence wins");
+        assert_eq!(lanes[1].name, "other");
+    }
 
     #[test]
     fn parses_lanes_in_order_with_multiline_descriptions() {

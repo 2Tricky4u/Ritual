@@ -579,11 +579,43 @@ pub fn audit(
         );
     }
     let branch = state::current_branch(&dirs.work_root).unwrap_or_else(|| "detached".to_string());
+    // Resolve a relative --lanes-file against the PROJECT ROOT once: the
+    // discovery agent's cwd is work_root, while this process may run from a
+    // subdirectory - two different bases would write one file and read
+    // another ("discovery finished but wrote no lanes", money spent).
     let lanes_path = lanes_file
-        .map(Path::to_path_buf)
+        .map(|p| {
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                dirs.work_root.join(p)
+            }
+        })
         .unwrap_or_else(|| dirs.audit_lanes_file());
 
+    // One audit at a time: lanes are detached daemons, so Ctrl-C leaves them
+    // running (and billing) - a rerun would silently double the spend.
+    let live_audit: Vec<String> = runner::live_runs(dirs)
+        .into_iter()
+        .filter(|(_, s)| s.stage.starts_with("audit"))
+        .map(|(id, _)| id)
+        .collect();
+    anyhow::ensure!(
+        live_audit.is_empty(),
+        "an audit is already running ({} live leg(s), e.g. `ritual attach {}`); \
+         wait for it or kill the legs (`ritual ps`) before starting another",
+        live_audit.len(),
+        live_audit[0]
+    );
+
     if discover {
+        // Never silently destroy a hand-curated lanes file.
+        if lanes_path.exists() {
+            let backup = lanes_path.with_extension("md.bak");
+            std::fs::copy(&lanes_path, &backup)
+                .with_context(|| format!("backing up {}", lanes_path.display()))?;
+            println!("existing lanes file backed up to {}", backup.display());
+        }
         let cmd = stages::audit_discover_command(cfg, &lanes_path);
         let outcome = audit_leg(cfg, dirs, &branch, "audit-discover", cmd)?;
         anyhow::ensure!(
@@ -714,10 +746,12 @@ pub fn audit(
 
     let mut payload = String::new();
     for (name, report) in &used {
-        payload.push_str(&format!(
-            "\n\n===== LANE REPORT: {name} =====\n{}",
-            std::fs::read_to_string(report)?
-        ));
+        // LOSSY read: one non-UTF8 byte in a report must not abort the audit
+        // AFTER every lane's budget is already spent.
+        let text = std::fs::read(report)
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .with_context(|| format!("reading lane report {}", report.display()))?;
+        payload.push_str(&format!("\n\n===== LANE REPORT: {name} =====\n{text}"));
     }
 
     let findings_before = list_findings(&dirs.findings_dir());
@@ -732,9 +766,14 @@ pub fn audit(
         "audit judge failed: {}",
         crate::history::decode_failure(&outcome.meta)
     );
+    // Only files matching the judge's naming contract: the findings dir is
+    // shared (worktrees, concurrent runs), and stamping/counting a foreign
+    // findings file that landed during the judge window would mis-scope it
+    // to this branch and inflate the summary.
     let new_findings: Vec<String> = list_findings(&dirs.findings_dir())
         .into_iter()
         .filter(|f| !findings_before.contains(f))
+        .filter(|f| f.ends_with("-audit.json"))
         .collect();
     // An empty findings LIST is valid; a missing findings FILE is a breach of
     // the judge contract - fail loudly, never a silent "all clean".

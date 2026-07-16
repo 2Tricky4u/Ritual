@@ -270,6 +270,38 @@ pub fn clean(dirs: &RitualDirs, keep: usize, dry_run: bool) -> Result<CleanRepor
             report.deleted_groups.push(id.clone());
         }
     }
+
+    // 7. Audit report dirs (`.ritual/audit/<UTC ts>/`): one per audit run,
+    //    machine-generated lane reports with no other lifecycle - keep the
+    //    newest 5 (timestamped names sort lexicographically).
+    const AUDIT_KEEP: usize = 5;
+    let audit_root = dirs.audit_dir();
+    if audit_root.is_dir() {
+        let mut report_dirs: Vec<std::path::PathBuf> = std::fs::read_dir(&audit_root)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        report_dirs.sort();
+        report_dirs.reverse(); // newest first
+        let mut pruned = 0usize;
+        for dir in report_dirs.into_iter().skip(AUDIT_KEEP) {
+            assert!(
+                dir.starts_with(&audit_root),
+                "deletion target escaped audit dir: {}",
+                dir.display()
+            );
+            if !dry_run && std::fs::remove_dir_all(&dir).is_err() {
+                continue;
+            }
+            pruned += 1;
+        }
+        if pruned > 0 {
+            report.notices.push(format!(
+                "pruned {pruned} old audit report dir(s) (newest {AUDIT_KEEP} kept)"
+            ));
+        }
+    }
     Ok(report)
 }
 

@@ -265,9 +265,10 @@ reviews a *change*; the audit reviews the *system*: cross-flow and
 inter-stage contracts, exactly where per-diff review is blind by
 construction. `ritual audit --discover` enumerates your project's
 flows/techs into `.ritual/audit-lanes.md` (edit it - it's yours); a
-plain `ritual audit` then runs one focused, read-only review lane per
-flow IN PARALLEL, blind to each other (they see the other lanes' names
-only - independent reviewers with decorrelated blind spots), plus an
+plain `ritual audit` then runs one focused review lane per flow IN
+PARALLEL - read-only by prompt contract (each lane's only write target
+is its report file), blind to each other (they see the other lanes'
+names only - independent reviewers with decorrelated blind spots), plus an
 always-on `global-overview` lane for the contracts between flows. A
 judge then adversarially refutes every candidate, requires an
 independent Codex verdict per survivor (a judge should never grade its
