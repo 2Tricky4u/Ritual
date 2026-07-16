@@ -143,17 +143,12 @@ impl State {
         serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
     }
 
-    /// Atomic save: write tmp file in the same dir, then rename over.
+    /// Atomic save via a writer-unique tmp + rename: the TUI and a CLI
+    /// command may save concurrently, and a shared tmp name would let their
+    /// writes interleave into corrupt bytes.
     pub fn save(&self, dirs: &RitualDirs) -> Result<()> {
-        let path = dirs.state_file();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let tmp = path.with_extension("json.tmp");
         let text = serde_json::to_string_pretty(self)?;
-        std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
-        std::fs::rename(&tmp, &path).with_context(|| format!("renaming to {}", path.display()))?;
-        Ok(())
+        crate::fsx::atomic_write(&dirs.state_file(), text.as_bytes())
     }
 
     pub fn feature_for_branch_mut(&mut self, branch: &str) -> &mut Feature {

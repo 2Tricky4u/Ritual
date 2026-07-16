@@ -57,7 +57,11 @@ fn cmd_line(bin: &str, args: &[&str], cwd: &Path) -> Option<String> {
 /// files, so two runs with different untracked inputs used to fingerprint
 /// identically - a repro bundle that couldn't tell its inputs apart.
 fn dirty_digest(root: &Path) -> Option<String> {
-    let diff = cmd_line("git", &["diff", "HEAD"], root)?;
+    // Unborn HEAD (fresh repo, no commits): `git diff HEAD` fails, but the
+    // untracked inputs below still distinguish runs - diff against the
+    // empty-tree sentinel instead of giving up (None == "clean", a lie here).
+    let diff = cmd_line("git", &["diff", "HEAD"], root)
+        .or_else(|| cmd_line("git", &["diff", crate::git::EMPTY_TREE], root))?;
     let mut input = diff;
     let untracked = cmd_line(
         "git",
@@ -199,13 +203,12 @@ pub fn load_checkpoint(runs_dir: &Path) -> Result<Option<Checkpoint>> {
     Ok(Some(cp))
 }
 
-/// Atomic write (tmp + rename), like State::save.
+/// Atomic write (writer-unique tmp + rename), like State::save.
 pub fn write_checkpoint(runs_dir: &Path, cp: &Checkpoint) -> Result<()> {
-    let path = checkpoint_path(runs_dir);
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(cp)?)?;
-    std::fs::rename(&tmp, &path)?;
-    Ok(())
+    crate::fsx::atomic_write(
+        &checkpoint_path(runs_dir),
+        serde_json::to_string_pretty(cp)?.as_bytes(),
+    )
 }
 
 /// The `this` hash of the newest chained run, else the checkpoint link
@@ -319,6 +322,24 @@ mod tests {
         )
         .unwrap();
         chain
+    }
+
+    #[test]
+    fn dirty_digest_sees_untracked_inputs_on_an_unborn_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(p)
+            .output()
+            .unwrap();
+        // No commits: `git diff HEAD` fails. The untracked input must still
+        // fingerprint (None would make two different inputs look identical).
+        std::fs::write(p.join("input-a.txt"), "a\n").unwrap();
+        let da = dirty_digest(p).expect("digest on unborn HEAD");
+        std::fs::write(p.join("input-a.txt"), "b\n").unwrap();
+        let db = dirty_digest(p).expect("digest on unborn HEAD");
+        assert_ne!(da, db, "different untracked content must differ");
     }
 
     #[test]

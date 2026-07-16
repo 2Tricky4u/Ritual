@@ -110,12 +110,13 @@ pub fn scan(cfg: &Config, dirs: &RitualDirs) -> Result<SecretsReport> {
         findings,
         ..Default::default()
     };
-    std::fs::create_dir_all(dirs.findings_dir())?;
     let path = dirs.findings_dir().join(format!(
         "{}-secrets.json",
         Utc::now().format("%Y%m%dT%H%M%SZ")
     ));
-    std::fs::write(&path, serde_json::to_string_pretty(&file)?)?;
+    // Atomic: this file is the one gate whose whole job is to BLOCK - a
+    // truncated write would be silently skipped by load_all (fail-open).
+    crate::fsx::atomic_write(&path, serde_json::to_string_pretty(&file)?.as_bytes())?;
     Ok(SecretsReport {
         scanned_files: staged,
         leaks,
@@ -162,9 +163,15 @@ fn changed_files(dirs: &RitualDirs) -> Result<Vec<PathBuf>> {
         if !out.status.success() {
             continue;
         }
-        for seg in String::from_utf8_lossy(&out.stdout).split('\0') {
-            let p = PathBuf::from(seg);
-            if !seg.is_empty() && !files.contains(&p) {
+        // RAW bytes, not from_utf8_lossy: a non-UTF8 filename mangled to
+        // U+FFFD names nothing on disk and would silently skip the scan.
+        use std::os::unix::ffi::OsStrExt;
+        for seg in out.stdout.split(|b| *b == 0) {
+            if seg.is_empty() {
+                continue;
+            }
+            let p = PathBuf::from(std::ffi::OsStr::from_bytes(seg));
+            if !files.contains(&p) {
                 files.push(p);
             }
         }
@@ -261,6 +268,29 @@ mod tests {
         assert!(
             files.contains(&PathBuf::from("we ird name.txt")),
             "{files:?}"
+        );
+    }
+
+    #[test]
+    fn changed_files_keeps_non_utf8_names_scannable() {
+        use std::os::unix::ffi::OsStrExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(p)
+            .output()
+            .unwrap();
+        // A filename with a raw non-UTF8 byte: from_utf8_lossy would mangle it
+        // to U+FFFD, a path that names NOTHING - the file (and any secret in
+        // it) would silently skip the scan.
+        let name = std::ffi::OsStr::from_bytes(b"le\xFFak.txt");
+        std::fs::write(p.join(name), "untracked\n").unwrap();
+        let dirs = crate::state::RitualDirs::new(p);
+        let files = changed_files(&dirs).unwrap();
+        assert!(
+            files.iter().any(|f| p.join(f).is_file()),
+            "non-UTF8 name must resolve to the real file: {files:?}"
         );
     }
 

@@ -14,6 +14,7 @@ pub mod coverage;
 pub mod doctor;
 pub mod export;
 pub mod findings;
+pub mod fsx;
 pub mod git;
 pub mod history;
 pub mod keymap;

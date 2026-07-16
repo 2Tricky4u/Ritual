@@ -25,7 +25,7 @@ use anyhow::{Context, Result};
 
 /// The well-known SHA of git's empty tree, used as the snapshot base when the
 /// repo has no commits yet.
-const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+pub const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 /// A pre-fix worktree snapshot. `base` is a commit/tree to diff against;
 /// `untracked_before` is the set of untracked files that already existed (so a

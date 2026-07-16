@@ -799,6 +799,26 @@ pub fn budget_exceeded(cfg: &Config, dirs: &RitualDirs) -> Option<(f64, f64)> {
     (spent >= budget).then_some((spent, budget))
 }
 
+/// Reload-merge-save: a headless run holds its `State` snapshot for minutes,
+/// so the delta must be folded into a FRESH load - saving the stale snapshot
+/// would clobber whatever the TUI (or another CLI command) wrote meanwhile.
+/// Parity with the TUI's `set_stage` (commit 40fd595 fixed only that side).
+/// On a load error the in-memory snapshot is kept (never lose our own delta).
+pub(crate) fn set_stage_persist(
+    dirs: &RitualDirs,
+    st: &mut State,
+    branch: &str,
+    stage: StageId,
+    status: StageStatus,
+    run_id: Option<String>,
+) -> Result<()> {
+    if let Ok(fresh) = State::load(dirs) {
+        *st = fresh;
+    }
+    set_stage(st, branch, stage, status, run_id);
+    st.save(dirs)
+}
+
 pub(crate) fn set_stage(
     st: &mut State,
     branch: &str,
@@ -964,8 +984,7 @@ fn run_headless(
     }
     let findings_before = list_findings(&dirs.findings_dir());
 
-    set_stage(st, branch, stage, StageStatus::Running, None);
-    st.save(dirs)?;
+    set_stage_persist(dirs, st, branch, stage, StageStatus::Running, None)?;
 
     let req = RunRequest {
         agent: cmd.agent,
@@ -1012,14 +1031,14 @@ fn run_headless(
     // the new_status computation so it runs post-`finalize_coverage` (A3's tree
     // fingerprint, added at this same point, then reflects the post-tick tree).
     crate::findings::stamp_branch(&dirs.findings_dir(), &new_findings, branch);
-    set_stage(
+    set_stage_persist(
+        dirs,
         st,
         branch,
         stage,
         new_status,
         Some(outcome.meta.run_id.clone()),
-    );
-    st.save(dirs)?;
+    )?;
 
     // CI mode: JUnit XML from the findings this run produced.
     if ci {
@@ -1172,8 +1191,14 @@ pub fn run_doc_chat(
     // downgrade a stage that was already further along.
     let content = std::fs::read_to_string(&doc_path).unwrap_or_default();
     if content != doc_before && crate::spec::has_meaningful_content(&content) {
-        set_stage(&mut st, &branch, stage_id, StageStatus::Done, Some(run_id));
-        st.save(dirs)?;
+        set_stage_persist(
+            dirs,
+            &mut st,
+            &branch,
+            stage_id,
+            StageStatus::Done,
+            Some(run_id),
+        )?;
         println!("{} updated ({})", kind.label(), doc_path.display());
     } else {
         println!("no change to {} ({})", kind.label(), doc_path.display());

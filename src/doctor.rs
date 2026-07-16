@@ -233,12 +233,14 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
 
     // -- secrets gate -------------------------------------------------------------
     // The scan lists changed files VIA GIT: outside a repo it scans nothing,
-    // so a green here would be a lie.
+    // so a green here would be a lie. The probe must check STDOUT, not just
+    // the exit code - inside .git/ or a bare repo the command exits 0 and
+    // prints "false" (same contract as git::dual_review_preflight).
     let in_git_repo = std::process::Command::new("git")
         .args(["rev-parse", "--is-inside-work-tree"])
         .current_dir(&dirs.work_root)
         .output()
-        .is_ok_and(|o| o.status.success());
+        .is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true");
     out.push(if !cfg.secrets_enabled {
         check("secrets", CheckStatus::Skipped, "disabled in [secrets]")
     } else if !crate::secrets::available(cfg) {
