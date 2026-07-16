@@ -101,6 +101,12 @@ fn main() -> Result<()> {
                 println!("no dispositions yet. Mark findings fixed (f) or dismissed (d) first")
             }
         },
+        Some(Command::Audit {
+            discover,
+            lanes_file,
+        }) => {
+            ritual::run_cmd::audit(&cfg, &dirs, discover, lanes_file.as_deref())?;
+        }
         Some(Command::Mutants { base }) => {
             let r = ritual::mutants::run(&cfg, &dirs, base.as_deref())?;
             if r.no_git {

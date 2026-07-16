@@ -79,6 +79,19 @@ pub enum Command {
         #[arg(long)]
         base: Option<String>,
     },
+    /// Whole-project audit: blind parallel review lanes (one per flow/tech,
+    /// defined in .ritual/audit-lanes.md) plus an always-on global-overview
+    /// lane, adjudicated by an adversarial cross-vendor judge into standard
+    /// findings. Optional and on-demand - run at milestones, not per commit
+    Audit {
+        /// Enumerate this project's flows into .ritual/audit-lanes.md and
+        /// stop (review/edit the file before running the full audit)
+        #[arg(long)]
+        discover: bool,
+        /// Lane definitions file (defaults to .ritual/audit-lanes.md)
+        #[arg(long)]
+        lanes_file: Option<std::path::PathBuf>,
+    },
     /// Scan changed files (tracked + untracked) for leaked secrets via
     /// gitleaks; hits become critical findings and exit nonzero
     Secrets,

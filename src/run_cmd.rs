@@ -512,6 +512,240 @@ fn run_fix(
     Ok(())
 }
 
+/// `ritual audit [--discover] [--lanes-file <p>]`: the optional whole-project
+/// review. Blind lanes run in PARALLEL (spawned detached first, followed one
+/// by one - wall clock tracks the slowest lane), then an adversarial
+/// cross-vendor judge adjudicates every candidate and writes standard
+/// findings (stage "audit"). Deliberately NOT a pipeline stage: state.json
+/// and `ritual status` are untouched; findings triage via the normal tab.
+pub fn audit(
+    cfg: &Config,
+    dirs: &RitualDirs,
+    discover: bool,
+    lanes_file: Option<&Path>,
+) -> Result<()> {
+    anyhow::ensure!(dirs.exists(), "no .ritual/ here; run `ritual init` first");
+    if let Some((spent, budget)) = budget_exceeded(cfg, dirs) {
+        anyhow::bail!(
+            "daily budget reached (${spent:.2}/${budget:.2}); raise budget_daily_usd to override"
+        );
+    }
+    let branch = state::current_branch(&dirs.work_root).unwrap_or_else(|| "detached".to_string());
+    let lanes_path = lanes_file
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| dirs.audit_lanes_file());
+
+    if discover {
+        let cmd = stages::audit_discover_command(cfg, &lanes_path);
+        let outcome = audit_leg(cfg, dirs, &branch, "audit-discover", cmd)?;
+        anyhow::ensure!(
+            outcome.meta.ok,
+            "discovery run failed: {}",
+            crate::history::decode_failure(&outcome.meta)
+        );
+        let text = std::fs::read_to_string(&lanes_path).unwrap_or_default();
+        let lanes = crate::audit::parse_lanes(&text);
+        anyhow::ensure!(
+            !lanes.is_empty(),
+            "discovery finished but wrote no lanes to {}",
+            lanes_path.display()
+        );
+        println!(
+            "discovered {} lane(s) in {}:",
+            lanes.len(),
+            lanes_path.display()
+        );
+        for l in &lanes {
+            println!("  ## {}", l.name);
+        }
+        println!("review/edit the file, then run `ritual audit`.");
+        return Ok(());
+    }
+
+    let text = std::fs::read_to_string(&lanes_path).map_err(|_| {
+        anyhow::anyhow!(
+            "no lanes file at {}; run `ritual audit --discover` first (or write `## <lane>` headings by hand)",
+            lanes_path.display()
+        )
+    })?;
+    let parsed = crate::audit::parse_lanes(&text);
+    anyhow::ensure!(
+        !parsed.is_empty(),
+        "no lanes defined in {}; run `ritual audit --discover` or add `## <lane>` headings",
+        lanes_path.display()
+    );
+    let sel = crate::audit::select_lanes(parsed, cfg.audit_max_lanes);
+    if sel.truncated > 0 {
+        println!(
+            "warning: {} lane(s) beyond audit_max_lanes={} were skipped",
+            sel.truncated, cfg.audit_max_lanes
+        );
+    }
+    // The judge leg is cross-vendor by contract: fail BEFORE paying for lanes.
+    if !cfg.offline && !stages::codex_ready(cfg) {
+        anyhow::bail!(
+            "codex is not authenticated. Run `codex login` first (the audit judge verifies findings via Codex)"
+        );
+    }
+
+    let reports_dir = dirs
+        .audit_dir()
+        .join(chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string());
+    std::fs::create_dir_all(&reports_dir)?;
+    let invariants = stages::meaningful_invariants(dirs);
+    let names: Vec<String> = sel.lanes.iter().map(|l| l.name.clone()).collect();
+
+    // Spawn EVERY lane daemon first - they execute concurrently - then follow
+    // each to completion (order here is display-only).
+    let mut legs: Vec<(String, std::path::PathBuf, String)> = Vec::new();
+    for lane in &sel.lanes {
+        let others: Vec<&str> = names
+            .iter()
+            .filter(|n| *n != &lane.name)
+            .map(String::as_str)
+            .collect();
+        let slug = state::branch_slug(&lane.name);
+        let report = reports_dir.join(format!("{slug}.md"));
+        let cmd = stages::audit_lane_command(cfg, lane, &others, &report, invariants.as_deref());
+        let stage_label = format!("audit-lane-{slug}");
+        let req = RunRequest {
+            agent: cmd.agent,
+            argv: cmd.argv,
+            env: cmd.env,
+            stdin: cmd.stdin,
+            stage: stage_label.clone(),
+            feature: "audit".into(),
+            branch: branch.clone(),
+            redact: cfg.redaction,
+            repro: None,
+            cwd: dirs.work_root.clone(),
+            wrapper: stages::wrapper_argv(cfg, cmd.mode),
+        };
+        let run_id = runner::new_run_id(&stage_label);
+        runner::spawn_detached(dirs, &req, &run_id)?;
+        legs.push((run_id, report, lane.name.clone()));
+    }
+    println!(
+        "audit: {} lane(s) running in parallel (reports in {})",
+        legs.len(),
+        reports_dir.display()
+    );
+
+    // Collect in SELECTED LANE ORDER (deterministic judge input, whatever the
+    // completion order was). A lane's report file is the sole success
+    // criterion: a failed run that still left a report is used (warned).
+    let mut used: Vec<(String, std::path::PathBuf)> = Vec::new();
+    let mut failed = 0usize;
+    for (run_id, report, name) in &legs {
+        let run_ok = match follow_run(cfg, dirs, runner::AgentKind::Claude, run_id) {
+            Ok(o) => o.meta.ok,
+            Err(e) => {
+                println!("warning: lane '{name}' run error: {e:#}");
+                false
+            }
+        };
+        let usable = std::fs::metadata(report)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false);
+        match (usable, run_ok) {
+            (true, true) => used.push((name.clone(), report.clone())),
+            (true, false) => {
+                println!("warning: lane '{name}' run failed but left a report; using it");
+                used.push((name.clone(), report.clone()));
+            }
+            (false, _) => {
+                println!("warning: lane '{name}' produced no report; skipping it");
+                failed += 1;
+            }
+        }
+    }
+    anyhow::ensure!(
+        !used.is_empty(),
+        "every lane failed to produce a report; nothing to judge"
+    );
+
+    let mut payload = String::new();
+    for (name, report) in &used {
+        payload.push_str(&format!(
+            "\n\n===== LANE REPORT: {name} =====\n{}",
+            std::fs::read_to_string(report)?
+        ));
+    }
+
+    let findings_before = list_findings(&dirs.findings_dir());
+    let mut cmd = stages::audit_judge_command(cfg, payload);
+    cmd.env.push((
+        "RITUAL_FINDINGS_DIR".to_string(),
+        dirs.findings_dir().display().to_string(),
+    ));
+    let outcome = audit_leg(cfg, dirs, &branch, "audit-judge", cmd)?;
+    anyhow::ensure!(
+        outcome.meta.ok,
+        "audit judge failed: {}",
+        crate::history::decode_failure(&outcome.meta)
+    );
+    let new_findings: Vec<String> = list_findings(&dirs.findings_dir())
+        .into_iter()
+        .filter(|f| !findings_before.contains(f))
+        .collect();
+    // An empty findings LIST is valid; a missing findings FILE is a breach of
+    // the judge contract - fail loudly, never a silent "all clean".
+    anyhow::ensure!(
+        !new_findings.is_empty(),
+        "judge finished ok but wrote no findings file; inspect `ritual attach {}`",
+        outcome.meta.run_id
+    );
+    crate::findings::stamp_branch(&dirs.findings_dir(), &new_findings, &branch);
+
+    let (mut confirmed, mut unconfirmed) = (0usize, 0usize);
+    for name in &new_findings {
+        if let Ok(t) = std::fs::read_to_string(dirs.findings_dir().join(name))
+            && let Ok(file) = serde_json::from_str::<crate::findings::FindingsFile>(&t)
+        {
+            for f in &file.findings {
+                if crate::findings::verdict_confirmed(&f.verdict) {
+                    confirmed += 1;
+                } else {
+                    unconfirmed += 1;
+                }
+            }
+        }
+    }
+    println!(
+        "audit done: {} lane(s) used, {failed} failed · {confirmed} confirmed + {unconfirmed} unconfirmed finding(s) → {}",
+        used.len(),
+        new_findings.join(", ")
+    );
+    println!("triage in the TUI findings tab (t = recommended triage, A/F = queue + fix).");
+    Ok(())
+}
+
+/// Spawn one audit leg detached and follow it (shared by discovery + judge).
+fn audit_leg(
+    cfg: &Config,
+    dirs: &RitualDirs,
+    branch: &str,
+    stage_label: &str,
+    cmd: stages::StageCommand,
+) -> Result<runner::RunOutcome> {
+    let req = RunRequest {
+        agent: cmd.agent,
+        argv: cmd.argv,
+        env: cmd.env,
+        stdin: cmd.stdin,
+        stage: stage_label.into(),
+        feature: "audit".into(),
+        branch: branch.into(),
+        redact: cfg.redaction,
+        repro: None,
+        cwd: dirs.work_root.clone(),
+        wrapper: stages::wrapper_argv(cfg, cmd.mode),
+    };
+    let run_id = runner::new_run_id(stage_label);
+    runner::spawn_detached(dirs, &req, &run_id)?;
+    follow_run(cfg, dirs, req.agent, &run_id)
+}
+
 /// `ritual reset-plan [--force]`: re-plan from the spec. Without `--force`, print
 /// what WOULD change; with it, delete plan.md, reset the plan-derived stages to
 /// pending, and clear the plan findings + plan undo stack. Never touches code.
