@@ -1939,3 +1939,112 @@ fn verify_log_detects_a_tampered_archive() {
         .code(1)
         .stderr(predicate::str::contains("CHAIN BROKEN"));
 }
+
+/// Base env for token-free audit runs against the fake agent.
+fn audit_cmd(tmp: &tempfile::TempDir) -> Command {
+    let mut c = Command::cargo_bin("ritual").unwrap();
+    c.current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .env("FAKE_AGENT_DELAY", "0");
+    c
+}
+
+#[test]
+fn audit_without_lanes_hints_discover() {
+    let tmp = setup_project();
+    audit_cmd(&tmp)
+        .arg("audit")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--discover"));
+}
+
+#[test]
+fn audit_discover_writes_and_lists_lanes() {
+    let tmp = setup_project();
+    audit_cmd(&tmp)
+        .env("FAKE_AGENT_WRITE_GLOB", r"[^ ]*audit-lanes\.md")
+        .env(
+            "FAKE_AGENT_WRITE_CONTENT",
+            "## lane-a\\nscope a\\n## lane-b\\nscope b",
+        )
+        .args(["audit", "--discover"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("lane-a"))
+        .stdout(predicate::str::contains("review/edit"));
+    assert!(tmp.path().join(".ritual/audit-lanes.md").exists());
+}
+
+#[test]
+fn audit_runs_blind_lanes_then_judge_and_lands_standard_findings() {
+    let tmp = setup_project();
+    std::fs::write(
+        tmp.path().join(".ritual/audit-lanes.md"),
+        "## alpha\nthe alpha flow\n## beta\nthe beta flow\n",
+    )
+    .unwrap();
+    let state_before = std::fs::read_to_string(tmp.path().join(".ritual/state.json")).unwrap();
+
+    audit_cmd(&tmp)
+        // Each LANE writes its own report (path plucked from its own argv).
+        .env("FAKE_AGENT_WRITE_GLOB", r"[^ ]*/audit/[^ ]*\.md")
+        // Only the JUDGE leg (the one granted the codex MCP tools) writes
+        // the findings file - a lane doing so would poison the before/after
+        // findings diff.
+        .env(
+            "FAKE_AGENT_FINDINGS",
+            ".ritual/findings/20260716T235959Z-audit.json",
+        )
+        .env("FAKE_AGENT_FINDINGS_IF_ARG", "mcp__codex__codex")
+        .env("FAKE_AGENT_FINDINGS_STAGE", "audit")
+        .arg("audit")
+        .assert()
+        .success()
+        // alpha + beta + the always-on global lane.
+        .stdout(predicate::str::contains("3 lane(s) running in parallel"))
+        .stdout(predicate::str::contains("1 confirmed"))
+        .stdout(predicate::str::contains("triage"));
+
+    // Standard findings schema, stage "audit", branch stamped with the REAL
+    // branch (the canned file says "test-branch"; stamping overwrites it).
+    let text = std::fs::read_to_string(
+        tmp.path()
+            .join(".ritual/findings/20260716T235959Z-audit.json"),
+    )
+    .unwrap();
+    assert!(text.contains(r#""stage": "audit""#), "{text}");
+    assert!(text.contains(r#""branch": "main""#), "stamped: {text}");
+
+    // Every lane left its report in the per-run reports dir.
+    let audit_dir = tmp.path().join(".ritual/audit");
+    let run_dir = std::fs::read_dir(&audit_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .next()
+        .expect("one audit run dir")
+        .path();
+    for lane in ["alpha", "beta", "global-overview"] {
+        assert!(
+            run_dir.join(format!("{lane}.md")).exists(),
+            "missing report for {lane}"
+        );
+    }
+
+    // NOT a pipeline stage: state.json untouched by the whole audit.
+    let state_after = std::fs::read_to_string(tmp.path().join(".ritual/state.json")).unwrap();
+    assert_eq!(state_before, state_after, "audit must not touch state");
+}
+
+#[test]
+fn audit_fails_loudly_when_no_lane_reports() {
+    let tmp = setup_project();
+    std::fs::write(tmp.path().join(".ritual/audit-lanes.md"), "## solo\ns\n").unwrap();
+    // No FAKE_AGENT_WRITE_GLOB: no lane ever writes a report.
+    audit_cmd(&tmp)
+        .arg("audit")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("nothing to judge"));
+}
