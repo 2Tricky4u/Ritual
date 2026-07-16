@@ -36,6 +36,13 @@ const DUAL_REVIEW_TOOLS: &str =
 /// The code-fix batch edits source broadly and runs check.sh, so it needs the
 /// full edit + shell grant (like dual-review, minus codex; plus MultiEdit).
 const CODE_FIX_TOOLS: &str = "Task Read Glob Grep Edit Write MultiEdit Bash";
+/// Hard denials layered over the fixer's Bash grant: the prompt already
+/// forbids these, but only HEAD movement was mechanically detected - a
+/// `git push`/`git clean` that leaves HEAD in place was prompt-discipline
+/// only. Denials beat allows in the permission engine. (The plan-fix needs
+/// no list: its `doc_chat_tools` grant has no Bash at all.)
+const CODE_FIX_DISALLOWED_TOOLS: &str =
+    "Bash(git push:*) Bash(git commit:*) Bash(git reset:*) Bash(git rebase:*) Bash(git clean:*)";
 /// The re-review is strictly READ-ONLY with NO shell: it inspects the change
 /// (handed to it inline) and reads code for context, but cannot edit OR run git,
 /// so it can neither paper over its own verdict nor mutate the tree. Dropping
@@ -417,6 +424,8 @@ pub fn findings_code_fix_command(
                 "acceptEdits".into(),
                 "--allowedTools".into(),
                 CODE_FIX_TOOLS.into(),
+                "--disallowedTools".into(),
+                CODE_FIX_DISALLOWED_TOOLS.into(),
                 "--max-budget-usd".into(),
                 cfg.budget_code_fix_usd.to_string(),
             ],
@@ -1588,6 +1597,14 @@ mod tests {
         let i = cmd.argv.iter().position(|a| a == "--allowedTools").unwrap();
         assert_eq!(cmd.argv[i + 1], CODE_FIX_TOOLS);
         assert!(cmd.argv[i + 1].contains("Edit") && cmd.argv[i + 1].contains("Bash"));
+        // Hard denials on top of the Bash grant: history/remote mutation is
+        // enforced by the permission engine, not just the prompt.
+        let d = cmd
+            .argv
+            .iter()
+            .position(|a| a == "--disallowedTools")
+            .expect("fixer carries the git denial list");
+        assert!(cmd.argv[d + 1].contains("git push") && cmd.argv[d + 1].contains("git commit"));
         let p = cmd
             .argv
             .iter()
@@ -1644,6 +1661,8 @@ mod tests {
         );
         // `-p` with no positional prompt = read the prompt from stdin.
         assert!(cmd.argv.contains(&"-p".to_string()));
+        // The read-only reviewer has no Bash, so no denial list to carry.
+        assert!(!cmd.argv.contains(&"--disallowedTools".to_string()));
     }
 
     #[test]
