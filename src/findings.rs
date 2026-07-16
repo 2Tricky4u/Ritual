@@ -191,18 +191,25 @@ pub fn resolved_count(loaded: &[LoadedFindings]) -> usize {
 /// about lingering code/plan defects. Broader than the critical-only CI gate: a
 /// project is not "complete" while any such finding stands.
 pub fn has_open_confirmed(loaded: &[LoadedFindings], slug: &str) -> bool {
-    loaded.iter().any(|lf| {
-        // Scope to THIS feature: a file whose branch resolves to another slug is
-        // a different feature's concern. Branch-LESS files stay in scope (a read
-        // gate must not silently drop legitimately branch-less findings).
-        (lf.file.branch.is_empty() || crate::state::branch_slug(&lf.file.branch) == slug)
-            && lf.file.stage != "coverage"
-            && lf
-                .file
-                .findings
-                .iter()
-                .any(|f| !f.resolved() && verdict_confirmed(&f.verdict))
-    })
+    open_confirmed_count(loaded, slug) > 0
+}
+
+/// How many open confirmed findings block this feature (same scoping rules
+/// as [`has_open_confirmed`]; the count feeds the guidance warnings).
+pub fn open_confirmed_count(loaded: &[LoadedFindings], slug: &str) -> usize {
+    loaded
+        .iter()
+        .filter(|lf| {
+            // Scope to THIS feature: a file whose branch resolves to another
+            // slug is a different feature's concern. Branch-LESS files stay in
+            // scope (a read gate must not silently drop legitimately
+            // branch-less findings).
+            (lf.file.branch.is_empty() || crate::state::branch_slug(&lf.file.branch) == slug)
+                && lf.file.stage != "coverage"
+        })
+        .flat_map(|lf| &lf.file.findings)
+        .filter(|f| !f.resolved() && verdict_confirmed(&f.verdict))
+        .count()
 }
 
 /// Stamp `branch` onto the findings files a run just produced, so completeness

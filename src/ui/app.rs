@@ -67,6 +67,8 @@ pub enum AppMsg {
         tail: String,
     },
     AgentsStatus(Box<crate::agents_status::AgentsStatus>),
+    /// Off-thread git probe results feeding the pipeline guidance.
+    GuidanceProbe(Box<crate::guidance::Probe>),
     FileChanged,
     Tick,
 }
@@ -260,6 +262,17 @@ pub struct App {
     /// Follow to clamp and to implement G=bottom. One frame stale at worst;
     /// G before a tab's first render lands at top and self-corrects.
     pub view_max: ViewMax,
+    /// Cached pipeline guidance for the VIEWED feature; recomputed at event
+    /// cadence (never per frame) and only read by the renderer.
+    pub guidance: Option<crate::guidance::PipelineGuidance>,
+    /// Latest off-thread git probe results (tree fingerprint + dual-review
+    /// preflight) folded into guidance recomputes.
+    guidance_probe: crate::guidance::Probe,
+    probe_running: bool,
+    /// (spec, plan) mtimes at the last guidance recompute: the Tick gate
+    /// that catches external editors the watcher can't see (.ritual/ is
+    /// ignored by it).
+    doc_mtimes: (Option<std::time::SystemTime>, Option<std::time::SystemTime>),
     pub chat: Option<ChatState>,
     /// The `S` settings editor overlay (None = closed).
     pub settings: Option<SettingsState>,
@@ -471,6 +484,10 @@ impl App {
             guide_scroll: 0,
             history_scroll: 0,
             view_max: ViewMax::default(),
+            guidance: None,
+            guidance_probe: crate::guidance::Probe::default(),
+            probe_running: false,
+            doc_mtimes: (None, None),
             chat: None,
             settings: None,
             implement_hint: None,
@@ -637,6 +654,7 @@ impl App {
             self.branch = f.branch.clone();
         }
         self.status_msg = Some(format!("viewing feature: {}", self.slug));
+        self.recompute_guidance();
     }
 
     /// Where a run for the currently selected feature must execute: the
@@ -736,6 +754,60 @@ impl App {
         self.findings = crate::findings::load_all(&self.dirs.findings_dir()).unwrap_or_default();
         self.metas = crate::history::load_all(&self.dirs.runs_dir()).unwrap_or_default();
         self.recompute_anchors();
+        self.recompute_guidance();
+    }
+
+    /// Rebuild the cached guidance from in-memory state + the latest probe.
+    /// Cheap (two stats + one plan read); called from the reload funnel and
+    /// the event handlers - NEVER from the render path.
+    fn recompute_guidance(&mut self) {
+        let inputs = crate::guidance::collect(
+            &self.dirs,
+            &self.state,
+            &self.findings,
+            &self.slug,
+            &self.guidance_probe,
+            matches!(self.check, CheckState::Red { .. }),
+            self.running.is_some() || self.chat_running() || self.fix_running(),
+        );
+        self.doc_mtimes = (
+            std::fs::metadata(self.dirs.spec_file(&self.slug))
+                .and_then(|m| m.modified())
+                .ok(),
+            std::fs::metadata(self.dirs.plan_file(&self.slug))
+                .and_then(|m| m.modified())
+                .ok(),
+        );
+        self.guidance = Some(crate::guidance::compute(&inputs));
+    }
+
+    /// Gather the git-touching guidance inputs off-thread (tree fingerprint
+    /// and dual-review preflight): 4-6 git subprocesses, far too slow for
+    /// the event loop. Guarded so at most one probe is in flight.
+    fn spawn_guidance_probe(&mut self, tx: &mpsc::Sender<AppMsg>) {
+        if self.probe_running {
+            return;
+        }
+        // Outside a tokio runtime (plain unit tests) the probe is a no-op:
+        // guidance then simply reports fingerprints as "unknown".
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        self.probe_running = true;
+        let cwd = self
+            .checkout_for(&self.branch)
+            .unwrap_or_else(|| self.dirs.work_root.clone());
+        let base = self.cfg.base_ref.clone();
+        let tx = tx.clone();
+        handle.spawn_blocking(move || {
+            let probe = crate::guidance::Probe {
+                fingerprint: crate::provenance::tree_fingerprint(&cwd),
+                dual_review_blocker: crate::git::dual_review_preflight(&cwd, &base)
+                    .err()
+                    .map(|e| format!("{e:#}")),
+            };
+            let _ = tx.blocking_send(AppMsg::GuidanceProbe(Box::new(probe)));
+        });
     }
 
     /// Re-resolve every open plan finding's step against the CURRENT plan.
@@ -789,6 +861,20 @@ impl App {
                     self.state_mtime = Some(m);
                     self.reload_state();
                 }
+                // Doc-staleness gate: spec/plan edits never fire FileChanged
+                // (the watcher ignores .ritual/), so two cheap stats per tick
+                // catch external editors; recompute only when a mtime moved.
+                let now = (
+                    std::fs::metadata(self.dirs.spec_file(&self.slug))
+                        .and_then(|md| md.modified())
+                        .ok(),
+                    std::fs::metadata(self.dirs.plan_file(&self.slug))
+                        .and_then(|md| md.modified())
+                        .ok(),
+                );
+                if now != self.doc_mtimes {
+                    self.recompute_guidance();
+                }
             }
             AppMsg::Input(ev) => self.on_input(ev, tx),
             AppMsg::Agent(ev) => {
@@ -802,7 +888,7 @@ impl App {
                     }
                 }
             }
-            AppMsg::RunExited(outcome) => self.on_run_exited(*outcome),
+            AppMsg::RunExited(outcome) => self.on_run_exited(*outcome, tx),
             AppMsg::ChatAgent(ev) => {
                 if let Some(chat) = self.chat.as_mut()
                     && let Some(ChatTurn::Assistant(evs)) = chat.transcript.last_mut()
@@ -827,6 +913,7 @@ impl App {
                 } else {
                     CheckState::Red { tail }
                 };
+                self.recompute_guidance();
                 // The post-implement verification gate (after_attached): a red
                 // tree downgrades the provisional Done on the SPAWN branch.
                 if let Some(branch) = self.check_gates_implement.take()
@@ -843,7 +930,15 @@ impl App {
                 }
             }
             AppMsg::AgentsStatus(status) => self.agents = *status,
+            AppMsg::GuidanceProbe(probe) => {
+                self.probe_running = false;
+                self.guidance_probe = *probe;
+                self.recompute_guidance();
+            }
             AppMsg::FileChanged => {
+                // Source changed: refresh the code-staleness probe (cheap,
+                // off-thread, single-flight).
+                self.spawn_guidance_probe(tx);
                 // Auto-check only when idle: agent runs already get checked
                 // by the PostToolUse hook, and parallel checks fight over
                 // build locks. A chat edit is also an agent run.
@@ -2189,7 +2284,7 @@ impl App {
         }));
     }
 
-    fn on_run_exited(&mut self, outcome: Result<RunOutcome>) {
+    fn on_run_exited(&mut self, outcome: Result<RunOutcome>, tx: &mpsc::Sender<AppMsg>) {
         let Some(stage) = self.running.take() else {
             return;
         };
@@ -2278,6 +2373,7 @@ impl App {
             }
         }
         self.reload_artifacts();
+        self.spawn_guidance_probe(tx);
     }
 
     /// Post-processing after an attached (interactive) child exits.
@@ -2464,6 +2560,7 @@ impl App {
     fn refresh(&mut self, tx: &mpsc::Sender<AppMsg>) {
         self.reload_artifacts();
         crate::agents_status::spawn_probe(&self.cfg, tx.clone());
+        self.spawn_guidance_probe(tx);
         self.status_msg = Some("refreshed".into());
     }
 
@@ -4579,6 +4676,7 @@ pub async fn run(
     app.theme_flag = theme_flag;
     app.ascii_flag = ascii_flag;
     crate::agents_status::spawn_probe(&app.cfg, tx.clone());
+    app.spawn_guidance_probe(&tx);
 
     // Finalize stages whose runs completed while nobody was watching, then
     // reattach to any run that is still alive.
@@ -6043,10 +6141,13 @@ mod tests {
             ok: false,
             ..Default::default()
         };
-        app.on_run_exited(Ok(runner::RunOutcome {
-            meta,
-            archive: std::path::PathBuf::new(),
-        }));
+        app.on_run_exited(
+            Ok(runner::RunOutcome {
+                meta,
+                archive: std::path::PathBuf::new(),
+            }),
+            &_tx,
+        );
 
         let a = app.state.features.get("feat-a").expect("spawn feature");
         assert_eq!(
