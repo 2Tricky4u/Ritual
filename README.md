@@ -100,19 +100,19 @@
 
 ```
 ╭ feature title ─────────────╮╭ ritual ──────────────────────────────────────╮
-│ ▸ ! feat-auth              ││ live · findings · history · plan             │
-│    main                    ││ ◆ claude-fable-5                             │
-│ ───────────────────────────││ ▸ mcp__codex__codex {"prompt":"critique …"}  │
-│ ▸  spec                    ││   ↳ Finding 1 (major): missing rollback step │
-│   ⠹ plan-review            ││  $0.31 4 turns 92.3s                         │
-│   ○ tests-red              ││                                              │
+│ > ! feat-auth              ││ live | findings | history | plan             │
+│    main                    ││ * claude-fable-5                             │
+│ ───────────────────────────││ > mcp__codex__codex {"prompt":"critique..."} │
+│ >  spec                    ││  -> Finding 1 (major): missing rollback step │
+│   / plan-review            ││  $0.31 4 turns 92.3s                         │
+│   o tests-red              ││                                              │
 │                            ││                                              │
 │   feat/auth                ││                                              │
-│ ◆ claude ok (max)          ││                                              │
-│ ◆ codex ok · bridge ok     ││                                              │
+│ * claude ok (max)          ││                                              │
+│ * codex ok | bridge ok     ││                                              │
 │  check green               ││                                              │
 ╰────────────────────────────╯╰──────────────────────────────────────────────╯
- enter run · : commands · j/k move · ? help          $1.42/$5.00  ⠹ plan-review
+ enter run | : commands | j/k move | ? help          $1.42/$5.00  / plan-review
 ```
 
 ritual is built on one bet, backed by the research: **external feedback is the quality engine**. Tests, checks, mutation kills, and cross-model review beat any single model talking to itself. Everything here exists to make that loop fast, auditable, and cheap to repeat:
