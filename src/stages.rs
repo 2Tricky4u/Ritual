@@ -655,6 +655,7 @@ pub fn audit_lane_command(
 pub fn audit_judge_command(
     cfg: &Config,
     findings_dir: &Path,
+    lane_count: usize,
     reports_payload: String,
 ) -> StageCommand {
     let prompt = "Adjudicate the whole-project audit reports arriving below. They were \
@@ -706,6 +707,14 @@ pub fn audit_judge_command(
     // history/remote mutation stays hard-denied.
     argv.push("--disallowedTools".into());
     argv.push(CODE_FIX_DISALLOWED_TOOLS.into());
+    // The judge adjudicates EVERY lane's candidates (read code, run repros,
+    // one codex verdict per survivor), so a single per-leg cap starves it:
+    // the live 8-lane smoke died at $4.12 against a $3 cap with the work
+    // half done. Scale the CAP (not the spend) with the report count.
+    let judge_cap = cfg.budget_audit_usd * (1.0 + lane_count as f64 / 2.0);
+    if let Some(i) = argv.iter().position(|a| a == "--max-budget-usd") {
+        argv[i + 1] = judge_cap.to_string();
+    }
     StageCommand {
         mode: Mode::Headless,
         agent: AgentKind::Claude,
@@ -1968,7 +1977,7 @@ mod tests {
         let (_tmp, mut cfg, _dirs) = setup();
         cfg.models.insert("audit-judge".into(), "opus".into());
         let reports = "== lane runner ==\nGIANT-REPORT-MARKER\n".repeat(4);
-        let cmd = audit_judge_command(&cfg, Path::new("/abs/proj/.ritual/findings"), reports);
+        let cmd = audit_judge_command(&cfg, Path::new("/abs/proj/.ritual/findings"), 8, reports);
         assert!(cmd.needs_codex, "cross-vendor verdicts need codex MCP");
         // The unbounded payload rides on stdin, never argv (E2BIG).
         let payload = cmd.stdin.as_deref().expect("payload on stdin");
@@ -1986,6 +1995,15 @@ mod tests {
         ] {
             assert!(payload.contains(needle), "judge contract missing {needle}");
         }
+        // The judge's CAP scales with the reports it adjudicates: 8 lanes at
+        // the default $3 per leg -> $3 x (1 + 8/2) = $15 (a ceiling, not a
+        // spend; one per-leg cap starved the live 8-lane smoke at $4.12).
+        let b = cmd
+            .argv
+            .iter()
+            .position(|a| a == "--max-budget-usd")
+            .unwrap();
+        assert_eq!(cmd.argv[b + 1], "15");
         // Bash to reproduce, git mutation hard-denied, codex tools granted.
         let i = cmd.argv.iter().position(|a| a == "--allowedTools").unwrap();
         assert!(cmd.argv[i + 1].contains("Bash"));

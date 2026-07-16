@@ -275,9 +275,11 @@ always-on `global-overview` lane for the contracts between flows. A
 judge then adversarially refutes every candidate, requires an
 independent Codex verdict per survivor (a judge should never grade its
 own vendor's work), and writes standard findings (stage `audit`) that
-triage exactly like review findings (`t`, `A`, `F`). Costs up to
-`(lanes + 1) × budget_audit_usd`, so run it at milestones - pre-release,
-after big merges - not per commit; dual-review stays the everyday gate.
+triage exactly like review findings (`t`, `A`, `F`). Each lane is capped
+at `budget_audit_usd`; the judge's cap scales with the reports it
+adjudicates (`budget_audit_usd × (1 + lanes/2)`) - all ceilings, not
+spends. Run it at milestones - pre-release, after big merges - not per
+commit; dual-review stays the everyday gate.
 
 ## Third reviewer (CodeRabbit, optional)
 
