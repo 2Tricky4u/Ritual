@@ -518,6 +518,187 @@ pub fn code_fix_review_command(
     cmd
 }
 
+/// Shared headless-flag tail for the audit legs: routing key, then the
+/// standard stream/permission/budget plumbing.
+fn audit_headless_argv(
+    cfg: &Config,
+    prompt: Option<String>,
+    tools: &str,
+    model_key: &str,
+) -> Vec<String> {
+    let mut argv = cfg.claude_cmd.clone();
+    argv.push("-p".into());
+    if let Some(p) = prompt {
+        argv.push(p);
+    }
+    argv.extend([
+        "--output-format".into(),
+        "stream-json".into(),
+        "--verbose".into(),
+        "--permission-mode".into(),
+        "dontAsk".into(),
+        "--allowedTools".into(),
+        tools.into(),
+    ]);
+    argv.push("--max-budget-usd".into());
+    argv.push(cfg.budget_audit_usd.to_string());
+    if let Some(model) = cfg.models.get(model_key) {
+        argv.push("--model".into());
+        argv.push(model.clone());
+    }
+    if let Some(fb) = &cfg.fallback_model {
+        argv.push("--fallback-model".into());
+        argv.push(fb.clone());
+    }
+    argv
+}
+
+/// Build the audit DISCOVERY run: enumerate the project's distinct
+/// flows/techs/paths and write them to the (user-editable) lanes file.
+/// Read-only + bare Write under dontAsk (path-scoped rules never match
+/// there, see [`doc_chat_tools`]).
+pub fn audit_discover_command(cfg: &Config, lanes_path: &Path) -> StageCommand {
+    let prompt = format!(
+        "Survey this repository and enumerate its DISTINCT flows, technologies, \
+         and end-to-end paths (e.g. a parser pipeline, a process runner, a UI \
+         layer, persistence, external integrations). These become independent \
+         review lanes for a whole-project audit.\n\n\
+         Write AT MOST {} lanes to {} as markdown: one `## <short-lane-name>` \
+         heading per lane, followed by 1-3 plain lines describing exactly what \
+         that lane covers (its files/modules and its responsibilities). Prefer \
+         fewer, well-separated lanes over many overlapping ones. Do not include \
+         a `global-overview` lane - ritual adds that one itself. Do not edit \
+         anything else.",
+        cfg.audit_max_lanes.saturating_sub(1).max(1),
+        lanes_path.display(),
+    );
+    StageCommand {
+        mode: Mode::Headless,
+        agent: AgentKind::Claude,
+        argv: audit_headless_argv(cfg, Some(prompt), "Read,Glob,Grep,Write", "audit"),
+        env: vec![],
+        needs_codex: false,
+        stdin: None,
+    }
+}
+
+/// Build ONE audit lane run: a focused, BLIND review of a single flow. The
+/// lane sees the NAMES of the other lanes (so it can reason about interaction
+/// contracts) but never their content or findings - independent parallel
+/// reviewers with decorrelated blind spots, same rationale as dual-review.
+pub fn audit_lane_command(
+    cfg: &Config,
+    lane: &crate::audit::Lane,
+    other_lane_names: &[&str],
+    report_path: &Path,
+    invariants: Option<&Path>,
+) -> StageCommand {
+    let inv_line = match invariants {
+        Some(p) => format!(
+            "INVARIANTS_FILE: {} (non-negotiable constraints; any violation in this flow is a finding)\n",
+            p.display()
+        ),
+        None => String::new(),
+    };
+    let prompt = format!(
+        "You are ONE lane of a whole-project audit. Audit ONLY this flow:\n\n\
+         LANE: {}\n\
+         SCOPE: {}\n\
+         {inv_line}\
+         OTHER LANES (names only - audit their CONTRACTS with your flow, not \
+         their internals): {}\n\n\
+         REQUEST:\n\
+         Examine this flow's internal correctness AND every contract it has \
+         with the other lanes and the global architecture (data handed across, \
+         ordering/lifecycle assumptions, error propagation, docs vs behavior). \
+         You are READ-ONLY on the codebase. For EACH candidate finding record: \
+         a one-line title, file:line, a 1-3 line verbatim snippet, a concrete \
+         failure scenario (inputs/state -> wrong outcome), severity \
+         (critical/major/minor), and an evidence grade - `reproduced` (you \
+         traced concrete inputs through the code to the bad outcome), `traced` \
+         (the defective path is real but you did not follow a full scenario), \
+         or `suspected` (plausible, unverified). Report real defects only, no \
+         style nits. Write your full report as markdown to {} (create parent \
+         dirs if needed) - the report file is your ONLY output artifact.",
+        lane.name,
+        if lane.description.is_empty() {
+            "(the lane name is the scope)"
+        } else {
+            &lane.description
+        },
+        other_lane_names.join(", "),
+        report_path.display(),
+    );
+    StageCommand {
+        mode: Mode::Headless,
+        agent: AgentKind::Claude,
+        argv: audit_headless_argv(cfg, Some(prompt), "Read,Glob,Grep,Write", "audit"),
+        env: vec![],
+        needs_codex: false,
+        stdin: None,
+    }
+}
+
+/// Build the audit JUDGE run: adversarial adjudication of every lane
+/// candidate. The concatenated lane reports ride on STDIN (unbounded; argv
+/// dies at E2BIG). Confirmation requires refutation-resistant evidence or an
+/// independent cross-vendor (Codex) verdict - the judge must never rubber-
+/// stamp its own vendor's candidates (self-preference bias).
+pub fn audit_judge_command(cfg: &Config, reports_payload: String) -> StageCommand {
+    let prompt = "Adjudicate the whole-project audit reports arriving below. They were \
+         written by independent, blind review lanes and OVER-REPORT by design.\n\n\
+         For EACH candidate finding, in this order:\n\
+         1. Actively try to REFUTE it: read the code at the cited location, run \
+         commands/tests where that settles it. Discard refuted and duplicate \
+         candidates (same defect reported by several lanes = ONE finding).\n\
+         2. For each survivor, obtain an INDEPENDENT verdict from the `codex` \
+         MCP tool: hand it the candidate's title, location, snippet, and \
+         scenario - NEVER your own judgment - and ask it to verify or refute \
+         against the code. If the codex tool fails because the MODEL is \
+         unavailable (model-not-found - NOT an auth error), retry ONCE with \
+         model \"gpt-5.5\" and note the downgrade; if codex is entirely \
+         unavailable, say so per finding and grade on your evidence alone.\n\
+         3. A finding is `confirmed` ONLY when you reproduced/traced it AND it \
+         survived refutation, OR codex independently agrees. Everything else \
+         is `unconfirmed`.\n\n\
+         Then write ONE findings file to `${RITUAL_FINDINGS_DIR}/<UTC \
+         yyyymmddTHHMMSSZ>-audit.json` (never modify an existing file):\n\
+         {\"ritual_findings\": 1, \"stage\": \"audit\", \"branch\": \"<git \
+         branch --show-current, or empty>\", \"generated_at\": \"<ISO8601 \
+         UTC>\", \"findings\": [{\"id\": 1, \"severity\": \
+         \"critical|major|minor\", \"title\": \"<one sentence, <80 chars>\", \
+         \"file\": \"src/foo.rs\", \"line\": 42, \"plan_step\": null, \
+         \"snippet\": \"<1-3 verbatim source lines>\", \"scenario\": \
+         \"<inputs/state -> wrong outcome>\", \"sources\": [\"<lane name(s)>\"], \
+         \"verdict\": \"confirmed|unconfirmed\", \"action\": \"pending\"}]}\n\
+         `file`+`line` must point at the exact defective line; `snippet` is \
+         verbatim. An empty findings list is valid. END with a short human \
+         table: finding | lane(s) | evidence | verdict.\n\n\
+         LANE REPORTS FOLLOW:"
+        .to_string();
+    // The prompt itself is bounded, but the reports are not: prompt AND
+    // payload both travel on stdin (`-p` with no positional reads stdin).
+    let payload = format!("{prompt}\n\n{reports_payload}");
+    let mut argv = audit_headless_argv(
+        cfg,
+        None,
+        "Read,Glob,Grep,Bash,Write mcp__codex__codex mcp__codex__codex-reply",
+        "audit-judge",
+    );
+    // Same git guardrail as the code fixer: Bash is needed to reproduce, but
+    // history/remote mutation stays hard-denied.
+    argv.push("--disallowedTools".into());
+    argv.push(CODE_FIX_DISALLOWED_TOOLS.into());
+    StageCommand {
+        mode: Mode::Headless,
+        agent: AgentKind::Claude,
+        argv,
+        env: vec![],
+        needs_codex: true,
+        stdin: Some(payload),
+    }
+}
+
 /// Build the exact command for a stage. `arg` is the optional user argument
 /// (plan path for plan-review, base ref for dual-review). `model_override`
 /// (retry-with-model, `run --model`) beats the `[models]` routing table.
@@ -1680,5 +1861,102 @@ mod tests {
             prompt.contains("red-only"),
             "tests-red must tell the skill to stop at failing tests: {prompt}"
         );
+    }
+
+    fn audit_lane(name: &str, desc: &str) -> crate::audit::Lane {
+        crate::audit::Lane {
+            name: name.into(),
+            description: desc.into(),
+        }
+    }
+
+    #[test]
+    fn audit_discover_command_shape() {
+        let (_tmp, mut cfg, _dirs) = setup();
+        cfg.budget_audit_usd = 1.5;
+        cfg.models.insert("audit".into(), "haiku".into());
+        let cmd = audit_discover_command(&cfg, Path::new("/proj/.ritual/audit-lanes.md"));
+        assert_eq!(cmd.mode, Mode::Headless);
+        assert!(!cmd.needs_codex);
+        let i = cmd.argv.iter().position(|a| a == "--allowedTools").unwrap();
+        // Bare names only: path-scoped rules never match under dontAsk.
+        assert_eq!(cmd.argv[i + 1], "Read,Glob,Grep,Write");
+        assert!(cmd.argv.contains(&"dontAsk".to_string()));
+        assert!(
+            cmd.argv
+                .windows(2)
+                .any(|w| w == ["--max-budget-usd", "1.5"])
+        );
+        assert!(cmd.argv.windows(2).any(|w| w == ["--model", "haiku"]));
+        let prompt = cmd.argv.iter().find(|a| a.contains("lanes")).unwrap();
+        assert!(prompt.contains("/proj/.ritual/audit-lanes.md"));
+        assert!(prompt.contains("AT MOST 7"), "cap minus the global lane");
+        assert!(prompt.contains("global-overview"), "told not to write one");
+    }
+
+    #[test]
+    fn audit_lane_command_is_blind_and_demands_evidence() {
+        let (_tmp, cfg, dirs) = setup();
+        std::fs::create_dir_all(dirs.root()).unwrap();
+        std::fs::write(dirs.invariants_file(), "- never block the render loop\n").unwrap();
+        let lane = audit_lane("runner", "daemon lifecycle SECRET-A");
+        let cmd = audit_lane_command(
+            &cfg,
+            &lane,
+            &["tui", "findings"],
+            Path::new("/tmp/audit/runner.md"),
+            Some(&dirs.invariants_file()),
+        );
+        let i = cmd.argv.iter().position(|a| a == "--allowedTools").unwrap();
+        assert_eq!(cmd.argv[i + 1], "Read,Glob,Grep,Write");
+        assert!(!cmd.needs_codex);
+        let prompt = cmd.argv.iter().find(|a| a.contains("LANE:")).unwrap();
+        // Its own scope, the OTHER lanes by name only, the report path.
+        assert!(prompt.contains("runner") && prompt.contains("SECRET-A"));
+        assert!(prompt.contains("tui, findings"));
+        assert!(prompt.contains("/tmp/audit/runner.md"));
+        assert!(prompt.contains("INVARIANTS_FILE"));
+        // The evidence-grade contract.
+        for grade in ["reproduced", "traced", "suspected"] {
+            assert!(prompt.contains(grade), "missing evidence grade {grade}");
+        }
+        // No invariants file -> no dangling reference.
+        let bare = audit_lane_command(&cfg, &lane, &[], Path::new("/tmp/r.md"), None);
+        let p = bare.argv.iter().find(|a| a.contains("LANE:")).unwrap();
+        assert!(!p.contains("INVARIANTS_FILE"));
+    }
+
+    #[test]
+    fn audit_judge_command_adjudicates_via_stdin_with_codex() {
+        let (_tmp, mut cfg, _dirs) = setup();
+        cfg.models.insert("audit-judge".into(), "opus".into());
+        let reports = "== lane runner ==\nGIANT-REPORT-MARKER\n".repeat(4);
+        let cmd = audit_judge_command(&cfg, reports);
+        assert!(cmd.needs_codex, "cross-vendor verdicts need codex MCP");
+        // The unbounded payload rides on stdin, never argv (E2BIG).
+        let payload = cmd.stdin.as_deref().expect("payload on stdin");
+        assert!(payload.contains("GIANT-REPORT-MARKER"));
+        assert!(!cmd.argv.iter().any(|a| a.contains("GIANT-REPORT-MARKER")));
+        // The adjudication contract.
+        for needle in [
+            "REFUTE",
+            "codex",
+            "confirmed|unconfirmed",
+            "\"stage\": \"audit\"",
+            "RITUAL_FINDINGS_DIR",
+        ] {
+            assert!(payload.contains(needle), "judge contract missing {needle}");
+        }
+        // Bash to reproduce, git mutation hard-denied, codex tools granted.
+        let i = cmd.argv.iter().position(|a| a == "--allowedTools").unwrap();
+        assert!(cmd.argv[i + 1].contains("Bash"));
+        assert!(cmd.argv[i + 1].contains("mcp__codex__codex"));
+        let d = cmd
+            .argv
+            .iter()
+            .position(|a| a == "--disallowedTools")
+            .expect("git guardrail present");
+        assert!(cmd.argv[d + 1].contains("git push"));
+        assert!(cmd.argv.windows(2).any(|w| w == ["--model", "opus"]));
     }
 }
