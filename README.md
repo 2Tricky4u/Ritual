@@ -99,19 +99,19 @@
 ## About The Project
 
 ```
-╭ feature title ────────────╮╭ ritual ──────────────────────────────────────╮
-│ > ! feat-auth              ││ live | findings | history | plan                 │
-│    main                    ││ * claude-fable-5                                 │
-│ ──────────────────────── ││ > mcp__codex__codex {"prompt":"critique..."}     │
-│ >  spec                    ││  -> Finding 1 (major): missing rollback step     │
-│   / plan-review            ││  $0.31 4 turns 92.3s                             │
-│   o tests-red              ││                                                  │
-│                            ││                                                  │
-│   feat/auth                ││                                                  │
-│ * claude ok (max)          ││                                                  │
-│ * codex ok | bridge ok     ││                                                  │
-│  check green               ││                                                  │
-╰─────────────────────────╯╰──────────────────────────────────────────────╯
+╭ feature title ─────────────╮╭ ritual ──────────────────────────────────────╮
+│ > ! feat-auth              ││ live | findings | history | plan             │
+│    main                    ││ * claude-fable-5                             │
+│ ───────────────────────────││ > mcp__codex__codex {"prompt":"critique..."} │
+│ >  spec                    ││  -> Finding 1 (major): missing rollback step │
+│   / plan-review            ││  $0.31 4 turns 92.3s                         │
+│   o tests-red              ││                                              │
+│                            ││                                              │
+│   feat/auth                ││                                              │
+│ * claude ok (max)          ││                                              │
+│ * codex ok | bridge ok     ││                                              │
+│  check green               ││                                              │
+╰────────────────────────────╯╰──────────────────────────────────────────────╯
  enter run | : commands | j/k move | ? help          $1.42/$5.00  / plan-review
 ```
 
