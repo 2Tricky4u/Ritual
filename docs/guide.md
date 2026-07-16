@@ -277,7 +277,7 @@ independent Codex verdict per survivor (a judge should never grade its
 own vendor's work), and writes standard findings (stage `audit`) that
 triage exactly like review findings (`t`, `A`, `F`). Each lane is capped
 at `budget_audit_usd`; the judge's cap scales with the reports it
-adjudicates (`budget_audit_usd × (1 + lanes/2)`) - all ceilings, not
+adjudicates (`budget_audit_usd × (1 + lanes)`) - all ceilings, not
 spends. Run it at milestones - pre-release, after big merges - not per
 commit; dual-review stays the everyday gate.
 

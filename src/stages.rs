@@ -708,10 +708,12 @@ pub fn audit_judge_command(
     argv.push("--disallowedTools".into());
     argv.push(CODE_FIX_DISALLOWED_TOOLS.into());
     // The judge adjudicates EVERY lane's candidates (read code, run repros,
-    // one codex verdict per survivor), so a single per-leg cap starves it:
-    // the live 8-lane smoke died at $4.12 against a $3 cap with the work
-    // half done. Scale the CAP (not the spend) with the report count.
-    let judge_cap = cfg.budget_audit_usd * (1.0 + lane_count as f64 / 2.0);
+    // one codex verdict per survivor), so a single per-leg cap starves it.
+    // Live 8-lane data: $3 cap died at $4.12 with work half done; a $15 cap
+    // ($3 x (1+8/2)) died at $17.53 with the findings WRITTEN but the final
+    // turn cut. One cap-unit per lane plus one spare clears the workload -
+    // it is a CEILING, not a spend.
+    let judge_cap = cfg.budget_audit_usd * (1.0 + lane_count as f64);
     if let Some(i) = argv.iter().position(|a| a == "--max-budget-usd") {
         argv[i + 1] = judge_cap.to_string();
     }
@@ -1996,14 +1998,14 @@ mod tests {
             assert!(payload.contains(needle), "judge contract missing {needle}");
         }
         // The judge's CAP scales with the reports it adjudicates: 8 lanes at
-        // the default $3 per leg -> $3 x (1 + 8/2) = $15 (a ceiling, not a
-        // spend; one per-leg cap starved the live 8-lane smoke at $4.12).
+        // the default $3 per leg -> $3 x (1 + 8) = $27 (a ceiling, not a
+        // spend; live 8-lane smokes starved at both $3 and $15 caps).
         let b = cmd
             .argv
             .iter()
             .position(|a| a == "--max-budget-usd")
             .unwrap();
-        assert_eq!(cmd.argv[b + 1], "15");
+        assert_eq!(cmd.argv[b + 1], "27");
         // Bash to reproduce, git mutation hard-denied, codex tools granted.
         let i = cmd.argv.iter().position(|a| a == "--allowedTools").unwrap();
         assert!(cmd.argv[i + 1].contains("Bash"));
