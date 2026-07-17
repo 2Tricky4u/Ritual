@@ -254,6 +254,18 @@ impl RitualDirs {
     pub fn lessons_file(&self) -> PathBuf {
         self.root().join("lessons.md")
     }
+    /// The generated architecture map that grounds planning (committable).
+    pub fn architecture_file(&self) -> PathBuf {
+        self.root().join("architecture.md")
+    }
+    /// Where the architect agent writes; ritual validates + installs it.
+    pub fn architecture_candidate_file(&self) -> PathBuf {
+        self.root().join("architecture.md.new")
+    }
+    /// The scoped tree fingerprint the map was generated at (gitignored).
+    pub fn architecture_fingerprint_file(&self) -> PathBuf {
+        self.root().join("architecture.fingerprint")
+    }
     pub fn runs_dir(&self) -> PathBuf {
         self.root().join("runs")
     }

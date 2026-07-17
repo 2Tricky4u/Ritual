@@ -107,6 +107,9 @@ fn main() -> Result<()> {
         }) => {
             ritual::run_cmd::audit(&cfg, &dirs, discover, lanes_file.as_deref())?;
         }
+        Some(Command::Architect) => {
+            ritual::run_cmd::architect(&cfg, &dirs)?;
+        }
         Some(Command::Mutants { base }) => {
             let r = ritual::mutants::run(&cfg, &dirs, base.as_deref())?;
             if r.no_git {

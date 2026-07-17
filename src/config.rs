@@ -35,6 +35,10 @@ pub struct FileConfig {
     /// Hard cap on audit lanes per run (the always-on global-overview lane
     /// counts toward it). Clamped to at least 1.
     pub audit_max_lanes: Option<usize>,
+    /// Ceiling for ONE `ritual architect` run (the architecture-map survey).
+    pub budget_architect_usd: Option<f64>,
+    /// `[architect]` table: the generated architecture map knobs.
+    pub architect: Option<ArchitectFileConfig>,
     /// Whole-invocation ceiling for `ritual complete` (sum of all its coverage
     /// and fix runs); the loop stops before a run would exceed it.
     pub budget_complete_usd: Option<f64>,
@@ -89,6 +93,17 @@ pub struct FileConfig {
     pub coderabbit: Option<CodeRabbitFileConfig>,
     /// `[retry]` table: alternate models offered for failed-stage retries.
     pub retry: Option<RetryFileConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ArchitectFileConfig {
+    /// Gate the missing/stale nudges (guidance, status, doctor). The explicit
+    /// `ritual architect` command always works. Default true.
+    pub enabled: Option<bool>,
+    /// Refresh the map automatically when `ritual complete` reaches genuine
+    /// completion. Default true.
+    pub auto_refresh: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -164,6 +179,9 @@ pub struct Config {
     pub budget_coverage_usd: f64,
     pub budget_audit_usd: f64,
     pub audit_max_lanes: usize,
+    pub budget_architect_usd: f64,
+    pub architect_enabled: bool,
+    pub architect_auto_refresh: bool,
     pub budget_complete_usd: f64,
     pub complete_max_rounds: u32,
     pub complete_clean_rounds: u32,
@@ -210,6 +228,9 @@ impl Default for Config {
             budget_coverage_usd: 2.0,
             budget_audit_usd: 3.0,
             audit_max_lanes: 8,
+            budget_architect_usd: 3.0,
+            architect_enabled: true,
+            architect_auto_refresh: true,
             budget_complete_usd: 30.0,
             complete_max_rounds: 5,
             complete_clean_rounds: 1,
@@ -501,6 +522,37 @@ mod tests {
         let cfg = Config::load(tmp.path(), None, false).unwrap();
         assert_eq!(cfg.budget_audit_usd, 3.0, "budget untouched");
         assert_eq!(cfg.audit_max_lanes, 1, "0 lanes is a typo, clamp to 1");
+    }
+
+    #[test]
+    fn architect_config_defaults_and_overrides() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = Config::load(tmp.path(), None, false).unwrap();
+        assert_eq!(cfg.budget_architect_usd, 3.0, "architect cap default");
+        assert!(cfg.architect_enabled, "nudges on by default");
+        assert!(cfg.architect_auto_refresh, "complete-hook on by default");
+
+        std::fs::create_dir_all(tmp.path().join(".ritual")).unwrap();
+        std::fs::write(
+            tmp.path().join(".ritual/config.toml"),
+            "budget_architect_usd = 1.25\n[architect]\nenabled = false\nauto_refresh = false\n",
+        )
+        .unwrap();
+        let cfg = Config::load(tmp.path(), None, false).unwrap();
+        assert_eq!(cfg.budget_architect_usd, 1.25);
+        assert!(!cfg.architect_enabled);
+        assert!(!cfg.architect_auto_refresh);
+
+        // Typos in the new table are config errors, not silent defaults.
+        std::fs::write(
+            tmp.path().join(".ritual/config.toml"),
+            "[architect]\nauto_refesh = true\n",
+        )
+        .unwrap();
+        assert!(
+            Config::load(tmp.path(), None, false).is_err(),
+            "unknown key"
+        );
     }
 
     #[test]

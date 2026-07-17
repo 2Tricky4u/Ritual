@@ -561,6 +561,19 @@ fn audit_headless_argv(
     argv
 }
 
+/// Build the `ritual architect` run: survey the tree and write the
+/// architecture-map CANDIDATE (ritual validates + installs it afterwards,
+/// see [`crate::architect::finalize`]). Read-only + bare Write under
+/// dontAsk, one budgeted leg, model key "architect".
+pub fn architect_command(
+    cfg: &Config,
+    candidate_path: &Path,
+    invariants: Option<&Path>,
+) -> StageCommand {
+    let _ = (cfg, candidate_path, invariants);
+    unimplemented!("phase 1 red")
+}
+
 /// Build the audit DISCOVERY run: enumerate the project's distinct
 /// flows/techs/paths and write them to the (user-editable) lanes file.
 /// Read-only + bare Write under dontAsk (path-scoped rules never match
@@ -1052,6 +1065,117 @@ mod tests {
         }
         std::fs::write(p.join("a.rs"), "two\n").unwrap(); // reviewable dirt
         (tmp, cfg, dirs)
+    }
+
+    /// Regression pin for the shared-headless-argv refactor: the three audit
+    /// legs' argv must stay BYTE-IDENTICAL while architect grows its own
+    /// budget/model routing on the same helper. Deliberately written green
+    /// before the refactor.
+    #[test]
+    fn audit_argv_pinned_across_the_oneshot_refactor() {
+        let (_tmp, mut cfg, _dirs) = setup();
+        cfg.budget_audit_usd = 2.5;
+        cfg.models.insert("audit".into(), "m-audit".into());
+        cfg.models.insert("audit-judge".into(), "m-judge".into());
+        cfg.fallback_model = Some("fb".into());
+
+        let discover = audit_discover_command(&cfg, Path::new("/tmp/lanes.md"));
+        let tail: Vec<String> = vec![
+            "--output-format".into(),
+            "stream-json".into(),
+            "--verbose".into(),
+            "--permission-mode".into(),
+            "dontAsk".into(),
+            "--allowedTools".into(),
+            "Read,Glob,Grep,Write".into(),
+            "--max-budget-usd".into(),
+            "2.5".into(),
+            "--model".into(),
+            "m-audit".into(),
+            "--fallback-model".into(),
+            "fb".into(),
+        ];
+        assert_eq!(discover.argv[0], "claude");
+        assert_eq!(discover.argv[1], "-p");
+        assert!(discover.argv[2].contains("/tmp/lanes.md"), "prompt slot");
+        assert_eq!(&discover.argv[3..], &tail[..], "discover tail pinned");
+
+        let lane = crate::audit::Lane {
+            name: "solo".into(),
+            description: "the flow".into(),
+        };
+        let lane_cmd = audit_lane_command(&cfg, &lane, &["other"], Path::new("/tmp/r.md"), None);
+        assert_eq!(&lane_cmd.argv[3..], &tail[..], "lane tail pinned");
+
+        let judge = audit_judge_command(&cfg, Path::new("/tmp/f"), 4, "reports".into());
+        // Judge: no positional prompt (stdin payload), codex tools, scaled cap.
+        assert_eq!(judge.argv[1], "-p");
+        assert_eq!(judge.argv[2], "--output-format");
+        let i = judge
+            .argv
+            .iter()
+            .position(|a| a == "--max-budget-usd")
+            .unwrap();
+        assert_eq!(judge.argv[i + 1], "12.5", "2.5 * (1 + 4 lanes)");
+        assert!(judge.argv.contains(&"m-judge".to_string()));
+        assert!(judge.argv.contains(&"--disallowedTools".to_string()));
+    }
+
+    #[test]
+    fn architect_command_shape() {
+        let (_tmp, mut cfg, dirs) = setup();
+        cfg.budget_architect_usd = 1.25;
+        let cand = dirs.architecture_candidate_file();
+        let cmd = architect_command(&cfg, &cand, None);
+
+        assert_eq!(cmd.mode, Mode::Headless);
+        assert_eq!(cmd.agent, AgentKind::Claude);
+        assert!(!cmd.needs_codex, "single-vendor survey");
+        assert!(cmd.stdin.is_none());
+        // Read-only survey + bare Write for the candidate, under dontAsk.
+        let tools_i = cmd
+            .argv
+            .iter()
+            .position(|a| a == "--allowedTools")
+            .expect("tool grant");
+        assert_eq!(cmd.argv[tools_i + 1], "Read,Glob,Grep,Write");
+        assert!(cmd.argv.contains(&"dontAsk".to_string()));
+        let cap_i = cmd
+            .argv
+            .iter()
+            .position(|a| a == "--max-budget-usd")
+            .expect("budget cap");
+        assert_eq!(cmd.argv[cap_i + 1], "1.25", "architect budget, not audit's");
+
+        // The prompt names the CANDIDATE path and prescribes the structure
+        // finalize() will enforce.
+        let prompt = &cmd.argv[2];
+        assert!(
+            prompt.contains(&cand.display().to_string()),
+            "candidate path"
+        );
+        for heading in ["# Architecture map", "## Modules", "## Extension seams"] {
+            assert!(prompt.contains(heading), "prescribes {heading}");
+        }
+        assert!(
+            !prompt.contains("invariants"),
+            "no invariants line when None"
+        );
+    }
+
+    #[test]
+    fn architect_command_routes_model_and_invariants() {
+        let (_tmp, mut cfg, dirs) = setup();
+        cfg.models.insert("architect".into(), "m-arch".into());
+        let inv = dirs.invariants_file();
+        let cmd = architect_command(&cfg, &dirs.architecture_candidate_file(), Some(&inv));
+
+        let model_i = cmd.argv.iter().position(|a| a == "--model").expect("model");
+        assert_eq!(cmd.argv[model_i + 1], "m-arch");
+        assert!(
+            cmd.argv[2].contains(&inv.display().to_string()),
+            "meaningful invariants ride in the prompt"
+        );
     }
 
     #[test]

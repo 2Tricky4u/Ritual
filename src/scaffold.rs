@@ -215,6 +215,10 @@ mod tests {
         assert_eq!(mode & 0o111, 0o111, "check.sh must be executable");
         let gi = std::fs::read_to_string(t.path().join(".gitignore")).unwrap();
         assert!(gi.contains(".ritual/runs/"));
+        // Architect artifacts: the sidecar + backup are local state (the map
+        // itself stays committable), and re-init migrates existing projects.
+        assert!(gi.contains(".ritual/architecture.fingerprint"));
+        assert!(gi.contains(".ritual/architecture.md.bak"));
         assert!(r1.actions.iter().any(|a| a.contains("rust template")));
 
         // Second run: nothing rewritten, check.sh preserved without --force.

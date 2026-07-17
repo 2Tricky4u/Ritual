@@ -353,6 +353,9 @@ mod tests {
         let mut m4 = meta("code-fix");
         m4.error_subtype = Some("error_max_budget_usd".into());
         assert!(decode_failure(&m4).contains("budget_code_fix_usd"));
+        let mut m5 = meta("architect");
+        m5.error_subtype = Some("error_max_budget_usd".into());
+        assert!(decode_failure(&m5).contains("budget_architect_usd"));
 
         // Denials: live shape (tool_name + tool_input.file_path).
         let mut m = meta("plan-fix");

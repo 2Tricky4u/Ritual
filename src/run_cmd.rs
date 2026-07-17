@@ -833,6 +833,15 @@ fn audit_leg(
     follow_run(cfg, dirs, req.agent, &run_id)
 }
 
+/// `ritual architect`: survey the tree with one budgeted headless run and
+/// install/refresh `.ritual/architecture.md` via the candidate protocol
+/// ([`crate::architect::finalize`]). Non-pipeline like audit: never touches
+/// state.json.
+pub fn architect(cfg: &Config, dirs: &RitualDirs) -> Result<()> {
+    let _ = (cfg, dirs);
+    anyhow::bail!("phase 1 red: ritual architect is not implemented yet")
+}
+
 /// `ritual reset-plan [--force]`: re-plan from the spec. Without `--force`, print
 /// what WOULD change; with it, delete plan.md, reset the plan-derived stages to
 /// pending, and clear the plan findings + plan undo stack. Never touches code.

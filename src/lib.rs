@@ -1,5 +1,6 @@
 pub mod agents_status;
 pub mod answers;
+pub mod architect;
 pub mod audit;
 pub mod bench;
 pub mod ci;

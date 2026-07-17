@@ -2301,3 +2301,227 @@ fn a_crashed_tests_red_session_is_failed_not_done() {
     let status = &json["features"]["main"]["stages"]["tests_red"]["status"];
     assert_eq!(status, "failed", "state records the crash: {state}");
 }
+
+// ---------------------------------------------------------------- architect
+
+/// A candidate the finalizer accepts (headings + meaningful prose), in the
+/// fake agent's `%b`-expanded escape form.
+const ARCH_CONTENT: &str = "# Architecture map\\n\\nOne overview paragraph.\\n\\n## Modules\\n- src: everything\\n\\n## Extension seams\\n- new subcommand: copy the Audit arm";
+
+/// Base env for token-free architect runs: the fake agent plucks the
+/// candidate path out of its own argv (the prompt names it).
+fn architect_cmd(tmp: &tempfile::TempDir) -> Command {
+    let mut c = Command::cargo_bin("ritual").unwrap();
+    c.current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("FAKE_AGENT_DELAY", "0")
+        .env("FAKE_AGENT_WRITE_GLOB", r"[^ ]*architecture\.md\.new")
+        .env("FAKE_AGENT_WRITE_CONTENT", ARCH_CONTENT)
+        .arg("architect");
+    c
+}
+
+#[test]
+fn architect_generates_the_map_and_stamps_it() {
+    let tmp = setup_project();
+    let state_before = std::fs::read_to_string(tmp.path().join(".ritual/state.json")).unwrap();
+
+    architect_cmd(&tmp)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("architecture.md"));
+
+    let doc = std::fs::read_to_string(tmp.path().join(".ritual/architecture.md")).unwrap();
+    assert!(doc.contains("## Extension seams"), "{doc}");
+    assert!(
+        !tmp.path().join(".ritual/architecture.md.new").exists(),
+        "candidate consumed"
+    );
+    // The stamp is the CURRENT scoped fingerprint: writing the doc/sidecar
+    // (all under .ritual/) must not have moved it.
+    let stamp = std::fs::read_to_string(tmp.path().join(".ritual/architecture.fingerprint"))
+        .expect("sidecar written");
+    let now = ritual::provenance::arch_fingerprint(tmp.path()).expect("git tree");
+    assert_eq!(stamp.trim(), now, "stamped fresh");
+
+    // Non-pipeline: state untouched, but the run IS archived + attributed.
+    let state_after = std::fs::read_to_string(tmp.path().join(".ritual/state.json")).unwrap();
+    assert_eq!(state_before, state_after, "architect must not touch state");
+    let runs = tmp.path().join(".ritual/runs");
+    let archived = std::fs::read_dir(&runs)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .any(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .ends_with("-architect.meta.json")
+        });
+    assert!(archived, "run archived under the architect stage label");
+}
+
+#[test]
+fn architect_refresh_backs_up_the_previous_map() {
+    let tmp = setup_project();
+    std::fs::write(
+        tmp.path().join(".ritual/architecture.md"),
+        "the old hand-tuned map\n",
+    )
+    .unwrap();
+
+    architect_cmd(&tmp).assert().success();
+
+    let bak = std::fs::read_to_string(tmp.path().join(".ritual/architecture.md.bak")).unwrap();
+    assert_eq!(bak, "the old hand-tuned map\n", "previous map preserved");
+    let doc = std::fs::read_to_string(tmp.path().join(".ritual/architecture.md")).unwrap();
+    assert!(doc.contains("## Modules"), "new map live");
+}
+
+#[test]
+fn architect_bails_when_the_agent_writes_nothing() {
+    let tmp = setup_project();
+    std::fs::write(tmp.path().join(".ritual/architecture.md"), "the old map\n").unwrap();
+    std::fs::write(
+        tmp.path().join(".ritual/architecture.fingerprint"),
+        "old:stamp\n",
+    )
+    .unwrap();
+
+    // Successful agent exit, but no candidate: the OLD doc must not be
+    // re-stamped fresh (that would label obsolete architecture current).
+    architect_cmd(&tmp)
+        .env("FAKE_AGENT_WRITE_GLOB", "never-matches-anything")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no usable"));
+
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join(".ritual/architecture.md")).unwrap(),
+        "the old map\n",
+        "live doc untouched"
+    );
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join(".ritual/architecture.fingerprint")).unwrap(),
+        "old:stamp\n",
+        "sidecar untouched"
+    );
+}
+
+#[test]
+fn architect_never_installs_a_stale_candidate() {
+    let tmp = setup_project();
+    // Debris from an earlier crashed run: valid-LOOKING, but not this run's.
+    std::fs::write(
+        tmp.path().join(".ritual/architecture.md.new"),
+        "# Architecture map\nstale\n## Modules\n- x\n## Extension seams\n- y\n",
+    )
+    .unwrap();
+
+    architect_cmd(&tmp)
+        .env("FAKE_AGENT_WRITE_GLOB", "never-matches-anything")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no usable"));
+
+    assert!(
+        !tmp.path().join(".ritual/architecture.md").exists(),
+        "stale candidate never installed"
+    );
+    assert!(
+        !tmp.path().join(".ritual/architecture.md.new").exists(),
+        "stale candidate cleaned"
+    );
+}
+
+#[test]
+fn architect_rejects_a_failed_run_despite_a_candidate() {
+    let tmp = setup_project();
+    architect_cmd(&tmp)
+        .env("FAKE_AGENT_EXIT", "3")
+        .assert()
+        .failure();
+    assert!(
+        !tmp.path().join(".ritual/architecture.md").exists(),
+        "failed run installs nothing"
+    );
+    assert!(
+        !tmp.path().join(".ritual/architecture.md.new").exists(),
+        "candidate cleaned"
+    );
+    // The failed run stays archived for diagnostics (`ritual history`).
+    let archived = std::fs::read_dir(tmp.path().join(".ritual/runs"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .any(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .ends_with("-architect.meta.json")
+        });
+    assert!(archived, "failed run archived under the architect label");
+}
+
+#[test]
+fn architect_refuses_offline() {
+    let tmp = setup_project();
+    std::fs::write(tmp.path().join(".ritual/config.toml"), "offline = true\n").unwrap();
+    architect_cmd(&tmp)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("offline"));
+}
+
+#[test]
+fn architect_runs_even_when_nudges_are_disabled() {
+    // [architect] enabled=false silences nudges only - an EXPLICIT run is
+    // the user asking for it.
+    let tmp = setup_project();
+    std::fs::write(
+        tmp.path().join(".ritual/config.toml"),
+        "[architect]\nenabled = false\n",
+    )
+    .unwrap();
+    architect_cmd(&tmp).assert().success();
+    assert!(tmp.path().join(".ritual/architecture.md").exists());
+}
+
+#[test]
+fn a_second_architect_refuses_while_one_is_live() {
+    let tmp = setup_project();
+    let runs = tmp.path().join(".ritual/runs");
+    std::fs::create_dir_all(&runs).unwrap();
+    std::fs::write(
+        runs.join("20260716T000001Z-1-1-architect.status"),
+        format!(
+            r#"{{"pid":{},"stage":"architect","branch":"main"}}"#,
+            std::process::id()
+        ),
+    )
+    .unwrap();
+    architect_cmd(&tmp)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already running"));
+}
+
+#[test]
+fn architect_without_git_disables_staleness_tracking() {
+    // No git repo at all: the map still generates, with a note instead of a
+    // sidecar (staleness would be a lie without a tree identity).
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname=\"x\"\n").unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success();
+
+    architect_cmd(&tmp)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("staleness tracking disabled"));
+    assert!(tmp.path().join(".ritual/architecture.md").exists());
+    assert!(
+        !tmp.path().join(".ritual/architecture.fingerprint").exists(),
+        "no sidecar without git"
+    );
+}

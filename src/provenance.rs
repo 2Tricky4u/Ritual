@@ -101,6 +101,17 @@ pub fn tree_fingerprint(root: &Path) -> Option<String> {
     Some(format!("{head}:{dirty}"))
 }
 
+/// [`tree_fingerprint`] with everything under the root `.ritual/` excluded
+/// from the dirt: the architecture map's staleness must reflect SOURCE
+/// changes, not ritual's own artifacts (plans, findings, the map's sidecar) -
+/// an unscoped stamp would go stale the moment the normal loop writes
+/// plan.md. HEAD still participates: any commit is advisory staleness, same
+/// semantics as the stage fingerprints.
+pub fn arch_fingerprint(root: &Path) -> Option<String> {
+    let _ = root;
+    unimplemented!("phase 1 red")
+}
+
 pub fn collect(cfg: &Config, dirs: &RitualDirs) -> ReproBundle {
     let root = &dirs.work_root;
     let git_commit = cmd_line("git", &["rev-parse", "HEAD"], root);
@@ -483,6 +494,111 @@ mod tests {
         std::fs::write(tmp.path().join("input.txt"), "changed\n").unwrap();
         let dirty = tree_fingerprint(tmp.path()).expect("still Some");
         assert_ne!(clean, dirty, "an edit must change the fingerprint");
+    }
+
+    #[test]
+    fn arch_fingerprint_ignores_ritual_dirt_but_tracks_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        assert_eq!(arch_fingerprint(p), None, "non-git = unknown");
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "t@t"][..],
+            &["config", "user.name", "t"][..],
+        ] {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .output()
+                .unwrap();
+        }
+        std::fs::write(p.join("src.rs"), "one\n").unwrap();
+        for args in [&["add", "."][..], &["commit", "-qm", "x"][..]] {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .output()
+                .unwrap();
+        }
+        let base = arch_fingerprint(p).expect("git tree fingerprints");
+        assert_eq!(
+            arch_fingerprint(p).as_deref(),
+            Some(base.as_str()),
+            "stable"
+        );
+
+        // Untracked .ritual/ churn (plans, findings, the sidecar itself) is
+        // invisible: the normal loop must not stale the map it just stamped.
+        std::fs::create_dir_all(p.join(".ritual/features/main")).unwrap();
+        std::fs::write(p.join(".ritual/features/main/plan.md"), "# plan\n").unwrap();
+        std::fs::write(p.join(".ritual/architecture.fingerprint"), "x\n").unwrap();
+        assert_eq!(arch_fingerprint(p).as_deref(), Some(base.as_str()));
+
+        // A lookalike prefix OUTSIDE .ritual/ is real source dirt.
+        std::fs::write(p.join(".ritualized"), "not ours\n").unwrap();
+        let with_lookalike = arch_fingerprint(p).expect("still Some");
+        assert_ne!(with_lookalike, base, ".ritualized is not .ritual/");
+        std::fs::remove_file(p.join(".ritualized")).unwrap();
+
+        // Tracked source edits + new untracked source both move it.
+        std::fs::write(p.join("src.rs"), "two\n").unwrap();
+        let tracked_edit = arch_fingerprint(p).expect("still Some");
+        assert_ne!(tracked_edit, base, "tracked source edit");
+        std::fs::write(p.join("new.rs"), "fresh\n").unwrap();
+        let untracked_add = arch_fingerprint(p).expect("still Some");
+        assert_ne!(untracked_add, tracked_edit, "untracked source add");
+
+        // Reverting the source dirt returns to the baseline identity.
+        std::fs::remove_file(p.join("new.rs")).unwrap();
+        std::fs::write(p.join("src.rs"), "one\n").unwrap();
+        assert_eq!(
+            arch_fingerprint(p).as_deref(),
+            Some(base.as_str()),
+            "revert"
+        );
+
+        // Any commit moves HEAD and therefore the fingerprint (advisory).
+        std::process::Command::new("git")
+            .args(["commit", "-qm", "empty", "--allow-empty"])
+            .current_dir(p)
+            .output()
+            .unwrap();
+        assert_ne!(
+            arch_fingerprint(p).as_deref(),
+            Some(base.as_str()),
+            "HEAD moved"
+        );
+    }
+
+    #[test]
+    fn arch_fingerprint_ignores_tracked_ritual_changes_too() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "t@t"][..],
+            &["config", "user.name", "t"][..],
+        ] {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .output()
+                .unwrap();
+        }
+        std::fs::create_dir_all(p.join(".ritual")).unwrap();
+        std::fs::write(p.join(".ritual/invariants.md"), "- rule\n").unwrap();
+        std::fs::write(p.join("src.rs"), "one\n").unwrap();
+        for args in [&["add", "-f", "."][..], &["commit", "-qm", "x"][..]] {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .output()
+                .unwrap();
+        }
+        let base = arch_fingerprint(p).expect("git tree fingerprints");
+        // A TRACKED .ritual file's diff is excluded too, not just untracked.
+        std::fs::write(p.join(".ritual/invariants.md"), "- rule\n- more\n").unwrap();
+        assert_eq!(arch_fingerprint(p).as_deref(), Some(base.as_str()));
     }
 
     #[test]

@@ -92,6 +92,10 @@ pub enum Command {
         #[arg(long)]
         lanes_file: Option<std::path::PathBuf>,
     },
+    /// Survey the tree and write/refresh .ritual/architecture.md - the
+    /// generated map that grounds planning in the code that already exists.
+    /// Rerun after big merges (or let `ritual complete` refresh it)
+    Architect,
     /// Scan changed files (tracked + untracked) for leaked secrets via
     /// gitleaks; hits become critical findings and exit nonzero
     Secrets,
