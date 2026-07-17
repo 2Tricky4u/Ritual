@@ -5,3 +5,11 @@
 .ritual/state.json
 .cargo/
 *.snap.new
+# ritual
+.ritual/ci/
+.ritual/audit/
+.ritual/features/*/.*.undo
+.ritual/features/*/.undo/
+.ritual/features/*/.redo/
+.ritual/architecture.fingerprint
+.ritual/architecture.md.bak
