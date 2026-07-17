@@ -244,6 +244,39 @@ so a standing constraint can never silently fall out of context.
 `doctor` shows whether it's active. Commit it. Worktrees still resolve
 the shared main-root `.ritual`.
 
+## Architecture map (grounded planning)
+
+`ritual architect` runs one budgeted survey of your ACTUAL tree and
+writes `.ritual/architecture.md` - modules, data flows, conventions,
+extension seams ("new X plugs in here, copy Y"), and boundaries. It is
+generated, not authored: hand-edits are tolerated until the next
+refresh (the previous version survives as `architecture.md.bak`; the
+map itself is committable - share it). The agent writes a CANDIDATE
+(`architecture.md.new`) that ritual validates and installs atomically,
+so a failed run can never damage the live map.
+
+Once the map has real content, the **plan** stage is told to align with
+it and route new work through its extension seams, and **plan-review**
+flags plans that rebuild what already exists or violate a boundary
+(`RITUAL_ARCHITECTURE_FILE`, same rail as the constitution). Code
+reviews stay map-free - they judge the diff.
+
+Freshness is tracked with a `.ritual`-scoped tree fingerprint stamped
+at generation (sidecar, gitignored): ritual's own artifacts (plans,
+findings, the sidecar) never stale the map, source edits and commits
+do - advisory only, same semantics as the dual-review staleness marker.
+The sidebar, `status`, `doctor`, and the plan stage-detail (`i`) all
+surface missing/stale; the palette `architect` action refreshes from
+the TUI with a live stream. When `ritual complete` reaches genuine
+completion it auto-refreshes the map (while the feature's context is
+hot) so the NEXT feature's plan reads post-feature reality.
+
+Knobs: `budget_architect_usd` (default 3.0), `[models] architect`,
+`[architect] enabled` (false silences every nudge; the explicit command
+still works) and `auto_refresh` (false skips the completion hook).
+Outside a git tree the map still generates, staleness tracking is
+simply off.
+
 ## Quality gates
 
 **Mutation gate (`ritual mutants`).** After implement goes green:
@@ -394,6 +427,8 @@ or pin one: `nvim_server = "/path/to/socket"`, or launch with
   (exact branch match, so it never touches another feature's) + the plan undo
   stack (spec + code untouched). Dry-run without `--force`; palette `reset-plan`
   in the TUI (confirm y/n)
+- `ritual architect`: survey the tree, write/refresh the architecture
+  map that grounds planning (see §Architecture map)
 - `ritual clean`: prune old runs safely (`--keep N`, `--dry-run`)
 - `ritual verify-log`: check the tamper-evident chain
 - `ritual repro <run-id>`: reproducibility bundle + env diff

@@ -328,6 +328,17 @@ pub fn complete(cfg: &Config, dirs: &RitualDirs, check: bool) -> Result<bool> {
         println!(
             "✓ complete: all deliverables satisfied, check.sh green, no open confirmed findings"
         );
+        // Close the loop: refresh the architecture map while the feature's
+        // context is hot, so the NEXT feature's plan is grounded in
+        // post-feature reality. Never on --check (the token-free CI gate),
+        // never a completion failure (the map is advisory).
+        if !check && cfg.architect_auto_refresh {
+            if cfg.offline || budget_exceeded(cfg, dirs).is_some() {
+                println!("architecture.md refresh skipped (offline/daily budget)");
+            } else if let Err(e) = architect(cfg, dirs) {
+                println!("warning: architecture.md refresh failed: {e:#}");
+            }
+        }
     } else {
         println!("✗ not complete:");
         if let Err(why) = &deliverables {
