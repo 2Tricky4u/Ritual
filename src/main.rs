@@ -65,6 +65,33 @@ fn main() -> Result<()> {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 output::render_status(&cfg, &features, branch.as_deref());
+                // Architecture-map freshness (advisory). The scoped
+                // fingerprint (2-3 git subprocesses) is only computed when
+                // there is a map to compare - Missing needs no probe.
+                if cfg.architect_enabled {
+                    use ritual::architect::ArchStatus;
+                    let meaningful = ritual::stages::meaningful_architecture(&dirs).is_some();
+                    let (stamp, current) = if meaningful {
+                        (
+                            ritual::architect::read_stamp(&dirs),
+                            ritual::provenance::arch_fingerprint(&dirs.work_root),
+                        )
+                    } else {
+                        (None, None)
+                    };
+                    let line = match ritual::architect::status(
+                        meaningful,
+                        stamp.as_deref(),
+                        current.as_deref(),
+                    ) {
+                        ArchStatus::Missing => "missing - run `ritual architect`",
+                        ArchStatus::Fresh => "fresh",
+                        ArchStatus::Stale => "stale - run `ritual architect`",
+                        ArchStatus::Unknown => "unknown (no fingerprint recorded)",
+                    };
+                    println!("  architecture map: {line}");
+                    println!();
+                }
             }
         }
         Some(Command::Complete { check }) => {

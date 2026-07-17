@@ -173,6 +173,46 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, deep: bool) -> Vec<CheckResult> {
         });
     }
 
+    // -- architecture map ---------------------------------------------------------
+    // Advisory only (Warn, never Fail): plans ground themselves in the map,
+    // but the pipeline runs fine without one.
+    out.push(if !cfg.architect_enabled {
+        check(
+            "architecture",
+            CheckStatus::Skipped,
+            "nudges disabled in [architect]",
+        )
+    } else {
+        use crate::architect::ArchStatus;
+        let meaningful = crate::stages::meaningful_architecture(dirs).is_some();
+        let (stamp, current) = if meaningful {
+            (
+                crate::architect::read_stamp(dirs),
+                crate::provenance::arch_fingerprint(&dirs.work_root),
+            )
+        } else {
+            (None, None)
+        };
+        match crate::architect::status(meaningful, stamp.as_deref(), current.as_deref()) {
+            ArchStatus::Missing => check(
+                "architecture",
+                CheckStatus::Warn,
+                "no map - run `ritual architect` so plans ground themselves in it",
+            ),
+            ArchStatus::Stale => check(
+                "architecture",
+                CheckStatus::Warn,
+                "map stale (code changed since generation) - run `ritual architect`",
+            ),
+            ArchStatus::Fresh => check("architecture", CheckStatus::Pass, "map fresh"),
+            ArchStatus::Unknown => check(
+                "architecture",
+                CheckStatus::Pass,
+                "map present (fingerprint unknown: not a git tree or never stamped)",
+            ),
+        }
+    });
+
     // -- sandbox wrapper ----------------------------------------------------------
     if cfg.sandbox_enabled {
         out.push(if cfg.sandbox_wrapper.is_empty() {
@@ -456,6 +496,7 @@ fn budget_check(cfg: &Config) -> CheckResult {
         ("code-fix", cfg.budget_code_fix_usd),
         ("coverage", cfg.budget_coverage_usd),
         ("audit (per leg)", cfg.budget_audit_usd),
+        ("architect", cfg.budget_architect_usd),
     ] {
         if per_run > daily {
             over.push(format!("{name} (${per_run})"));

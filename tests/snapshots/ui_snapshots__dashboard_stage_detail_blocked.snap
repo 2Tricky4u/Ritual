@@ -1,6 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
-assertion_line: 544
+assertion_line: 567
 expression: out
 ---
 "                            │  live   findings    history    plan    guide              "
@@ -13,15 +13,15 @@ expression: out
 "  ○ dual-review       │                                            │ → impl → dual        "
 "  ○ coverage          │ ○ pending                                  │ec or plan live       "
 "  » next: spec        │                                            │ch · a takeover       "
-"                      │ ! plan.md missing - run plan first         │ d dismiss · / filter "
-" 󰚩 AGENTS ────────────│                                            │· invariants          "
-"  󰚩 claude …          │ suggested: resolve the blocker first       │· costs               "
-"  󰚩 codex …           │                                            │ · repro              "
-"  󱘖 bridge …          │ enter  run   j/k  stage   esc/q/i  close   │ codes                "
-"   nvim …             ╰────────────────────────────────────────────╯features              "
-"   check ?                  │     more  ps · attach · doctor · clean · pr-comment         "
-"                            │    guide  5: the detailed guide & tips, in-app              "
-"   detached                 │                                                             "
-"                            │     enter  run stage    :  palette    ?  keys    q  quit    "
+"  architecture.md miss│ ! plan.md missing - run plan first         │ d dismiss · / filter "
+"    run `ritual archit│                                            │· invariants          "
+"    to ground planning│ suggested: resolve the blocker first       │· costs               "
+"                      │                                            │ · repro              "
+" 󰚩 AGENTS ────────────│ enter  run   j/k  stage   esc/q/i  close   │ codes                "
+"  󰚩 claude …          ╰────────────────────────────────────────────╯features              "
+"  󰚩 codex …                 │     more  ps · attach · doctor · clean · pr-comment         "
+"  󱘖 bridge …                │    guide  5: the detailed guide & tips, in-app              "
+"   nvim …                   │                                                             "
+"   check ?                  │     enter  run stage    :  palette    ?  keys    q  quit    "
 "                            │                                                             "
 " RITUAL   detached  detached                                                          "

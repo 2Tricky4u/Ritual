@@ -212,6 +212,16 @@ pub fn compute(i: &Inputs) -> PipelineGuidance {
     if i.check_red {
         warnings.push("check.sh is red".into());
     }
+    // Doc hygiene last: pipeline problems outrank the architecture map.
+    if i.arch_nudges
+        && let Some(note) = crate::architect::note(crate::architect::status(
+            i.arch_meaningful,
+            i.arch_stamp.as_deref(),
+            i.arch_fingerprint.as_deref(),
+        ))
+    {
+        warnings.push(note.into());
+    }
 
     PipelineGuidance {
         stages,

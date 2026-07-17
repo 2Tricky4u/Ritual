@@ -1,6 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
-assertion_line: 606
+assertion_line: 666
 expression: "render_at(&app, 100, 26)"
 ---
 "                            │ spec · § Behavior (the contract: WHAT,│ ai: chat · spec · § Behavior ("
@@ -13,18 +13,18 @@ expression: "render_at(&app, 100, 26)"
 "  ( ) dual-review           │## Behavior (the contract: WHAT, not   │                               "
 "  ( ) coverage              │HOW)                                   │                               "
 "  » next: spec              │                                       │                               "
-"                            │must retry on drop                     │                               "
-" ai: AGENTS ─────────────── │                                       │                               "
-"  ai: claude …              │## Edge cases & failure modes          │                               "
+"  architecture.md missing - │must retry on drop                     │                               "
+"    run `ritual architect`  │                                       │                               "
+"    to ground planning      │## Edge cases & failure modes          │                               "
+"                            │                                       │                               "
+" ai: AGENTS ─────────────── │## Out of scope                        │                               "
+"  ai: claude …              │                                       │                               "
 "  ai: codex …               │                                       │                               "
-"  <> bridge …               │## Out of scope                        │                               "
+"  <> bridge …               │                                       │                               "
 "  nv nvim …                 │                                       │                               "
 "  chk check ?               │                                       │                               "
 "                            │                                       │                               "
 "  br: detached              │                                       │                               "
-"                            │                                       │                               "
-"                            │                                       │                               "
-"                            │                                       │                               "
 "                            │                                       │                               "
 "                            │                                       │ > and ▏cap it at 3 attempts   "
 "                            │                                       │ enter send · alt+enter ⏎ · tab"

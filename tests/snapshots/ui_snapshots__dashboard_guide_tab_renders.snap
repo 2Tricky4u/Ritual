@@ -1,6 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
-assertion_line: 615
+assertion_line: 675
 expression: render(&app)
 ---
 "                            │   live    findings    history    plan   guide             "
@@ -13,15 +13,15 @@ expression: render(&app)
 "  ○ dual-review             │ plan critic, independent test designer, and second          "
 "  ○ coverage                │ reviewer. That is the pipeline.                             "
 "  » next: spec              │                                                             "
-"                            │ 󰲣 The pipeline                                              "
-" 󰚩 AGENTS ───────────────── │                                                             "
-"  󰚩 claude …                │  • spec: you write intent in  spec.md  ( ⟨enter⟩  opens it  "
-"  󰚩 codex …                 │ in $EDITOR; or press  ⟨s⟩  to chat it into shape, see       "
-"  󱘖 bridge …                │ below)                                                      "
-"   nvim …                   │  • plan: Claude drafts  plan.md  from the spec              "
-"   check ?                  │  • plan-review: Codex attacks the plan; bounded 2-round     "
-"                            │ debate; plan revised in place                               "
-"   detached                 │  • tests-red: Codex designs tests from the spec, written    "
-"                            │ red, no implementation                                      "
+"  architecture.md missing - │ 󰲣 The pipeline                                              "
+"    run `ritual architect`  │                                                             "
+"    to ground planning      │  • spec: you write intent in  spec.md  ( ⟨enter⟩  opens it  "
+"                            │ in $EDITOR; or press  ⟨s⟩  to chat it into shape, see       "
+" 󰚩 AGENTS ───────────────── │ below)                                                      "
+"  󰚩 claude …                │  • plan: Claude drafts  plan.md  from the spec              "
+"  󰚩 codex …                 │  • plan-review: Codex attacks the plan; bounded 2-round     "
+"  󱘖 bridge …                │ debate; plan revised in place                               "
+"   nvim …                   │  • tests-red: Codex designs tests from the spec, written    "
+"   check ?                  │ red, no implementation                                      "
 "                            │  • implement: Claude implements until  check.sh  is green   "
 " RITUAL   detached  detached                                                          "

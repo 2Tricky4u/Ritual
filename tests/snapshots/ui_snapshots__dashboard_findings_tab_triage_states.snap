@@ -13,15 +13,15 @@ expression: render(&app)
 "  ○ dual-review             │    s1 [plan-review:confirmed]                               "
 "  ○ coverage                │                                                             "
 "  » next: spec              │   MAJR  ◇single src/a.rs:3 yours to fix by ha… ⚑M manual  "
-"                            │    s2 [plan-review:confirmed]                               "
+"  architecture.md missing - │    s2 [plan-review:confirmed]                               "
+"    run `ritual architect`  │                                                             "
+"    to ground planning      │   MAJR   ◆both  ⚓ Step 5 resolution recorded by th… →✓ " Hidden by multi-width symbols: [(51, " ")]
+"                            │    s4 [plan-review:accepted]                                "
 " 󰚩 AGENTS ───────────────── │                                                             "
-"  󰚩 claude …                │   MAJR   ◆both  ⚓ Step 5 resolution recorded by th… →✓ " Hidden by multi-width symbols: [(51, " ")]
-"  󰚩 codex …                 │    s4 [plan-review:accepted]                                "
+"  󰚩 claude …                │   minr  ◇single ⚓ Step 4 declined by the las… ✗ declined " Hidden by multi-width symbols: [(49, " ")]
+"  󰚩 codex …                 │    s3 [plan-review:confirmed]                               "
 "  󱘖 bridge …                │                                                             "
-"   nvim …                   │   minr  ◇single ⚓ Step 4 declined by the las… ✗ declined " Hidden by multi-width symbols: [(49, " ")]
-"   check ?                  │    s3 [plan-review:confirmed]                               "
-"                            │                                                             "
-"   detached                 │   minr  ◇single ⚓ Step 6 retracted in round 2         →∅ " Hidden by multi-width symbols: [(49, " ")]
-"                            │    s5 [plan-review:refuted]                                 "
+"   nvim …                   │   minr  ◇single ⚓ Step 6 retracted in round 2         →∅ " Hidden by multi-width symbols: [(49, " ")]
+"   check ?                  │    s5 [plan-review:refuted]                                 "
 "                            │                                                             "
 " RITUAL   detached  detached                                                     ⚑1 "
