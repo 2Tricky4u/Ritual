@@ -121,6 +121,25 @@ ritual is built on one bet, backed by the research: **external feedback is the q
 - **Runs are daemons**: archived raw before parsing, resumable after any crash, tamper-evident forever
 - **Findings are the currency**: every gate (models, mutation testing, secret scanning, a third reviewer) emits the same anchored JSON, adjudicated with two keys and enforced by one exit-code contract
 
+Everything ritual orchestrates, and what's optional:
+
+```mermaid
+flowchart TD
+    ritual["ritual<br/>TUI + CLI"]
+    ritual --> claude["Claude Code<br/>required · implements, plans, judges"]
+    ritual --> codex["Codex CLI<br/>required · adversarial reviewer"]
+    claude <-->|"MCP bridge<br/>(codex mcp-server)"| codex
+    ritual --> check["./check.sh<br/>required · your lint/type/test gate"]
+    ritual -.-> rabbit["CodeRabbit CLI<br/>optional · third reviewer"]
+    ritual -.-> pal["pal MCP + Gemini<br/>optional · consensus arbitration"]
+    ritual -.-> mutants["cargo-mutants<br/>optional · mutation gate"]
+    ritual -.-> leaks["gitleaks<br/>optional · secrets gate"]
+    ritual -.-> gh["gh CLI<br/>optional · pr-comment"]
+    ritual -.-> nvim["running nvim<br/>optional · open/quickfix"]
+    ritual -.-> srt["srt sandbox<br/>optional · wraps headless runs"]
+    ritual -.-> pandoc["pandoc<br/>optional · PDF reports"]
+```
+
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ### Built With
@@ -138,6 +157,22 @@ ritual is built on one bet, backed by the research: **external feedback is the q
 
 ### The loop
 
+```mermaid
+flowchart LR
+    spec["spec<br/>you + chat"] --> plan["plan<br/>claude · plan mode"]
+    plan --> pr["plan-review<br/>codex critiques"]
+    pr --> tr["tests-red<br/>codex designs · claude writes"]
+    tr --> impl["implement<br/>claude resumes the red session"]
+    impl --> dr["dual-review<br/>claude ∥ codex, blind"]
+    dr --> cov["coverage<br/>judge vs ## Deliverables"]
+    cov -->|gaps| fix["ritual complete<br/>bounded fix rounds"]
+    fix -->|re-judge| cov
+    cov -->|"zero gaps · check.sh green · no open findings"| done(["done"])
+    arch[".ritual/architecture.md<br/>the generated map"] -.->|grounds| plan
+    arch -.->|"duplication / boundary ground truth"| pr
+    done -->|auto-refresh| arch
+```
+
 - **The pipeline**: per-branch stages `spec → plan → plan-review → tests-red → implement → dual-review → coverage`; one-key launch; headless stages stream live; interactive stages hand you a real attached `claude` session and resume the TUI on exit.
 - **Chat to author the spec/plan** (`s`): a split view with the live document on the left (focused section highlighted in place) and a conversation on the right: type an instruction and Claude edits `spec.md` (or `plan.md`) in place while you watch, scopable to the whole doc or one `##` section (`Tab` to switch; a missing plan is *drafted from the spec*). `Ctrl+Z`/`Alt+Z` undo/redo (persisted 10-deep stack), `Ctrl+X` cancel, `Alt+Enter` multi-line, messages queue while an edit runs, and reopening chat reattaches to a still-running edit. The agent is hard-scoped at the permission layer: it can read the project but write only the targeted document. Also headless: `ritual chat "<msg>" [--plan] [--section …]`.
 - **Findings lifecycle**: on the findings tab, `f` marks fixed and `d` dismisses (write-through to the JSON; `v` shows/hides resolved); the selected finding shows the verbatim source **snippet** it anchors to. The exit-code/CI contract follows: a confirmed critical blocks until resolved. `ritual pr-comment [N] [--inline]` posts the open findings to the branch's GitHub PR, redacted.
@@ -149,6 +184,17 @@ ritual is built on one bet, backed by the research: **external feedback is the q
 - **Reproducible workbench**: the whole multi-LLM setup (14 skills incl. `/spec` and the optional `/consensus`, the code-reviewer agent, both hooks) is vendored in `workbench/` and installed by `ritual init --skills`; `ritual skills diff` shows exactly where installed copies diverge. An optional third-model **consensus tier** (`[consensus] enabled`, pal MCP + Gemini) lets plan-review escalate one contested finding for arbitration.
 
 ### Running things
+
+```mermaid
+flowchart LR
+    ui["TUI / CLI"] -->|"spawn detached (setsid)"| daemon["run daemon<br/>survives the TUI"]
+    daemon -->|"raw stream archived BEFORE parsing"| runs[".ritual/runs/&lt;id&gt;.jsonl"]
+    daemon -->|on exit| meta["&lt;id&gt;.meta.json<br/>cost · session · hash-chain link"]
+    runs -->|tail| ui
+    gates["dual-review · plan-review · coverage<br/>audit · mutants · secrets · coderabbit"] -->|"anchored findings JSON"| findings[".ritual/findings/*.json"]
+    findings -->|"f fixed / d dismissed · F/A fix batches"| ui
+    findings -->|"exit-code / CI contract"| ci["ritual run --ci · complete --check"]
+```
 
 - **Runs are daemons**: every headless run detaches (`setsid`) and survives the TUI, the terminal, and reboots of your session. The raw event stream is archived to `.ritual/runs/*.jsonl` *before* parsing; the TUI is just a tailer. Restart `ritual` and it reattaches to live runs, reconciles anything that finished while you were away, and announces parallel runs it can't attach. Cancel kills the whole process group.
 - **Run control from anywhere**: `ritual ps` lists live daemons, `ritual attach <run-id>` streams one into any terminal (`--kill` stops it). `ritual doctor [--deep]` checks agents, auth, MCP wiring, skills drift, hooks, check.sh, gates, and disk pressure. `ritual clean [--keep N] [--dry-run]` prunes old run artifacts: live/state-referenced/today's runs protected, pruned chained runs attested by a tamper-evident **checkpoint** so `verify-log` never breaks.
@@ -190,7 +236,7 @@ Verified against: Claude Code 2.1.205, Codex CLI 0.144.1 (July 2026).
   ```sh
   claude mcp add --scope user codex -- codex mcp-server
   ```
-- Optional, feature-gated: `gitleaks` (secrets gate), `cargo-mutants` (mutation gate), `gh` (pr-comment), `coderabbit` (third reviewer), `@anthropic-ai/sandbox-runtime` (sandbox), `pandoc` (PDF reports)
+- Optional, feature-gated: `gitleaks` (secrets gate), `cargo-mutants` (mutation gate), `gh` (pr-comment), `coderabbit` (third reviewer), `@anthropic-ai/sandbox-runtime` (sandbox), `pandoc` (PDF reports), `pal-mcp-server` + a Gemini key (`[consensus]` third-model arbitration), a running `nvim` (open findings / quickfix; falls back to `$EDITOR`)
 
 ### Installation
 
