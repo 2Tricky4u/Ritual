@@ -343,6 +343,22 @@ mod tests {
     }
 
     #[test]
+    fn plan_review_skill_reads_the_architecture_map() {
+        // The env var stages.rs exports is only useful if the skill consumes
+        // it - pin both halves of the contract to the vendored text.
+        let (_, body) = SKILLS.iter().find(|(n, _)| *n == "plan-review").unwrap();
+        assert!(
+            body.contains("## Architecture map (ritual)"),
+            "plan-review must ground plans in the generated map"
+        );
+        assert!(body.contains("RITUAL_ARCHITECTURE_FILE"), "env seam");
+        assert!(
+            body.contains(".ritual/architecture.md"),
+            "well-known fallback path"
+        );
+    }
+
+    #[test]
     fn diff_reports_eol_only_and_eof_divergence() {
         let home = tempfile::tempdir().unwrap();
         install(home.path(), false).unwrap();

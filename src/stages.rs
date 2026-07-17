@@ -1919,6 +1919,59 @@ mod tests {
     }
 
     #[test]
+    fn architecture_map_reaches_plan_and_plan_review_only_when_meaningful() {
+        let (_tmp, cfg, dirs) = setup_git();
+        std::fs::create_dir_all(dirs.feature_dir("s")).unwrap();
+        std::fs::write(dirs.spec_file("s"), "# spec\nreal ask\n").unwrap();
+        std::fs::write(dirs.plan_file("s"), "# plan").unwrap();
+        let has_env =
+            |cmd: &StageCommand| cmd.env.iter().any(|(k, _)| k == "RITUAL_ARCHITECTURE_FILE");
+        let arch = dirs.architecture_file().display().to_string();
+
+        // No map -> the Plan prompt never mentions it, no env anywhere.
+        let plan = build(StageId::Plan, &cfg, &dirs, "s", None, None, None, None).unwrap();
+        assert!(!plan.argv.iter().any(|a| a.contains(&arch)));
+        assert!(!has_env(&plan));
+        let review = build(
+            StageId::PlanReview,
+            &cfg,
+            &dirs,
+            "s",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(!has_env(&review));
+
+        // A meaningful map -> the Plan prompt tells the agent to align with
+        // it, and both planning stages carry the env for their skills.
+        std::fs::write(
+            dirs.architecture_file(),
+            "# Architecture map\nprose\n## Modules\n- src: x\n## Extension seams\n- y\n",
+        )
+        .unwrap();
+        let plan = build(StageId::Plan, &cfg, &dirs, "s", None, None, None, None).unwrap();
+        let prompt = plan
+            .argv
+            .iter()
+            .find(|a| a.contains(&arch))
+            .expect("plan prompt names the map");
+        assert!(prompt.contains("Extension seams"), "align instruction");
+        assert!(has_env(&plan));
+        for stage in [StageId::PlanReview, StageId::DualReview] {
+            let cmd = build(stage, &cfg, &dirs, "s", None, None, None, None).unwrap();
+            let carried = has_env(&cmd);
+            match stage {
+                StageId::PlanReview => assert!(carried, "plan-review reads the map"),
+                // Code reviews judge the DIFF, not the plan: scope pin.
+                _ => assert!(!carried, "{stage:?} must not carry the map"),
+            }
+        }
+    }
+
+    #[test]
     fn model_override_beats_routing_table() {
         let (_tmp, mut cfg, dirs) = setup();
         std::fs::create_dir_all(dirs.feature_dir("s")).unwrap();
