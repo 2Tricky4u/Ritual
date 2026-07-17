@@ -1,6 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
-assertion_line: 765
+assertion_line: 793
 expression: render(&app)
 ---
 "                            │  live   findings    history    plan    guide              "
@@ -14,13 +14,13 @@ expression: render(&app)
 "  ○ coverage     │  run check.sh fast                                   │ plan live       "
 "  » next: spec   │  run full check.sh                                   │a takeover       "
 "  architecture.md│  open in running nvim                                │smiss · / filter "
-"    run `ritual a│  run spec                                            │ariants          "
-"    to ground pla│  run plan                                            │ts               "
-"                 │  run plan-review                                     │pro              "
-" 󰚩 AGENTS ───────│  run tests-red                                       │s                "
-"  󰚩 claude …     │  run implement                                       │res              "
-"  󰚩 codex …      │  run dual-review                                     │-comment         "
-"  󱘖 bridge …     │  run coverage                                        │app              "
+"    run `ritual a│  refresh the architecture map (palette-only)         │ariants          "
+"    to ground pla│  run spec                                            │ts               "
+"                 │  run plan                                            │pro              "
+" 󰚩 AGENTS ───────│  run plan-review                                     │s                "
+"  󰚩 claude …     │  run tests-red                                       │res              "
+"  󰚩 codex …      │  run implement                                       │-comment         "
+"  󱘖 bridge …     │  run dual-review                                     │app              "
 "   nvim …        ╰──────────────────────────────────────────────────────╯                 "
 "   check ?                  │     enter  run stage    :  palette    ?  keys    q  quit    "
 "                            │                                                             "

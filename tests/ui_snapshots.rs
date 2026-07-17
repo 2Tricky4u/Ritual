@@ -380,7 +380,8 @@ fn whichkey_sections_advertise_exactly_what_works() {
         app.finding_detail = false;
         assert_eq!(
             names(&app),
-            vec![(ctx, n), ("actions", 8), ("global", 7), ("move", 6)],
+            // actions grew to 9 with the palette-only Architect entry.
+            vec![(ctx, n), ("actions", 9), ("global", 7), ("move", 6)],
             "sections for {ctx}"
         );
         // Confirm (Enter launches/opens) is advertised on EVERY tab.

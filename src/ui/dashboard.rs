@@ -1613,6 +1613,23 @@ fn draw_stage_detail(f: &mut Frame, app: &App) {
             )));
         }
     }
+    // What the plan will (not) be grounded in - reads only cached guidance.
+    if id == crate::state::StageId::Plan
+        && let Some(arch) = app.guidance.as_ref().and_then(|g| g.arch)
+    {
+        use crate::architect::ArchStatus;
+        let (text, warn) = match arch {
+            ArchStatus::Missing => ("missing - run `ritual architect`", true),
+            ArchStatus::Stale => ("stale - run `ritual architect`", true),
+            ArchStatus::Fresh => ("fresh", false),
+            ArchStatus::Unknown => ("unknown (no fingerprint recorded)", false),
+        };
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            format!(" architecture map: {text}"),
+            Style::default().fg(if warn { t.warn() } else { t.comment() }),
+        )));
+    }
 
     lines.push(Line::default());
     let unlocks = PIPELINE
@@ -1972,7 +1989,7 @@ pub fn whichkey_sections(app: &App) -> Vec<(&'static str, Vec<WkEntry>)> {
         Tab::Guide => ("guide", vec![Act(Confirm)]),
     };
     // Tab-agnostic actions: verified to work identically on every tab
-    // (no tab guard in dispatch).
+    // (no tab guard in dispatch). Architect is chordless: renders as `:`.
     let shared: Vec<WkEntry> = vec![
         Act(StageDetail),
         Act(Cancel),
@@ -1980,6 +1997,7 @@ pub fn whichkey_sections(app: &App) -> Vec<(&'static str, Vec<WkEntry>)> {
         Act(CheckFull),
         Act(Takeover),
         Act(SpecChat),
+        Act(Architect),
         Act(DocUndo),
         Act(NvimQuickfix),
     ];

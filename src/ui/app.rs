@@ -67,10 +67,21 @@ pub enum AppMsg {
         tail: String,
     },
     AgentsStatus(Box<crate::agents_status::AgentsStatus>),
+    /// The architect run finished AND was finalized (validate/swap/stamp
+    /// happen inside the task, so the stamp is already on disk here).
+    ArchitectExited(Box<Result<ArchitectDone>>),
     /// Off-thread git probe results feeding the pipeline guidance.
     GuidanceProbe(Box<crate::guidance::Probe>),
     FileChanged,
     Tick,
+}
+
+/// What a successful architect refresh reports back to the status line.
+#[derive(Debug)]
+pub struct ArchitectDone {
+    pub cost: Option<f64>,
+    /// Staleness tracking active (git tree; the sidecar was stamped).
+    pub tracked: bool,
 }
 
 /// What the fix tail saw: the final result text (where the ANSWERS block
@@ -274,7 +285,11 @@ pub struct App {
     /// (spec, plan) mtimes at the last guidance recompute: the Tick gate
     /// that catches external editors the watcher can't see (.ritual/ is
     /// ignored by it).
-    doc_mtimes: (Option<std::time::SystemTime>, Option<std::time::SystemTime>),
+    doc_mtimes: (
+        Option<std::time::SystemTime>,
+        Option<std::time::SystemTime>,
+        Option<std::time::SystemTime>,
+    ),
     pub chat: Option<ChatState>,
     /// The `S` settings editor overlay (None = closed).
     pub settings: Option<SettingsState>,
@@ -492,7 +507,7 @@ impl App {
             stage_detail: false,
             guidance_probe: crate::guidance::Probe::default(),
             probe_running: false,
-            doc_mtimes: (None, None),
+            doc_mtimes: (None, None, None),
             chat: None,
             settings: None,
             implement_hint: None,
@@ -781,7 +796,10 @@ impl App {
             &self.slug,
             &self.guidance_probe,
             matches!(self.check, CheckState::Red { .. }),
-            self.running.is_some() || self.chat_running() || self.fix_running(),
+            self.running.is_some()
+                || self.chat_running()
+                || self.fix_running()
+                || self.architect_running(),
             self.cfg.architect_enabled,
         );
         self.doc_mtimes = (
@@ -789,6 +807,9 @@ impl App {
                 .and_then(|m| m.modified())
                 .ok(),
             std::fs::metadata(self.dirs.plan_file(&self.slug))
+                .and_then(|m| m.modified())
+                .ok(),
+            std::fs::metadata(self.dirs.architecture_file())
                 .and_then(|m| m.modified())
                 .ok(),
         );
@@ -827,10 +848,127 @@ impl App {
 
     /// Refresh the architecture map from the palette: one detached headless
     /// run streaming to the Live tab, finalized (validate/swap/stamp) inside
-    /// the task via the same [`crate::architect::finalize`] the CLI uses.
+    /// the task via the same [`crate::architect::finalize`] the CLI uses -
+    /// so the stamp is on disk BEFORE ArchitectExited arrives and the TUI
+    /// can never diverge from the CLI on failure handling.
     fn spawn_architect(&mut self, tx: &mpsc::Sender<AppMsg>) {
-        let _ = tx;
-        self.status_msg = Some("phase 4 red: architect is not wired yet".into());
+        if let Err(e) = stages::ensure_online(&self.cfg) {
+            self.status_msg = Some(format!("{e:#}"));
+            return;
+        }
+        if let Some((spent, budget)) = crate::run_cmd::budget_exceeded(&self.cfg, &self.dirs) {
+            self.status_msg = Some(format!(
+                "daily budget reached (${spent:.2}/${budget:.2}); raise budget_daily_usd to override"
+            ));
+            return;
+        }
+        if self.running.is_some()
+            || self.fix_running()
+            || self.chat_running()
+            || self.architect_running()
+        {
+            self.status_msg = Some("a run is in flight; wait before refreshing the map".into());
+            return;
+        }
+        // The PERSISTED registry too: an external `ritual architect` daemon
+        // must not be raced for the same candidate/doc/sidecar paths.
+        if runner::live_runs(&self.dirs)
+            .iter()
+            .any(|(_, s)| s.stage.starts_with("architect"))
+        {
+            self.status_msg = Some("an architect run is already running (`ritual ps`)".into());
+            return;
+        }
+
+        // Debris from a crashed run must never pass for this run's output.
+        let candidate = self.dirs.architecture_candidate_file();
+        let _ = std::fs::remove_file(&candidate);
+        let invariants = stages::meaningful_invariants(&self.dirs);
+        let cmd = stages::architect_command(&self.cfg, &candidate, invariants.as_deref());
+        let req = RunRequest {
+            agent: cmd.agent,
+            argv: cmd.argv,
+            env: cmd.env,
+            stdin: cmd.stdin,
+            stage: "architect".into(),
+            feature: "architect".into(),
+            branch: self.branch.clone(),
+            redact: self.cfg.redaction,
+            repro: None,
+            cwd: self.dirs.work_root.clone(),
+            wrapper: stages::wrapper_argv(&self.cfg, cmd.mode),
+        };
+        let run_id = runner::new_run_id("architect");
+        if let Err(e) = runner::spawn_detached(&self.dirs, &req, &run_id) {
+            self.status_msg = Some(format!("architect failed to start: {e:#}"));
+            return;
+        }
+        self.stream.clear();
+        self.stream_scroll = None;
+        self.tab = Tab::Live;
+        self.status_msg = Some("refreshing the architecture map…".into());
+
+        let dirs = self.dirs.clone();
+        let tx_events = tx.clone();
+        let tx_done = tx.clone();
+        self.architect_task = Some(tokio::spawn(async move {
+            let (etx, mut erx) = mpsc::channel::<AgentEvent>(256);
+            let forward = tokio::spawn(async move {
+                while let Some(ev) = erx.recv().await {
+                    if tx_events.send(AppMsg::Agent(Box::new(ev))).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            let outcome = runner::tail_run(&dirs, req.agent, &run_id, etx).await;
+            let _ = forward.await;
+            // Finalize IN the task (blocking: fs + 2-3 git subprocesses) so
+            // the message that follows reports an already-settled state.
+            let res = tokio::task::spawn_blocking(move || match outcome {
+                Ok(o) if o.meta.ok => {
+                    let tracked = crate::architect::finalize(&dirs, true)?;
+                    Ok(ArchitectDone {
+                        cost: o.meta.total_cost_usd,
+                        tracked,
+                    })
+                }
+                Ok(o) => {
+                    let _ = crate::architect::finalize(&dirs, false); // clean candidate
+                    Err(anyhow::anyhow!(
+                        "architect run failed: {}",
+                        crate::history::decode_failure(&o.meta)
+                    ))
+                }
+                Err(e) => {
+                    let _ = crate::architect::finalize(&dirs, false);
+                    Err(e)
+                }
+            })
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("architect finalization panicked: {e}")));
+            let _ = tx_done.send(AppMsg::ArchitectExited(Box::new(res))).await;
+        }));
+    }
+
+    /// The refresh settled (stamp already on disk): report + re-derive the
+    /// cached guidance so the sidebar nudge clears without a restart.
+    fn on_architect_exited(&mut self, res: Result<ArchitectDone>, tx: &mpsc::Sender<AppMsg>) {
+        self.architect_task = None;
+        self.status_msg = Some(match res {
+            Ok(done) => {
+                let cost = done.cost.map(|c| format!(" (${c:.2})")).unwrap_or_default();
+                let tracked = if done.tracked {
+                    ""
+                } else {
+                    " - not a git tree: staleness tracking disabled"
+                };
+                format!("architecture map refreshed{cost}{tracked}")
+            }
+            Err(e) => format!("architect: {e:#}"),
+        });
+        // Fresh scoped fingerprint for the freshness comparison.
+        self.spawn_guidance_probe(tx);
+        self.recompute_guidance();
     }
 
     /// Re-resolve every open plan finding's step against the CURRENT plan.
@@ -894,6 +1032,11 @@ impl App {
                     std::fs::metadata(self.dirs.plan_file(&self.slug))
                         .and_then(|md| md.modified())
                         .ok(),
+                    // architecture.md too: an external `ritual architect`
+                    // refresh must clear the sidebar nudge live.
+                    std::fs::metadata(self.dirs.architecture_file())
+                        .and_then(|md| md.modified())
+                        .ok(),
                 );
                 if now != self.doc_mtimes {
                     self.recompute_guidance();
@@ -953,6 +1096,7 @@ impl App {
                 }
             }
             AppMsg::AgentsStatus(status) => self.agents = *status,
+            AppMsg::ArchitectExited(res) => self.on_architect_exited(*res, tx),
             AppMsg::GuidanceProbe(probe) => {
                 self.probe_running = false;
                 self.guidance_probe = *probe;
@@ -1204,9 +1348,11 @@ impl App {
         let prev_tab = self.tab;
         match action {
             Action::Quit => {
-                if self.running.is_some() || self.fix_running() {
+                if self.running.is_some() || self.fix_running() || self.architect_running() {
                     // Quitting mid-fix would also skip the scope gate: the
                     // detached run finishes ungated (plan-fix never resumes).
+                    // An architect run would finish unstamped (finalize lives
+                    // in this process).
                     self.confirm_quit = true;
                 } else {
                     self.quit = true;
@@ -1373,7 +1519,11 @@ impl App {
             }
             return;
         }
-        if self.running.is_some() || self.chat_running() || self.fix_running() {
+        if self.running.is_some()
+            || self.chat_running()
+            || self.fix_running()
+            || self.architect_running()
+        {
             self.status_msg = Some("a run is already active; press x to cancel".into());
             return;
         }
