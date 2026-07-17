@@ -318,6 +318,7 @@ pub struct App {
     code_fix_task: Option<JoinHandle<()>>,
     /// The in-flight architecture-map refresh (palette architect action).
     architect_task: Option<JoinHandle<()>>,
+    current_architect_run_id: Option<String>,
     current_code_run_id: Option<String>,
     /// True while the code-fix gate's detached `check.sh` is in flight. It has
     /// no join handle (it runs off-loop), so cancelling the batch can't kill it;
@@ -527,6 +528,7 @@ impl App {
             code_fix_ctx: None,
             code_fix_task: None,
             architect_task: None,
+            current_architect_run_id: None,
             gate_check_running: false,
             current_code_run_id: None,
             anchor_lost: std::collections::HashSet::new(),
@@ -907,6 +909,7 @@ impl App {
         self.stream_scroll = None;
         self.tab = Tab::Live;
         self.status_msg = Some("refreshing the architecture map…".into());
+        self.current_architect_run_id = Some(run_id.clone());
 
         let dirs = self.dirs.clone();
         let tx_events = tx.clone();
@@ -954,6 +957,7 @@ impl App {
     /// cached guidance so the sidebar nudge clears without a restart.
     fn on_architect_exited(&mut self, res: Result<ArchitectDone>, tx: &mpsc::Sender<AppMsg>) {
         self.architect_task = None;
+        self.current_architect_run_id = None;
         self.status_msg = Some(match res {
             Ok(done) => {
                 let cost = done.cost.map(|c| format!(" (${c:.2})")).unwrap_or_default();
@@ -2647,6 +2651,17 @@ impl App {
                 ctx.items.len()
             ));
             self.drain_pending_chat(tx);
+            return;
+        }
+        // An architect refresh in flight: kill the daemon and let the tail
+        // land naturally - the task then runs finalize(false), which cleans
+        // the candidate, and ArchitectExited reports the cancellation. Never
+        // abort the task: that would skip finalization entirely.
+        if self.architect_running() {
+            if let Some(id) = self.current_architect_run_id.take() {
+                runner::kill_run(&self.dirs, &id);
+                self.status_msg = Some("architect cancelled; the live map is untouched".into());
+            }
             return;
         }
         // Otherwise a pipeline stage: a detached process group, so kill it there

@@ -67,8 +67,10 @@ fn main() -> Result<()> {
                 output::render_status(&cfg, &features, branch.as_deref());
                 // Architecture-map freshness (advisory). The scoped
                 // fingerprint (2-3 git subprocesses) is only computed when
-                // there is a map to compare - Missing needs no probe.
-                if cfg.architect_enabled {
+                // there is a map to compare - Missing needs no probe. No
+                // .ritual/ = no nudge: `ritual architect` would only bail
+                // "run `ritual init` first" there.
+                if cfg.architect_enabled && dirs.exists() {
                     use ritual::architect::ArchStatus;
                     let meaningful = ritual::stages::meaningful_architecture(&dirs).is_some();
                     let (stamp, current) = if meaningful {

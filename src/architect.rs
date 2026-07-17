@@ -115,20 +115,35 @@ fn finalize_inner(dirs: &RitualDirs, run_ok: bool, candidate: &std::path::Path) 
 
     // Install: the previous map survives as .bak (successful swaps only -
     // git history covers anything older), the candidate becomes live via
-    // rename (atomic on one filesystem, and .ritual/* shares one).
+    // rename (atomic on one filesystem, and .ritual/* shares one). If the
+    // install rename fails after the old map moved aside, ROLL IT BACK -
+    // "failure leaves the live doc untouched" must hold across the gap.
     let doc = dirs.architecture_file();
-    if doc.exists() {
+    let had_old = doc.exists();
+    if had_old {
         std::fs::rename(&doc, backup_file(dirs))
             .map_err(|e| anyhow::anyhow!("backing up the previous architecture map: {e}"))?;
     }
-    std::fs::rename(candidate, &doc)
-        .map_err(|e| anyhow::anyhow!("installing the architecture map: {e}"))?;
+    if let Err(e) = std::fs::rename(candidate, &doc) {
+        if had_old {
+            let _ = std::fs::rename(backup_file(dirs), &doc);
+        }
+        anyhow::bail!("installing the architecture map: {e}");
+    }
 
     // Stamp AFTER the swap so the recorded identity includes this refresh's
-    // own tree state (scoped: .ritual/ churn is excluded anyway).
+    // own tree state (scoped: .ritual/ churn is excluded anyway). A stamp
+    // that fails post-install must not leave the OLD stamp lying about the
+    // NEW map: drop it (Unknown never lies) and say what actually happened.
     match crate::provenance::arch_fingerprint(&dirs.work_root) {
         Some(fp) => {
-            write_stamp(dirs, &fp)?;
+            if let Err(e) = write_stamp(dirs, &fp) {
+                let _ = std::fs::remove_file(dirs.architecture_fingerprint_file());
+                anyhow::bail!(
+                    "the map WAS installed but stamping failed ({e}); \
+                     freshness is unknown - rerun `ritual architect`"
+                );
+            }
             Ok(true)
         }
         None => {
