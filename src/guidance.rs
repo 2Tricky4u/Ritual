@@ -68,6 +68,9 @@ pub struct StageSnap {
 pub struct Probe {
     /// `provenance::tree_fingerprint` of the feature's checkout, now.
     pub fingerprint: Option<String>,
+    /// `provenance::arch_fingerprint` (the `.ritual`-scoped variant) for the
+    /// architecture-map staleness comparison.
+    pub arch_fingerprint: Option<String>,
     /// `git::dual_review_preflight` error text, if it would refuse.
     pub dual_review_blocker: Option<String>,
 }
@@ -90,6 +93,14 @@ pub struct Inputs {
     pub tests_red_session: bool,
     pub check_red: bool,
     pub anything_running: bool,
+    /// The architecture map has real content ([`crate::architect`]).
+    pub arch_meaningful: bool,
+    /// The map's generation stamp (sidecar), if any.
+    pub arch_stamp: Option<String>,
+    /// `provenance::arch_fingerprint` now (via the probe).
+    pub arch_fingerprint: Option<String>,
+    /// `[architect] enabled`: gate the missing/stale nudges entirely.
+    pub arch_nudges: bool,
 }
 
 /// The pure core. Staleness applies to DONE stages only; a None fingerprint
@@ -212,6 +223,7 @@ pub fn compute(i: &Inputs) -> PipelineGuidance {
 
 /// Gather the CHEAP inputs (2 stats + one plan read + in-memory scans);
 /// the git-touching pieces ride in via `probe`.
+#[allow(clippy::too_many_arguments)] // one flag per cheap fact; a params struct would just rename them
 pub fn collect(
     dirs: &RitualDirs,
     state: &State,
@@ -220,6 +232,7 @@ pub fn collect(
     probe: &Probe,
     check_red: bool,
     running: bool,
+    arch_nudges: bool,
 ) -> Inputs {
     let mut stages = BTreeMap::new();
     if let Some(f) = state.features.get(slug) {
@@ -265,6 +278,10 @@ pub fn collect(
         tests_red_session: state.stage_session_id(slug, StageId::TestsRed).is_some(),
         check_red,
         anything_running: running,
+        arch_meaningful: crate::stages::meaningful_architecture(dirs).is_some(),
+        arch_stamp: crate::architect::read_stamp(dirs),
+        arch_fingerprint: probe.arch_fingerprint.clone(),
+        arch_nudges,
         stages,
     }
 }
@@ -432,6 +449,52 @@ mod tests {
         assert!(w[2].contains("check.sh is red"));
         // Zero-value inputs produce no noise.
         assert!(compute(&base_inputs()).warnings.is_empty());
+    }
+
+    #[test]
+    fn architect_nudges_ride_the_warnings() {
+        let arch_warn = |i: &Inputs| {
+            compute(i)
+                .warnings
+                .iter()
+                .find(|w| w.contains("architecture.md"))
+                .cloned()
+        };
+
+        // Missing map: nudge to generate one.
+        let mut i = base_inputs();
+        i.arch_nudges = true;
+        let w = arch_warn(&i).expect("missing map nudges");
+        assert!(w.contains("ritual architect"), "{w}");
+
+        // Stale map: stamp != current scoped fingerprint.
+        i.arch_meaningful = true;
+        i.arch_stamp = Some("a:1".into());
+        i.arch_fingerprint = Some("a:2".into());
+        let w = arch_warn(&i).expect("stale map nudges");
+        assert!(w.contains("stale"), "{w}");
+
+        // Fresh: silent. Unknown (no stamp / non-git): silent, never stale.
+        i.arch_fingerprint = Some("a:1".into());
+        assert_eq!(arch_warn(&i), None, "fresh");
+        i.arch_stamp = None;
+        assert_eq!(arch_warn(&i), None, "no stamp = unknown");
+        i.arch_stamp = Some("a:1".into());
+        i.arch_fingerprint = None;
+        assert_eq!(arch_warn(&i), None, "non-git = unknown");
+
+        // [architect] enabled=false silences even a missing map.
+        let mut off = base_inputs();
+        off.arch_nudges = false;
+        assert_eq!(arch_warn(&off), None, "nudges disabled");
+
+        // Pipeline problems outrank doc hygiene: check_red comes first.
+        let mut both = base_inputs();
+        both.arch_nudges = true;
+        both.check_red = true;
+        let w = compute(&both).warnings;
+        assert!(w[0].contains("check.sh"), "{w:?}");
+        assert!(w[1].contains("architecture.md"), "{w:?}");
     }
 
     #[test]

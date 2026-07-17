@@ -775,6 +775,7 @@ impl App {
             &self.guidance_probe,
             matches!(self.check, CheckState::Red { .. }),
             self.running.is_some() || self.chat_running() || self.fix_running(),
+            self.cfg.architect_enabled,
         );
         self.doc_mtimes = (
             std::fs::metadata(self.dirs.spec_file(&self.slug))
@@ -808,6 +809,7 @@ impl App {
         handle.spawn_blocking(move || {
             let probe = crate::guidance::Probe {
                 fingerprint: crate::provenance::tree_fingerprint(&cwd),
+                arch_fingerprint: crate::provenance::arch_fingerprint(&cwd),
                 dual_review_blocker: crate::git::dual_review_preflight(&cwd, &base)
                     .err()
                     .map(|e| format!("{e:#}")),

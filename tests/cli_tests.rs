@@ -2503,6 +2503,89 @@ fn a_second_architect_refuses_while_one_is_live() {
 }
 
 #[test]
+fn status_reports_architecture_map_freshness() {
+    let tmp = setup_project();
+    // No map yet: status nudges.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("architecture map").and(predicate::str::contains("missing")),
+        );
+
+    // Generate it: fresh.
+    architect_cmd(&tmp).assert().success();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("architecture map").and(predicate::str::contains("fresh")),
+        );
+
+    // Touch source: stale (scoped fingerprint moved).
+    std::fs::write(tmp.path().join("newfile.rs"), "dirt\n").unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("architecture map").and(predicate::str::contains("stale")),
+        );
+
+    // [architect] enabled=false: no line at all.
+    std::fs::write(
+        tmp.path().join(".ritual/config.toml"),
+        "[architect]\nenabled = false\n",
+    )
+    .unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("architecture map").not());
+}
+
+#[test]
+fn doctor_nudges_a_missing_architecture_map_without_failing() {
+    let tmp = setup_project();
+    // Missing map is advisory: Warn (exit stays 0 given a healthy project),
+    // and the detail names the fix.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .arg("doctor")
+        .assert()
+        .stdout(predicate::str::contains("run `ritual architect`"));
+
+    // Disabled: the nudge disappears.
+    std::fs::write(
+        tmp.path().join(".ritual/config.toml"),
+        "[architect]\nenabled = false\n",
+    )
+    .unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("RITUAL_CLAUDE_CMD", fake_agent())
+        .env("RITUAL_CODEX_CMD", fake_agent())
+        .arg("doctor")
+        .assert()
+        .stdout(predicate::str::contains("run `ritual architect`").not());
+}
+
+#[test]
 fn architect_without_git_disables_staleness_tracking() {
     // No git repo at all: the map still generates, with a note instead of a
     // sidecar (staleness would be a lie without a tree identity).
