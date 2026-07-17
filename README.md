@@ -126,18 +126,30 @@ Everything ritual orchestrates, and what's optional:
 ```mermaid
 flowchart TD
     ritual["ritual<br/>TUI + CLI"]
-    ritual --> claude["Claude Code<br/>required · implements, plans, judges"]
-    ritual --> codex["Codex CLI<br/>required · adversarial reviewer"]
+    ritual ==> claude["Claude Code<br/>required · implements, plans, judges"]
+    ritual ==> codex["Codex CLI<br/>required · adversarial reviewer"]
     claude <-->|"MCP bridge<br/>(codex mcp-server)"| codex
-    ritual --> check["./check.sh<br/>required · your lint/type/test gate"]
-    ritual -.-> rabbit["CodeRabbit CLI<br/>optional · third reviewer"]
-    ritual -.-> pal["pal MCP + Gemini<br/>optional · consensus arbitration"]
-    ritual -.-> mutants["cargo-mutants<br/>optional · mutation gate"]
-    ritual -.-> leaks["gitleaks<br/>optional · secrets gate"]
-    ritual -.-> gh["gh CLI<br/>optional · pr-comment"]
-    ritual -.-> nvim["running nvim<br/>optional · open/quickfix"]
-    ritual -.-> srt["srt sandbox<br/>optional · wraps headless runs"]
-    ritual -.-> pandoc["pandoc<br/>optional · PDF reports"]
+    ritual ==> check["./check.sh<br/>required · your lint/type/test gate"]
+    ritual -.-> optbox
+    subgraph optbox ["optional · feature-gated"]
+        direction TB
+        rabbit["CodeRabbit CLI<br/>third reviewer"] ~~~ mutants["cargo-mutants<br/>mutation gate"] ~~~ gh["gh CLI<br/>pr-comment"] ~~~ srt["srt sandbox<br/>wraps headless runs"]
+        pal["pal MCP + Gemini<br/>consensus arbitration"] ~~~ leaks["gitleaks<br/>secrets gate"] ~~~ nvim["running nvim<br/>open/quickfix"] ~~~ pandoc["pandoc<br/>PDF reports"]
+    end
+
+    %% solid/bold = required · dashed/muted = optional; vendor colors match the pipeline diagram
+    classDef core fill:#0f172a,stroke:#334155,color:#ffffff
+    classDef claudec fill:#d97757,stroke:#b45309,color:#ffffff
+    classDef codexc fill:#10a37f,stroke:#047857,color:#ffffff
+    classDef gate fill:#22c55e,stroke:#15803d,color:#052e16
+    classDef opt fill:#94a3b8,stroke:#64748b,color:#0f172a
+    classDef optframe fill:transparent,stroke:#64748b,stroke-dasharray:6 4,color:#64748b
+    class ritual core
+    class claude claudec
+    class codex codexc
+    class check gate
+    class rabbit,pal,mutants,leaks,gh,nvim,srt,pandoc opt
+    class optbox optframe
 ```
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
@@ -158,6 +170,7 @@ flowchart TD
 ### The loop
 
 ```mermaid
+%%{init: {"flowchart": {"curve": "basis"}}}%%
 flowchart LR
     spec["spec<br/>you + chat"] --> plan["plan<br/>claude · plan mode"]
     plan --> pr["plan-review<br/>codex critiques"]
@@ -167,10 +180,26 @@ flowchart LR
     dr --> cov["coverage<br/>judge vs ## Deliverables"]
     cov -->|gaps| fix["ritual complete<br/>bounded fix rounds"]
     fix -->|re-judge| cov
-    cov -->|"zero gaps · check.sh green · no open findings"| done(["done"])
+    cov ==>|"zero gaps · check.sh green · no open findings"| done(["done"])
     arch[".ritual/architecture.md<br/>the generated map"] -.->|grounds| plan
     arch -.->|"duplication / boundary ground truth"| pr
     done -->|auto-refresh| arch
+
+    %% orange = claude · teal = codex · purple = cross-model · blue = judge/driver · amber = artifact · green = done
+    classDef you fill:#64748b,stroke:#475569,color:#ffffff
+    classDef claude fill:#d97757,stroke:#b45309,color:#ffffff
+    classDef codex fill:#10a37f,stroke:#047857,color:#ffffff
+    classDef both fill:#8b5cf6,stroke:#6d28d9,color:#ffffff
+    classDef judge fill:#3b82f6,stroke:#1d4ed8,color:#ffffff
+    classDef artifact fill:#f59e0b,stroke:#b45309,color:#1f2937
+    classDef ok fill:#22c55e,stroke:#15803d,color:#052e16
+    class spec you
+    class plan,impl claude
+    class pr codex
+    class tr,dr both
+    class cov,fix judge
+    class arch artifact
+    class done ok
 ```
 
 - **The pipeline**: per-branch stages `spec → plan → plan-review → tests-red → implement → dual-review → coverage`; one-key launch; headless stages stream live; interactive stages hand you a real attached `claude` session and resume the TUI on exit.
@@ -193,7 +222,19 @@ flowchart LR
     runs -->|tail| ui
     gates["dual-review · plan-review · coverage<br/>audit · mutants · secrets · coderabbit"] -->|"anchored findings JSON"| findings[".ritual/findings/*.json"]
     findings -->|"f fixed / d dismissed · F/A fix batches"| ui
-    findings -->|"exit-code / CI contract"| ci["ritual run --ci · complete --check"]
+    findings ==>|"exit-code / CI contract"| ci["ritual run --ci · complete --check"]
+
+    %% slate = your terminal · blue = ritual machinery · amber = artifacts · purple = gates · green = CI verdict
+    classDef term fill:#64748b,stroke:#475569,color:#ffffff
+    classDef machine fill:#3b82f6,stroke:#1d4ed8,color:#ffffff
+    classDef artifact fill:#f59e0b,stroke:#b45309,color:#1f2937
+    classDef gatec fill:#8b5cf6,stroke:#6d28d9,color:#ffffff
+    classDef verdict fill:#22c55e,stroke:#15803d,color:#052e16
+    class ui term
+    class daemon machine
+    class runs,meta,findings artifact
+    class gates gatec
+    class ci verdict
 ```
 
 - **Runs are daemons**: every headless run detaches (`setsid`) and survives the TUI, the terminal, and reboots of your session. The raw event stream is archived to `.ritual/runs/*.jsonl` *before* parsing; the TUI is just a tailer. Restart `ritual` and it reattaches to live runs, reconciles anything that finished while you were away, and announces parallel runs it can't attach. Cancel kills the whole process group.
