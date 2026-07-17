@@ -785,6 +785,142 @@ fn complete_drives_the_deliverable_loop_to_done() {
 }
 
 #[test]
+fn complete_refreshes_the_architecture_map_when_done() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = setup_project();
+    let root = tmp.path();
+    std::fs::write(root.join("check.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(
+        root.join("check.sh"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let feat = root.join(".ritual/features/main");
+    std::fs::create_dir_all(&feat).unwrap();
+    std::fs::write(
+        feat.join("plan.md"),
+        "# Plan\n\n## Deliverables\n- [ ] D1: media file - accept: media.txt exists - route: media.txt\n",
+    )
+    .unwrap();
+
+    // Genuine completion refreshes the map so the NEXT feature's plan is
+    // grounded in post-feature reality.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(root)
+        .env("RITUAL_CLAUDE_CMD", complete_agent())
+        .env("RITUAL_CODEX_CMD", complete_agent())
+        .args(["complete"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("all deliverables satisfied"));
+    assert!(
+        root.join(".ritual/architecture.md").exists(),
+        "completion refreshed the map"
+    );
+    assert!(
+        root.join(".ritual/architecture.fingerprint").exists(),
+        "and stamped it"
+    );
+
+    // `--check` is the token-free CI gate: it must never spawn the refresh.
+    std::fs::remove_file(root.join(".ritual/architecture.md")).unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(root)
+        .env("RITUAL_CLAUDE_CMD", complete_agent())
+        .env("RITUAL_CODEX_CMD", complete_agent())
+        .args(["complete", "--check"])
+        .assert()
+        .success();
+    assert!(
+        !root.join(".ritual/architecture.md").exists(),
+        "--check spawned nothing"
+    );
+
+    // auto_refresh = false: completion leaves the map alone.
+    let tmp2 = setup_project();
+    let root2 = tmp2.path();
+    std::fs::write(root2.join("check.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(
+        root2.join("check.sh"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let feat2 = root2.join(".ritual/features/main");
+    std::fs::create_dir_all(&feat2).unwrap();
+    std::fs::write(
+        feat2.join("plan.md"),
+        "# Plan\n\n## Deliverables\n- [ ] D1: media file - accept: media.txt exists - route: media.txt\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root2.join(".ritual/config.toml"),
+        "[architect]\nauto_refresh = false\n",
+    )
+    .unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(root2)
+        .env("RITUAL_CLAUDE_CMD", complete_agent())
+        .env("RITUAL_CODEX_CMD", complete_agent())
+        .args(["complete"])
+        .assert()
+        .success();
+    assert!(
+        !root2.join(".ritual/architecture.md").exists(),
+        "auto_refresh=false leaves the map alone"
+    );
+}
+
+#[test]
+fn complete_survives_a_failed_architect_refresh() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = setup_project();
+    let root = tmp.path();
+    std::fs::write(root.join("check.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(
+        root.join("check.sh"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let feat = root.join(".ritual/features/main");
+    std::fs::create_dir_all(&feat).unwrap();
+    std::fs::write(
+        feat.join("plan.md"),
+        "# Plan\n\n## Deliverables\n- [ ] D1: media file - accept: media.txt exists - route: media.txt\n",
+    )
+    .unwrap();
+    // A previous good map + stamp that the failed refresh must not damage.
+    std::fs::write(root.join(".ritual/architecture.md"), "the old map\n").unwrap();
+    std::fs::write(root.join(".ritual/architecture.fingerprint"), "old:stamp\n").unwrap();
+
+    // The architect leg writes no candidate: completion itself must still
+    // succeed, warn, and leave the previous map + stamp byte-identical.
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(root)
+        .env("RITUAL_CLAUDE_CMD", complete_agent())
+        .env("RITUAL_CODEX_CMD", complete_agent())
+        .env("COMPLETE_AGENT_NO_ARCH", "1")
+        .args(["complete"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("all deliverables satisfied"))
+        .stdout(predicate::str::contains("refresh failed"));
+    assert_eq!(
+        std::fs::read_to_string(root.join(".ritual/architecture.md")).unwrap(),
+        "the old map\n",
+        "previous map intact"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(".ritual/architecture.fingerprint")).unwrap(),
+        "old:stamp\n",
+        "previous stamp intact"
+    );
+}
+
+#[test]
 fn findings_exit_code_contract() {
     let tmp = setup_project();
     // Non-blocking finding: exit 0.

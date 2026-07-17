@@ -42,6 +42,16 @@ case "$prompt" in
         > "$fdir/${ts}-coverage.json"
     fi
     ;;
+  *"ARCHITECTURE MAP"*)
+    # The post-completion architect refresh (candidate protocol).
+    if [ -z "${COMPLETE_AGENT_NO_ARCH:-}" ]; then
+      target="$(printf '%s' "$prompt" | grep -oE '[^ ]*architecture\.md\.new' | head -1)"
+      if [ -n "$target" ]; then
+        mkdir -p "$(dirname "$target")"
+        printf '# Architecture map\n\nfrom the completion hook.\n\n## Modules\n- src: x\n\n## Extension seams\n- y\n' > "$target"
+      fi
+    fi
+    ;;
   *"Fix these code review findings"*)
     if [ -n "${COMPLETE_AGENT_COMMIT:-}" ]; then
       # A rogue fixer that commits: ritual must reject the batch.
