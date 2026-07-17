@@ -163,6 +163,7 @@ fn budget_knob(stage: &str) -> &'static str {
         s if s.ends_with("-chat") => "budget_doc_chat_usd",
         // audit-discover, audit-lane-<slug>, audit-judge: one per-leg cap.
         s if s.starts_with("audit") => "budget_audit_usd",
+        s if s.starts_with("architect") => "budget_architect_usd",
         _ => "the stage budget cap",
     }
 }

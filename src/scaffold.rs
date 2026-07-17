@@ -22,6 +22,10 @@ const GITIGNORE_ENTRIES: &[&str] = &[
     ".ritual/features/*/.*.undo",
     ".ritual/features/*/.undo/",
     ".ritual/features/*/.redo/",
+    // Architect artifacts: sidecar + backup are local state; the map itself
+    // (.ritual/architecture.md) stays committable so teams can share it.
+    ".ritual/architecture.fingerprint",
+    ".ritual/architecture.md.bak",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

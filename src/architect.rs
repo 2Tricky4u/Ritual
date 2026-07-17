@@ -24,44 +24,119 @@ pub enum ArchStatus {
 }
 
 /// Pure freshness verdict from the three facts guidance/status/doctor share.
+/// A missing stamp or fingerprint is UNKNOWN, never stale - same contract as
+/// the stage fingerprints (guidance must not cry wolf on legacy/non-git).
 pub fn status(doc_meaningful: bool, stamp: Option<&str>, current: Option<&str>) -> ArchStatus {
-    let _ = (doc_meaningful, stamp, current);
-    unimplemented!("phase 1 red")
+    if !doc_meaningful {
+        return ArchStatus::Missing;
+    }
+    match (stamp, current) {
+        (Some(s), Some(c)) if s == c => ArchStatus::Fresh,
+        (Some(_), Some(_)) => ArchStatus::Stale,
+        _ => ArchStatus::Unknown,
+    }
 }
 
 /// The user-facing nudge for a status; only Missing/Stale speak.
 pub fn note(status: ArchStatus) -> Option<&'static str> {
-    let _ = status;
-    unimplemented!("phase 1 red")
+    match status {
+        ArchStatus::Missing => {
+            Some("architecture.md missing - run `ritual architect` to ground planning")
+        }
+        ArchStatus::Stale => {
+            Some("architecture.md stale (code changed since generation) - rerun `ritual architect`")
+        }
+        ArchStatus::Fresh | ArchStatus::Unknown => None,
+    }
 }
 
 /// The generation fingerprint recorded at the last successful refresh.
 pub fn read_stamp(dirs: &RitualDirs) -> Option<String> {
-    let _ = dirs;
-    unimplemented!("phase 1 red")
+    let text = std::fs::read_to_string(dirs.architecture_fingerprint_file()).ok()?;
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 /// Persist the generation fingerprint sidecar.
 pub fn write_stamp(dirs: &RitualDirs, fp: &str) -> Result<()> {
-    let _ = (dirs, fp);
-    unimplemented!("phase 1 red")
+    std::fs::write(dirs.architecture_fingerprint_file(), format!("{fp}\n"))
+        .map_err(|e| anyhow::anyhow!("writing the architecture fingerprint sidecar: {e}"))
 }
+
+/// The headings [`finalize`] requires - kept in sync with the architect
+/// prompt in `stages::architect_command`.
+pub const REQUIRED_HEADINGS: [&str; 3] = ["# Architecture map", "## Modules", "## Extension seams"];
 
 /// Structural contract for a generated candidate: meaningful prose plus the
 /// prescribed headings. The ~200-line cap is prompt guidance, never enforced.
 pub fn validate_candidate(text: &str) -> Result<()> {
-    let _ = text;
-    unimplemented!("phase 1 red")
+    anyhow::ensure!(
+        crate::spec::has_meaningful_content(text),
+        "no meaningful content (empty, or headings/comments only)"
+    );
+    for h in REQUIRED_HEADINGS {
+        anyhow::ensure!(
+            text.lines().any(|l| l.trim() == h),
+            "missing required section: {h}"
+        );
+    }
+    Ok(())
 }
 
 /// Validate the candidate and install it: old doc -> `.bak`, candidate ->
 /// live doc, then stamp the scoped fingerprint (post-swap - the swap itself
-/// is tree dirt). Returns whether staleness tracking is active (git tree).
-/// EVERY failure leaves the live doc + sidecar untouched and removes the
-/// candidate.
+/// is tree dirt, and `dirty_digest` hashes untracked files, so a pre-swap
+/// stamp would be born stale). Returns whether staleness tracking is active
+/// (git tree). EVERY failure leaves the live doc + sidecar untouched and
+/// removes the candidate.
 pub fn finalize(dirs: &RitualDirs, run_ok: bool) -> Result<bool> {
-    let _ = (dirs, run_ok);
-    unimplemented!("phase 1 red")
+    let candidate = dirs.architecture_candidate_file();
+    let res = finalize_inner(dirs, run_ok, &candidate);
+    if res.is_err() {
+        // Debris from this failure must never be installed by a later run.
+        let _ = std::fs::remove_file(&candidate);
+    }
+    res
+}
+
+fn finalize_inner(dirs: &RitualDirs, run_ok: bool, candidate: &std::path::Path) -> Result<bool> {
+    anyhow::ensure!(
+        run_ok,
+        "architect run failed - candidate discarded, live map untouched"
+    );
+    let text = std::fs::read_to_string(candidate).map_err(|_| {
+        anyhow::anyhow!(
+            "architect finished but wrote no usable architecture.md (no candidate at {})",
+            candidate.display()
+        )
+    })?;
+    validate_candidate(&text)
+        .map_err(|e| anyhow::anyhow!("architect wrote no usable architecture.md: {e}"))?;
+
+    // Install: the previous map survives as .bak (successful swaps only -
+    // git history covers anything older), the candidate becomes live via
+    // rename (atomic on one filesystem, and .ritual/* shares one).
+    let doc = dirs.architecture_file();
+    if doc.exists() {
+        std::fs::rename(&doc, backup_file(dirs))
+            .map_err(|e| anyhow::anyhow!("backing up the previous architecture map: {e}"))?;
+    }
+    std::fs::rename(candidate, &doc)
+        .map_err(|e| anyhow::anyhow!("installing the architecture map: {e}"))?;
+
+    // Stamp AFTER the swap so the recorded identity includes this refresh's
+    // own tree state (scoped: .ritual/ churn is excluded anyway).
+    match crate::provenance::arch_fingerprint(&dirs.work_root) {
+        Some(fp) => {
+            write_stamp(dirs, &fp)?;
+            Ok(true)
+        }
+        None => {
+            // Not a git tree: a surviving sidecar would lie forever.
+            let _ = std::fs::remove_file(dirs.architecture_fingerprint_file());
+            Ok(false)
+        }
+    }
 }
 
 /// `.ritual/architecture.md.bak`: the pre-refresh map (successful swaps only).

@@ -333,6 +333,17 @@ impl Config {
                 // 0 lanes is a config typo, not a request for a no-op audit.
                 cfg.audit_max_lanes = v.max(1);
             }
+            if let Some(b) = fc.budget_architect_usd {
+                cfg.budget_architect_usd = b;
+            }
+            if let Some(a) = fc.architect {
+                if let Some(e) = a.enabled {
+                    cfg.architect_enabled = e;
+                }
+                if let Some(r) = a.auto_refresh {
+                    cfg.architect_auto_refresh = r;
+                }
+            }
             if let Some(b) = fc.budget_complete_usd {
                 cfg.budget_complete_usd = b;
             }

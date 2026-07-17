@@ -617,7 +617,7 @@ pub fn audit(
             println!("existing lanes file backed up to {}", backup.display());
         }
         let cmd = stages::audit_discover_command(cfg, &lanes_path);
-        let outcome = audit_leg(cfg, dirs, &branch, "audit-discover", cmd)?;
+        let outcome = oneshot_leg(cfg, dirs, &branch, "audit", "audit-discover", cmd)?;
         anyhow::ensure!(
             outcome.meta.ok,
             "discovery run failed: {}",
@@ -760,7 +760,7 @@ pub fn audit(
         "RITUAL_FINDINGS_DIR".to_string(),
         dirs.findings_dir().display().to_string(),
     ));
-    let outcome = audit_leg(cfg, dirs, &branch, "audit-judge", cmd)?;
+    let outcome = oneshot_leg(cfg, dirs, &branch, "audit", "audit-judge", cmd)?;
     anyhow::ensure!(
         outcome.meta.ok,
         "audit judge failed: {}",
@@ -807,11 +807,14 @@ pub fn audit(
     Ok(())
 }
 
-/// Spawn one audit leg detached and follow it (shared by discovery + judge).
-fn audit_leg(
+/// Spawn one one-shot leg detached and follow it (audit discovery/judge,
+/// architect). Non-pipeline: the run archives + bills normally but never
+/// touches state.json.
+fn oneshot_leg(
     cfg: &Config,
     dirs: &RitualDirs,
     branch: &str,
+    feature: &str,
     stage_label: &str,
     cmd: stages::StageCommand,
 ) -> Result<runner::RunOutcome> {
@@ -821,7 +824,7 @@ fn audit_leg(
         env: cmd.env,
         stdin: cmd.stdin,
         stage: stage_label.into(),
-        feature: "audit".into(),
+        feature: feature.into(),
         branch: branch.into(),
         redact: cfg.redaction,
         repro: None,
@@ -838,8 +841,63 @@ fn audit_leg(
 /// ([`crate::architect::finalize`]). Non-pipeline like audit: never touches
 /// state.json.
 pub fn architect(cfg: &Config, dirs: &RitualDirs) -> Result<()> {
-    let _ = (cfg, dirs);
-    anyhow::bail!("phase 1 red: ritual architect is not implemented yet")
+    anyhow::ensure!(dirs.exists(), "no .ritual/ here; run `ritual init` first");
+    stages::ensure_online(cfg)?;
+    if let Some((spent, budget)) = budget_exceeded(cfg, dirs) {
+        anyhow::bail!(
+            "daily budget reached (${spent:.2}/${budget:.2}); raise budget_daily_usd to override"
+        );
+    }
+    // One architect at a time: the leg is a detached daemon, so Ctrl-C leaves
+    // it running (and billing) - a rerun would race it for the same paths.
+    let live: Vec<String> = runner::live_runs(dirs)
+        .into_iter()
+        .filter(|(_, s)| s.stage.starts_with("architect"))
+        .map(|(id, _)| id)
+        .collect();
+    anyhow::ensure!(
+        live.is_empty(),
+        "an architect run is already running (`ritual attach {}`); \
+         wait for it or kill it (`ritual ps`) before starting another",
+        live[0]
+    );
+
+    let branch = state::current_branch(&dirs.work_root).unwrap_or_else(|| "detached".to_string());
+    let candidate = dirs.architecture_candidate_file();
+    // Debris from an earlier crashed run must never pass for THIS run's
+    // output - finalize validates the candidate, so a stale one would lie.
+    let _ = std::fs::remove_file(&candidate);
+
+    let invariants = stages::meaningful_invariants(dirs);
+    let cmd = stages::architect_command(cfg, &candidate, invariants.as_deref());
+    let outcome = oneshot_leg(cfg, dirs, &branch, "architect", "architect", cmd)?;
+    if !outcome.meta.ok {
+        // finalize(false) cleans the candidate; the richer failure decode
+        // (budget knob, denials) beats its generic message.
+        let _ = crate::architect::finalize(dirs, false);
+        anyhow::bail!(
+            "architect run failed: {}",
+            crate::history::decode_failure(&outcome.meta)
+        );
+    }
+    let tracked = crate::architect::finalize(dirs, true)?;
+    println!(
+        "architecture map written to {}",
+        dirs.architecture_file().display()
+    );
+    if crate::architect::backup_file(dirs).exists() {
+        println!(
+            "previous map backed up to {}",
+            crate::architect::backup_file(dirs).display()
+        );
+    }
+    if !tracked {
+        println!("(not a git tree: staleness tracking disabled)");
+    }
+    if let Some(cost) = outcome.meta.total_cost_usd {
+        println!("cost: ${cost:.2}");
+    }
+    Ok(())
 }
 
 /// `ritual reset-plan [--force]`: re-plan from the spec. Without `--force`, print

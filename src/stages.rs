@@ -526,13 +526,15 @@ pub fn code_fix_review_command(
     cmd
 }
 
-/// Shared headless-flag tail for the audit legs: routing key, then the
-/// standard stream/permission/budget plumbing.
-fn audit_headless_argv(
+/// Shared headless-flag tail for the one-shot legs (audit, architect):
+/// routing key + per-leg budget, then the standard stream/permission
+/// plumbing.
+fn oneshot_headless_argv(
     cfg: &Config,
     prompt: Option<String>,
     tools: &str,
     model_key: &str,
+    budget_usd: f64,
 ) -> Vec<String> {
     let mut argv = cfg.claude_cmd.clone();
     argv.push("-p".into());
@@ -549,7 +551,7 @@ fn audit_headless_argv(
         tools.into(),
     ]);
     argv.push("--max-budget-usd".into());
-    argv.push(cfg.budget_audit_usd.to_string());
+    argv.push(budget_usd.to_string());
     if let Some(model) = cfg.models.get(model_key) {
         argv.push("--model".into());
         argv.push(model.clone());
@@ -564,14 +566,68 @@ fn audit_headless_argv(
 /// Build the `ritual architect` run: survey the tree and write the
 /// architecture-map CANDIDATE (ritual validates + installs it afterwards,
 /// see [`crate::architect::finalize`]). Read-only + bare Write under
-/// dontAsk, one budgeted leg, model key "architect".
+/// dontAsk, one budgeted leg, model key "architect". The candidate path
+/// rides in the prompt (a no-shell agent cannot expand env vars).
 pub fn architect_command(
     cfg: &Config,
     candidate_path: &Path,
     invariants: Option<&Path>,
 ) -> StageCommand {
-    let _ = (cfg, candidate_path, invariants);
-    unimplemented!("phase 1 red")
+    // Only mention the constitution section when the file has real content -
+    // and keep the base prompt free of the word so tests can pin the split.
+    let inv_line = match invariants {
+        Some(p) => format!(
+            "`## Invariant pointers` - {} lists the project constitution: map \
+             each bullet to the code that enforces it (file:line where \
+             practical).\n",
+            p.display()
+        ),
+        None => String::new(),
+    };
+    let prompt = format!(
+        "Survey this repository and write its ARCHITECTURE MAP to {cand} \
+         (create parent dirs if needed; write NOTHING else). ritual validates \
+         and installs the file after you finish. The map grounds future \
+         feature PLANNING in the code that actually exists, so describe the \
+         tree as it IS - no aspirations, no TODOs.\n\n\
+         Structure the document EXACTLY as:\n\
+         `# Architecture map` - one short overview paragraph (what the \
+         project is, its top-level shape).\n\
+         `## Modules` - one bullet per source module/directory: `path` - its \
+         single responsibility in one line.\n\
+         `## Data flow` - the 3-6 most important end-to-end flows, 2-4 lines \
+         each: entry point -> transformations -> outputs, naming the \
+         functions/files on the path.\n\
+         `## Conventions` - the observable conventions (error handling, \
+         naming, test layout, state/persistence, styling), one bullet each \
+         WITH a concrete file example.\n\
+         `## Extension seams` - where a NEW feature of each common kind plugs \
+         in (extend, don't reinvent): one bullet per seam naming the existing \
+         code to copy.\n\
+         `## Boundaries` - what must NOT be duplicated or bypassed \
+         (single-owner modules, generated files, load-bearing ordering), one \
+         bullet each with the reason.\n\
+         {inv_line}\
+         Keep the WHOLE file under ~200 lines: it rides inside planning \
+         prompts, so density beats completeness - prefer the twenty seams a \
+         planner needs over an exhaustive index. You are READ-ONLY on \
+         everything except the output path.",
+        cand = candidate_path.display(),
+    );
+    StageCommand {
+        mode: Mode::Headless,
+        agent: AgentKind::Claude,
+        argv: oneshot_headless_argv(
+            cfg,
+            Some(prompt),
+            "Read,Glob,Grep,Write",
+            "architect",
+            cfg.budget_architect_usd,
+        ),
+        env: vec![],
+        needs_codex: false,
+        stdin: None,
+    }
 }
 
 /// Build the audit DISCOVERY run: enumerate the project's distinct
@@ -596,7 +652,13 @@ pub fn audit_discover_command(cfg: &Config, lanes_path: &Path) -> StageCommand {
     StageCommand {
         mode: Mode::Headless,
         agent: AgentKind::Claude,
-        argv: audit_headless_argv(cfg, Some(prompt), "Read,Glob,Grep,Write", "audit"),
+        argv: oneshot_headless_argv(
+            cfg,
+            Some(prompt),
+            "Read,Glob,Grep,Write",
+            "audit",
+            cfg.budget_audit_usd,
+        ),
         env: vec![],
         needs_codex: false,
         stdin: None,
@@ -653,7 +715,13 @@ pub fn audit_lane_command(
     StageCommand {
         mode: Mode::Headless,
         agent: AgentKind::Claude,
-        argv: audit_headless_argv(cfg, Some(prompt), "Read,Glob,Grep,Write", "audit"),
+        argv: oneshot_headless_argv(
+            cfg,
+            Some(prompt),
+            "Read,Glob,Grep,Write",
+            "audit",
+            cfg.budget_audit_usd,
+        ),
         env: vec![],
         needs_codex: false,
         stdin: None,
@@ -710,11 +778,12 @@ pub fn audit_judge_command(
     // The prompt itself is bounded, but the reports are not: prompt AND
     // payload both travel on stdin (`-p` with no positional reads stdin).
     let payload = format!("{prompt}\n\n{reports_payload}");
-    let mut argv = audit_headless_argv(
+    let mut argv = oneshot_headless_argv(
         cfg,
         None,
         "Read,Glob,Grep,Bash,Write mcp__codex__codex mcp__codex__codex-reply",
         "audit-judge",
+        cfg.budget_audit_usd,
     );
     // Same git guardrail as the code fixer: Bash is needed to reproduce, but
     // history/remote mutation stays hard-denied.

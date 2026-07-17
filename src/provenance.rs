@@ -57,11 +57,40 @@ fn cmd_line(bin: &str, args: &[&str], cwd: &Path) -> Option<String> {
 /// files, so two runs with different untracked inputs used to fingerprint
 /// identically - a repro bundle that couldn't tell its inputs apart.
 fn dirty_digest(root: &Path) -> Option<String> {
+    dirty_digest_impl(root, false)
+}
+
+/// `exclude_ritual` scopes the digest to the SOURCE tree: the tracked diff
+/// carries a `:(exclude).ritual` pathspec and untracked paths under the root
+/// `.ritual/` are skipped (plain pathspecs respect component boundaries, so
+/// `.ritualized` or `src/.ritual` still count as source).
+fn dirty_digest_impl(root: &Path, exclude_ritual: bool) -> Option<String> {
     // Unborn HEAD (fresh repo, no commits): `git diff HEAD` fails, but the
     // untracked inputs below still distinguish runs - diff against the
     // empty-tree sentinel instead of giving up (None == "clean", a lie here).
-    let diff = cmd_line("git", &["diff", "HEAD"], root)
-        .or_else(|| cmd_line("git", &["diff", crate::git::EMPTY_TREE], root))?;
+    let diff = if exclude_ritual {
+        cmd_line(
+            "git",
+            &["diff", "HEAD", "--", ".", ":(exclude).ritual"],
+            root,
+        )
+        .or_else(|| {
+            cmd_line(
+                "git",
+                &[
+                    "diff",
+                    crate::git::EMPTY_TREE,
+                    "--",
+                    ".",
+                    ":(exclude).ritual",
+                ],
+                root,
+            )
+        })?
+    } else {
+        cmd_line("git", &["diff", "HEAD"], root)
+            .or_else(|| cmd_line("git", &["diff", crate::git::EMPTY_TREE], root))?
+    };
     let mut input = diff;
     let untracked = cmd_line(
         "git",
@@ -76,7 +105,11 @@ fn dirty_digest(root: &Path) -> Option<String> {
         root,
     )
     .unwrap_or_default();
-    let mut paths: Vec<&str> = untracked.split('\0').filter(|p| !p.is_empty()).collect();
+    let mut paths: Vec<&str> = untracked
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .filter(|p| !(exclude_ritual && (p.starts_with(".ritual/") || *p == ".ritual")))
+        .collect();
     paths.sort_unstable();
     for p in paths {
         let hash = std::fs::read(root.join(p))
@@ -108,8 +141,12 @@ pub fn tree_fingerprint(root: &Path) -> Option<String> {
 /// plan.md. HEAD still participates: any commit is advisory staleness, same
 /// semantics as the stage fingerprints.
 pub fn arch_fingerprint(root: &Path) -> Option<String> {
-    let _ = root;
-    unimplemented!("phase 1 red")
+    if !crate::git::in_work_tree(root) {
+        return None;
+    }
+    let head = cmd_line("git", &["rev-parse", "HEAD"], root).unwrap_or_else(|| "unborn".into());
+    let dirty = dirty_digest_impl(root, true).unwrap_or_else(|| "clean".into());
+    Some(format!("{head}:{dirty}"))
 }
 
 pub fn collect(cfg: &Config, dirs: &RitualDirs) -> ReproBundle {
