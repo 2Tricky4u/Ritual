@@ -49,6 +49,7 @@ pub enum Action {
     Settings,
     ResetPlan,
     StageDetail,
+    Architect,
     RunStage(StageId),
     /// Re-run a failed stage with `[retry] models[i]` (palette-only, dynamic).
     RetryStage(StageId, usize),
@@ -126,6 +127,11 @@ pub const ACTIONS: &[(&str, Action, &str)] = &[
         "reset-plan",
         Action::ResetPlan,
         "reset plan back to the spec (palette-only)",
+    ),
+    (
+        "architect",
+        Action::Architect,
+        "refresh the architecture map (palette-only)",
     ),
     (
         "stage-detail",
@@ -368,6 +374,27 @@ pub fn fuzzy_match(needle: &str, haystack: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn architect_is_a_palette_only_action() {
+        let (name, _, label) = ACTIONS
+            .iter()
+            .find(|(_, a, _)| *a == Action::Architect)
+            .expect("architect registered");
+        assert_eq!(*name, "architect");
+        assert!(label.contains("architecture map"), "{label}");
+        // No default chord: the palette (and only the palette) reaches it,
+        // same as reset-plan - a map refresh spends money.
+        assert!(
+            Keymap::default().chords_for(Action::Architect).is_empty(),
+            "palette-only"
+        );
+        assert!(
+            palette_entries()
+                .iter()
+                .any(|(_, a)| *a == Action::Architect)
+        );
+    }
 
     #[test]
     fn parses_chords() {

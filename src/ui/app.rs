@@ -301,6 +301,8 @@ pub struct App {
     /// The in-flight code-fix batch (fix → check.sh → re-review), if any.
     code_fix_ctx: Option<CodeFixCtx>,
     code_fix_task: Option<JoinHandle<()>>,
+    /// The in-flight architecture-map refresh (palette architect action).
+    architect_task: Option<JoinHandle<()>>,
     current_code_run_id: Option<String>,
     /// True while the code-fix gate's detached `check.sh` is in flight. It has
     /// no join handle (it runs off-loop), so cancelling the batch can't kill it;
@@ -509,6 +511,7 @@ impl App {
             last_fix: None,
             code_fix_ctx: None,
             code_fix_task: None,
+            architect_task: None,
             gate_check_running: false,
             current_code_run_id: None,
             anchor_lost: std::collections::HashSet::new(),
@@ -561,6 +564,10 @@ impl App {
     }
 
     /// True while a spec/plan chat edit is running.
+    pub fn architect_running(&self) -> bool {
+        self.architect_task.is_some()
+    }
+
     pub fn chat_running(&self) -> bool {
         self.chat.as_ref().is_some_and(|c| c.in_flight)
     }
@@ -816,6 +823,14 @@ impl App {
             };
             let _ = tx.blocking_send(AppMsg::GuidanceProbe(Box::new(probe)));
         });
+    }
+
+    /// Refresh the architecture map from the palette: one detached headless
+    /// run streaming to the Live tab, finalized (validate/swap/stamp) inside
+    /// the task via the same [`crate::architect::finalize`] the CLI uses.
+    fn spawn_architect(&mut self, tx: &mpsc::Sender<AppMsg>) {
+        let _ = tx;
+        self.status_msg = Some("phase 4 red: architect is not wired yet".into());
     }
 
     /// Re-resolve every open plan finding's step against the CURRENT plan.
@@ -1253,6 +1268,7 @@ impl App {
             Action::Settings => self.toggle_settings(),
             // Works from every tab: the sidebar selection always exists.
             Action::StageDetail => self.stage_detail = !self.stage_detail,
+            Action::Architect => self.spawn_architect(tx),
             Action::ResetPlan => {
                 if self.fix_running() || self.chat_running() {
                     self.status_msg = Some("a fix/chat is running; wait before resetting".into());
@@ -7161,6 +7177,42 @@ mod tests {
         let (_t, mut app, tx, _rx) = test_app();
         app.dispatch(Action::TabGuide, &tx);
         assert_eq!(app.tab, Tab::Guide);
+    }
+
+    #[test]
+    fn architect_dispatch_guards_offline_busy_and_live() {
+        let (_t, mut app, tx, _rx) = test_app();
+
+        // Offline kill-switch beats everything.
+        app.cfg.offline = true;
+        app.dispatch(Action::Architect, &tx);
+        let msg = app.status_msg.take().expect("offline refusal");
+        assert!(msg.contains("offline"), "{msg}");
+        app.cfg.offline = false;
+
+        // A live stage run: refuse instead of racing it for the Live tab.
+        app.running = Some(StageId::Plan);
+        app.dispatch(Action::Architect, &tx);
+        let msg = app.status_msg.take().expect("busy refusal");
+        assert!(msg.contains("wait"), "{msg}");
+        app.running = None;
+
+        // The PERSISTED live-run guard: an architect daemon started by an
+        // external `ritual architect` (same registry the CLI consults).
+        let runs = app.dirs.runs_dir();
+        std::fs::create_dir_all(&runs).unwrap();
+        std::fs::write(
+            runs.join("20260716T000001Z-1-1-architect.status"),
+            format!(
+                r#"{{"pid":{},"stage":"architect","branch":"main"}}"#,
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        app.dispatch(Action::Architect, &tx);
+        let msg = app.status_msg.take().expect("live-run refusal");
+        assert!(msg.contains("already running"), "{msg}");
+        assert!(!app.architect_running(), "nothing spawned");
     }
 
     #[test]

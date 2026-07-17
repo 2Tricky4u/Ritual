@@ -52,6 +52,9 @@ pub struct PipelineGuidance {
     pub next_note: Option<String>,
     /// Pipeline-level: open confirmed findings, coverage gaps, red check.
     pub warnings: Vec<String>,
+    /// Architecture-map freshness for the Plan stage detail (None when the
+    /// nudges are disabled).
+    pub arch: Option<crate::architect::ArchStatus>,
 }
 
 /// One stage's persisted facts, snapshot for the pure core.
@@ -228,6 +231,7 @@ pub fn compute(i: &Inputs) -> PipelineGuidance {
         next,
         next_note,
         warnings,
+        arch: None,
     }
 }
 
@@ -505,6 +509,24 @@ mod tests {
         let w = compute(&both).warnings;
         assert!(w[0].contains("check.sh"), "{w:?}");
         assert!(w[1].contains("architecture.md"), "{w:?}");
+    }
+
+    #[test]
+    fn arch_status_is_cached_for_the_stage_detail() {
+        use crate::architect::ArchStatus;
+        let mut i = base_inputs();
+        i.arch_nudges = true;
+        i.arch_meaningful = true;
+        i.arch_stamp = Some("a:1".into());
+        i.arch_fingerprint = Some("a:2".into());
+        assert_eq!(compute(&i).arch, Some(ArchStatus::Stale));
+        i.arch_fingerprint = Some("a:1".into());
+        assert_eq!(compute(&i).arch, Some(ArchStatus::Fresh));
+        i.arch_meaningful = false;
+        assert_eq!(compute(&i).arch, Some(ArchStatus::Missing));
+        // Disabled nudges: the detail line disappears entirely.
+        i.arch_nudges = false;
+        assert_eq!(compute(&i).arch, None);
     }
 
     #[test]

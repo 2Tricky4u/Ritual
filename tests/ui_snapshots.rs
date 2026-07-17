@@ -556,6 +556,34 @@ fn dashboard_stage_detail_stale() {
 }
 
 #[test]
+fn dashboard_stage_detail_plan_shows_architecture_freshness() {
+    // `i` on the plan stage surfaces the map's freshness (Missing here: a
+    // fresh scaffold has no architecture.md) so the planner knows what the
+    // plan will (not) be grounded in.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_app(&tmp);
+    app.selected = 1; // plan
+    app.stage_detail = true;
+    let out = render(&app);
+    assert!(out.contains("architecture map"), "{out}");
+    assert!(out.contains("missing"), "{out}");
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn dashboard_palette_surfaces_the_architect_action() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_app(&tmp);
+    app.palette = Some(ritual::ui::app::PaletteState {
+        input: "architec".into(),
+        selected: 0,
+    });
+    let out = render(&app);
+    assert!(out.contains("refresh the architecture map"), "{out}");
+    insta::assert_snapshot!(out);
+}
+
+#[test]
 fn dashboard_stage_detail_blocked() {
     // `i` on coverage with no plan: the deliverables/launch blocker shows.
     let tmp = tempfile::tempdir().unwrap();
