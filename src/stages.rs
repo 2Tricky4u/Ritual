@@ -110,6 +110,16 @@ pub fn meaningful_invariants(dirs: &RitualDirs) -> Option<std::path::PathBuf> {
     crate::spec::has_meaningful_content(&text).then_some(path)
 }
 
+/// The generated architecture map rides into the PLANNING stages once it has
+/// real content - plans get grounded in the code that exists, and the
+/// reviewer gets ground truth to flag duplication against. Same gate as the
+/// constitution: an empty/scaffold doc never pollutes a prompt.
+pub fn meaningful_architecture(dirs: &RitualDirs) -> Option<std::path::PathBuf> {
+    let path = dirs.architecture_file();
+    let text = std::fs::read_to_string(&path).ok()?;
+    crate::spec::has_meaningful_content(&text).then_some(path)
+}
+
 /// Which ritual document a chat edit targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocKind {
@@ -853,8 +863,23 @@ pub fn build(
         StageId::Plan => {
             let spec = dirs.spec_file(slug);
             let plan = dirs.plan_file(slug);
+            // Ground the plan in the generated map when one exists: the
+            // planner routes new work through existing seams instead of
+            // reinventing them (prompt, not env - an interactive plan-mode
+            // session only sees what the prompt says).
+            let arch_line = match meaningful_architecture(dirs) {
+                Some(p) => format!(
+                    " First read {} - the generated architecture map. Align the \
+                     plan with the modules, data flows, and conventions it names, \
+                     and route new work through its Extension seams instead of \
+                     introducing parallel structures; if the plan must diverge \
+                     from the map, say why in the plan.",
+                    p.display()
+                ),
+                None => String::new(),
+            };
             let prompt = format!(
-                "Read {} and plan the implementation. Include a `## Deliverables` \
+                "Read {} and plan the implementation.{arch_line} Include a `## Deliverables` \
                  checklist - one item per concrete deliverable, each \
                  `- [ ] <ID>: <description> - accept: <measurable pass/fail criterion> \
                  - route: <path or §Section>` (stable ids like D1) - so completeness \
@@ -1066,6 +1091,15 @@ pub fn build(
     {
         cmd.env
             .push(("RITUAL_INVARIANTS_FILE".into(), p.display().to_string()));
+    }
+    // The PLANNING stages get the architecture map: the planner aligns with
+    // it, the plan reviewer flags duplication against it. Code reviews judge
+    // the diff, not the plan - they stay clean.
+    if matches!(stage, StageId::Plan | StageId::PlanReview)
+        && let Some(p) = meaningful_architecture(dirs)
+    {
+        cmd.env
+            .push(("RITUAL_ARCHITECTURE_FILE".into(), p.display().to_string()));
     }
     Ok(cmd)
 }
