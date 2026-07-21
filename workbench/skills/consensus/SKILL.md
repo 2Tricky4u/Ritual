@@ -28,8 +28,9 @@ settle the question with a test, run the test instead.
 
 4. **Synthesize a verdict.** One paragraph: what the arbiter concluded, the
    single strongest argument on each side, and a concrete recommendation
-   (accept / reject / needs-a-test). Label it clearly as a third-model
-   opinion, not ground truth.
+   (accept / reject / needs-a-test) with how confident the arbiter was.
+   Label it clearly as a third-model recommendation for the human, not
+   ground truth - it is never auto-applied.
 
 ## Guardrails
 - Never use this to GENERATE findings or designs - it arbitrates one

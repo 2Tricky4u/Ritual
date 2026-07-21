@@ -18,6 +18,7 @@ Premature code is the failure mode. Your job here is to refine WHAT before anyon
    - Goal (one paragraph)
    - Behavior - the contract: inputs, outputs, invariants, edge cases (WHAT, never HOW)
    - Non-goals
+   - Acceptance checks - 2-5 concrete pass/fail observations that will show the goal is met (these seed the plan's `## Deliverables` later)
    - Open questions (anything the user deferred)
    If the project has `.ritual/`, write it to `.ritual/features/<branch-slug>/spec.md` (create dirs; use `git branch --show-current` for the slug, `-` for `/`). Otherwise present it inline and offer to save.
 

@@ -19,8 +19,8 @@ You are strictly READ-ONLY: inspect and judge. Do NOT edit any file, do NOT run 
    - **Present?** Does the artifact the deliverable describes actually exist?
    - **Substantive?** Is it real, not a stub or placeholder - a doc with headings but no content, a compose file with no services, a function that only `todo!()`s, an empty test? A stub is a GAP.
    - **Meets its acceptance criterion?** Judge the `accept:` clause literally.
-   Present AND substantive AND meets-criterion = SATISFIED; anything else is a GAP. Be strict: when unsure, it is a gap.
-4. **Report** a short table: deliverable | verdict (satisfied / gap) | why.
+   Present AND substantive AND meets-criterion = SATISFIED - and a SATISFIED verdict must cite its evidence: the specific file(s) (with lines where sensible) that meet the criterion. A "satisfied" you cannot anchor to files you actually read is leniency, not a verdict - treat it as a gap. Anything else is a GAP. Be strict: when unsure, it is a gap.
+4. **Report** a short table: deliverable | verdict (satisfied / gap) | evidence (file:line for satisfied) | why.
 
 ## Machine-readable findings (ritual)
 

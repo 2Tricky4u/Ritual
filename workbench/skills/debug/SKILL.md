@@ -28,5 +28,6 @@ State the root cause in one sentence: "X happens because Y." Then try to disprov
 
 ## Guardrails
 - No "while I'm here" fixes - unrelated issues become notes to the user, not edits.
-- If two phases pass without progress, stop and present what's known/ruled out rather than thrashing.
+- If two phases pass without progress - or you catch yourself re-running the same probe expecting a different result - stop and present what's known/ruled out rather than thrashing.
+- If the evidence shows the EXPECTATION is wrong (a bad test, a spec contradiction), say so and stop - never force the code to satisfy a wrong expectation.
 - A fix without a regression test is not done.

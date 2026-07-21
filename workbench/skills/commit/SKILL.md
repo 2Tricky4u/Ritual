@@ -2,6 +2,7 @@
 name: commit
 description: Write a Conventional Commit from the actual staged diff and commit it. Use when the user asks to commit, or when work is done and needs committing.
 argument-hint: "[optional scope or context hint]"
+disable-model-invocation: true
 ---
 
 # Commit

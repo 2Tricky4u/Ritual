@@ -14,14 +14,15 @@ Two reviewers from different vendors have decorrelated blind spots. The independ
 
 2. **Run both reviews independently - in parallel, same input:**
    - **Claude side:** launch the `code-reviewer` subagent on the diff.
-   - **Codex side:** call the `codex` MCP tool with the diff and instructions equivalent to the code-reviewer's (real defects only, file:line + severity + concrete failure scenario, no style nits, verify before reporting). `/codex:review` is the interactive equivalent if the user prefers running it themselves.
+   - **Codex side:** call the `codex` MCP tool with the diff and instructions equivalent to the code-reviewer's: report EVERY defect found - including ones it is uncertain about, marked as such - each with file:line, severity, and a concrete failure scenario. The bar is concrete: anything that could cause incorrect behavior, a test failure, a security hole, or a misleading result; omit pure style/naming nits. Reviewers must not self-filter for confidence - the triage step below does the filtering, and a finding silently dropped at generation time can never be cross-confirmed. `/codex:review` is the interactive equivalent if the user prefers running it themselves.
    - Do not include either reviewer's output in the other's prompt.
 
 3. **Merge and dedup** by file/line/defect (same defect described differently = one finding).
 
 4. **Triage each unique finding:**
-   - **Confirmed** = reported by BOTH models, or verifiable by reproduction (write/run a failing test, run the command, trace the code yourself). Fix confirmed findings now - unless the fix expands scope, in which case ask the user first.
-   - **Unconfirmed** (one model, not reproducible cheaply): do NOT auto-fix - reviewers hallucinate defects too. Present to the user with your own one-line assessment.
+   - **Confirmed** = reported by BOTH models, or verified by reproduction (write/run a failing test, run the command, trace the code yourself). Two models agreeing can still share a misconception - before a nontrivial fix, read the actual code at the anchor once more. Fix confirmed findings now - unless the fix expands scope, in which case ask the user first.
+   - **Single-source findings are where most real catches live - don't drop them cheaply.** For a single-model critical or major, ATTEMPT verification first (trace the code, run the scenario). Verified → confirmed.
+   - **Unconfirmed** (one model, verification failed or too expensive): do NOT auto-fix - reviewers hallucinate defects too. Present to the user with your own one-line assessment.
 
 5. **After fixes:** re-run `./check.sh` (or the test suite); confirm nothing regressed.
 

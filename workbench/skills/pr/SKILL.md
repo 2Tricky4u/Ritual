@@ -21,6 +21,7 @@ The description is evidence-based: it reflects `git diff <base>...HEAD` and the 
 3. Output the title + body in a fenced block ready to paste. Run `gh pr create` ONLY if the user asks - then show the URL.
 
 ## Guardrails
+- Every claim in the description must be traceable to a hunk in the diff - a described change the diff doesn't contain ("phantom change") is the fastest way to lose reviewer trust.
 - If the diff includes changes the commits don't explain, ask before ascribing intent.
 - Keep any PR-body trailer conventions this environment requires.
 - Draft PRs for work-in-progress branches (failing check.sh) - and say the check state honestly.
