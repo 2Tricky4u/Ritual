@@ -171,21 +171,35 @@ flowchart TD
 
 ```mermaid
 %%{init: {"flowchart": {"curve": "basis"}}}%%
-flowchart LR
-    spec["spec<br/>you + chat"] --> plan["plan<br/>claude · plan mode"]
-    plan --> pr["plan-review<br/>codex critiques"]
-    pr --> tr["tests-red<br/>codex designs · claude writes"]
-    tr --> impl["implement<br/>claude resumes the red session"]
-    impl --> dr["dual-review<br/>claude ∥ codex, blind"]
-    dr --> cov["coverage<br/>judge vs ## Deliverables"]
-    cov -->|gaps| fix["ritual complete<br/>bounded fix rounds"]
-    fix -->|re-judge| cov
-    cov ==>|"zero gaps · check.sh green · no open findings"| done(["done"])
+flowchart TD
+    subgraph pipe ["  the per-branch pipeline · every stage = one budgeted, archived, resumable run  "]
+        direction LR
+        spec["spec<br/>you + claude chat<br/>→ spec.md"]
+        plan["plan<br/>claude · plan mode<br/>→ plan.md + ## Deliverables"]
+        pr["plan-review<br/>codex critiques the plan<br/>via the MCP bridge"]
+        tr["tests-red<br/>codex designs the tests<br/>claude writes them failing"]
+        impl["implement<br/>claude resumes the<br/>red session → green"]
+        dr["dual-review<br/>claude ∥ codex · blind<br/>only agreement confirms"]
+        cov["coverage<br/>read-only judge<br/>tree vs ## Deliverables"]
+        spec --> plan --> pr --> tr --> impl --> dr --> cov
+    end
+
     arch[".ritual/architecture.md<br/>the generated map"] -.->|grounds| plan
-    arch -.->|"duplication / boundary ground truth"| pr
+    arch -.->|"duplication / boundary<br/>ground truth"| pr
+
+    check{{"./check.sh<br/>your lint · types · tests<br/>the non-negotiable gate"}}
+    tr -.->|"red:<br/>must fail"| check
+    impl -.->|"green:<br/>must pass"| check
+
+    findings[".ritual/findings/*.json<br/>anchored findings ·<br/>the one currency"]
+    pr & dr & cov -->|emit| findings
+    findings -->|"F/A batch"| fix["code-fix<br/>claude fixes → check.sh →<br/>independent re-review"]
+    fix -->|"only confirmed-resolved<br/>marked fixed"| findings
+
+    cov ==>|"zero gaps · check green<br/>no open findings"| done(["ritual complete<br/>done means done"])
     done -->|auto-refresh| arch
 
-    %% orange = claude · teal = codex · purple = cross-model · blue = judge/driver · amber = artifact · green = done
+    %% orange = claude · teal = codex · purple = cross-model · blue = judge/driver · amber = artifact · green = gate/done
     classDef you fill:#64748b,stroke:#475569,color:#ffffff
     classDef claude fill:#d97757,stroke:#b45309,color:#ffffff
     classDef codex fill:#10a37f,stroke:#047857,color:#ffffff
@@ -193,14 +207,18 @@ flowchart LR
     classDef judge fill:#3b82f6,stroke:#1d4ed8,color:#ffffff
     classDef artifact fill:#f59e0b,stroke:#b45309,color:#1f2937
     classDef ok fill:#22c55e,stroke:#15803d,color:#052e16
+    classDef laneframe fill:transparent,stroke:#334155,stroke-dasharray:2 3,color:#64748b
     class spec you
     class plan,impl claude
     class pr codex
     class tr,dr both
     class cov,fix judge
-    class arch artifact
-    class done ok
+    class arch,findings artifact
+    class check,done ok
+    class pipe laneframe
 ```
+
+Every box above is a real, separately budgeted run (`budget_*_usd`), and every stage's model is yours to route: the `[models]` table pins a model per stage (e.g. `plan = "claude-fable-5"`), `[effort]` sets its reasoning effort, and `fallback_model` catches provider overloads mid-run.
 
 - **The pipeline**: per-branch stages `spec → plan → plan-review → tests-red → implement → dual-review → coverage`; one-key launch; headless stages stream live; interactive stages hand you a real attached `claude` session and resume the TUI on exit.
 - **Chat to author the spec/plan** (`s`): a split view with the live document on the left (focused section highlighted in place) and a conversation on the right: type an instruction and Claude edits `spec.md` (or `plan.md`) in place while you watch, scopable to the whole doc or one `##` section (`Tab` to switch; a missing plan is *drafted from the spec*). `Ctrl+Z`/`Alt+Z` undo/redo (persisted 10-deep stack), `Ctrl+X` cancel, `Alt+Enter` multi-line, messages queue while an edit runs, and reopening chat reattaches to a still-running edit. The agent is hard-scoped at the permission layer: it can read the project but write only the targeted document. Also headless: `ritual chat "<msg>" [--plan] [--section …]`.
