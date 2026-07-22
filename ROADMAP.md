@@ -1,5 +1,20 @@
 # ritual roadmap
 
+> **Status (2026-07-23, v0.13 panel focus)**: focus is now an explicit,
+> always-reachable two-panel model. `h`/`l` (arrows too) move focus between
+> the pipeline sidebar and the tab panel on every tab; a single
+> `pipeline_focused()` predicate feeds navigation, Enter, the sidebar's
+> bright/dim cue, and which-key, so behavior and rendering cannot disagree.
+> The spec/plan chat gained a sidebar mode: `alt+←`/`alt+h` unfocus the
+> input keeping draft and caret (hardcoded emergency escapes that survive
+> `[keys]` rebinds, tolerant of caps lock and extra modifier bits), j/k
+> drive the pipeline - or scroll the transcript below the 100-col threshold,
+> an invisible panel is never driven - `l`/`s` return to typing, Esc
+> semantics are unchanged, and an accidental close stashes the draft with
+> its target for reopen. Cross-model dual review confirmed and fixed a
+> guard bypass (finding detail opening over a live chat via the
+> stage-detail overlay) before release.
+>
 > **Status (2026-07-14, completeness gate)**: green tests never mean "done".
 > Plans now declare a `## Deliverables` checklist; a read-only `coverage`
 > LLM-as-Judge stage checks each against the built tree and files a gap finding
