@@ -256,6 +256,8 @@ pub struct App {
 
     pub selected: usize,
     pub tab: Tab,
+    /// Which panel j/k drives: the left pipeline sidebar or the tab's panel.
+    pub focus: PanelFocus,
     pub stream: Vec<AgentEvent>,
     pub stream_scroll: Option<usize>, // None = follow tail
     pub findings: Vec<LoadedFindings>,
@@ -376,6 +378,14 @@ pub struct PaletteState {
     pub selected: usize,
 }
 
+/// Which panel j/k drives: the left pipeline sidebar or the tab's main
+/// panel. `Main` is the default and preserves every pre-focus behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelFocus {
+    Pipeline,
+    Main,
+}
+
 /// Viewport-derived scroll maxima (rendered lines minus height), one per
 /// scrollable tab whose extent only the renderer knows. Written by draw()
 /// through interior mutability - the render path takes &App - and read by
@@ -385,6 +395,7 @@ pub struct ViewMax {
     pub plan: std::cell::Cell<usize>,
     pub guide: std::cell::Cell<usize>,
     pub history: std::cell::Cell<usize>,
+    pub term_width: std::cell::Cell<u16>,
 }
 
 /// The `implement` launch prompt-overlay. An interactive `claude --resume`
@@ -471,6 +482,8 @@ pub struct ChatState {
     /// Messages typed while an edit was in flight, sent one at a time as
     /// each edit finishes (capped, since this is a chat, not a job queue).
     pub pending: std::collections::VecDeque<String>,
+    /// The text input owns the keyboard (false = sidebar mode).
+    pub input_focused: bool,
 }
 
 /// Beyond this the user should wait: queued edits compound unpredictably.
@@ -511,6 +524,7 @@ impl App {
             slug,
             selected: 0,
             tab: Tab::Live,
+            focus: PanelFocus::Main,
             stream: Vec::new(),
             stream_scroll: None,
             findings,
@@ -1506,6 +1520,7 @@ impl App {
                     self.status_msg = Some("v toggles resolved on the findings tab (2)".into());
                 }
             }
+            Action::FocusLeft | Action::FocusRight => {}
             Action::Custom(i) => self.run_custom(i, tx),
             Action::RunStage(id) => {
                 if let Some(idx) = PIPELINE.iter().position(|s| *s == id) {
@@ -1887,6 +1902,7 @@ impl App {
             scroll: 0,
             in_flight: false,
             pending: Default::default(),
+            input_focused: true,
         };
         // Reattach: a chat edit daemonized before the TUI died is still live,
         // so rebuild the view around it instead of orphaning it (the archive
@@ -6210,6 +6226,7 @@ mod tests {
             scroll: 0,
             in_flight: false,
             pending: std::collections::VecDeque::new(),
+            input_focused: true,
         });
         app.spawn_doc_chat("tighten step 1".into(), &tx);
         let chat = app.chat.as_ref().unwrap();
@@ -6580,6 +6597,7 @@ mod tests {
             scroll: 0,
             in_flight: true,
             pending: Default::default(),
+            input_focused: true,
         });
         send(&mut app, &tx, KeyCode::Esc);
         assert!(app.chat.is_some(), "Esc must not orphan an in-flight edit");
@@ -8353,5 +8371,587 @@ mod tests {
         assert_eq!(app.stage_status(StageId::DualReview), StageStatus::Done);
         app.after_attached(Some(StageId::DualReview), false, &_tx);
         assert_eq!(app.stage_status(StageId::DualReview), StageStatus::Failed);
+    }
+
+    // ---- panel focus ------------------------------------------------------
+
+    fn key(app: &mut App, tx: &mpsc::Sender<AppMsg>, code: KeyCode, mods: KeyModifiers) {
+        app.on_input(Event::Key(KeyEvent::new(code, mods)), tx);
+    }
+
+    /// A test_app on a wide "terminal": the renderer would draw the sidebar
+    /// with or without a chat open, so focus-left is never refused for width.
+    fn wide_app() -> (
+        tempfile::TempDir,
+        App,
+        mpsc::Sender<AppMsg>,
+        mpsc::Receiver<AppMsg>,
+    ) {
+        let (t, app, tx, rx) = test_app();
+        app.view_max.term_width.set(120);
+        (t, app, tx, rx)
+    }
+
+    fn chat_draft(app: &App) -> String {
+        app.chat.as_ref().unwrap().input.iter().collect()
+    }
+
+    #[test]
+    fn focus_left_makes_jk_move_pipeline_on_every_tab() {
+        let (_t, mut app, tx, _rx) = wide_app();
+        app.dispatch(Action::FocusLeft, &tx);
+        assert_eq!(app.focus, PanelFocus::Pipeline, "h focuses the sidebar");
+
+        // Seed every tab's own buffer with a sentinel; none may move while
+        // the pipeline is focused - j/k belongs to the sidebar everywhere.
+        seed_findings(
+            &mut app,
+            r#"{"stage":"plan-review","findings":[
+                {"id":1,"title":"a","plan_step":"Step 1","severity":"minor","verdict":"confirmed"},
+                {"id":2,"title":"b","plan_step":"Step 2","severity":"minor","verdict":"confirmed"}]}"#,
+        );
+        app.view_max.plan.set(10);
+        app.view_max.guide.set(10);
+        app.view_max.history.set(10);
+        app.plan_scroll = 3;
+        app.guide_scroll = 3;
+        app.history_scroll = 3;
+        app.selected_finding = 1;
+        app.stream.push(AgentEvent::Text {
+            text: "line".into(),
+        });
+        app.stream_scroll = Some(0);
+
+        for tab in [
+            Tab::Findings,
+            Tab::History,
+            Tab::Plan,
+            Tab::Guide,
+            Tab::Live,
+        ] {
+            app.tab = tab;
+            app.selected = 0;
+            app.dispatch(Action::Down, &tx);
+            assert_eq!(app.selected, 1, "j moves the pipeline cursor on {tab:?}");
+            app.dispatch(Action::Up, &tx);
+            app.dispatch(Action::Up, &tx); // wraps past 0
+            assert_eq!(app.selected, PIPELINE.len() - 1, "k wraps on {tab:?}");
+        }
+        assert_eq!(app.plan_scroll, 3, "plan buffer frozen");
+        assert_eq!(app.guide_scroll, 3, "guide buffer frozen");
+        assert_eq!(app.history_scroll, 3, "history buffer frozen");
+        assert_eq!(app.selected_finding, 1, "findings cursor frozen");
+        assert_eq!(app.stream_scroll, Some(0), "live stream scroll frozen");
+    }
+
+    #[test]
+    fn focus_right_returns_jk_to_the_tab_panel() {
+        let (_t, mut app, tx, _rx) = wide_app();
+        app.focus = PanelFocus::Pipeline;
+        app.tab = Tab::Plan;
+        app.view_max.plan.set(10);
+        app.dispatch(Action::FocusRight, &tx);
+        assert_eq!(app.focus, PanelFocus::Main, "l returns focus to the panel");
+        app.selected = 0;
+        app.dispatch(Action::Down, &tx);
+        assert_eq!(app.plan_scroll, 1, "j scrolls the plan again");
+        assert_eq!(app.selected, 0, "pipeline cursor no longer driven");
+    }
+
+    #[test]
+    fn focus_persists_across_tab_switches() {
+        let (_t, mut app, tx, _rx) = wide_app();
+        assert_eq!(app.focus, PanelFocus::Main, "default focus is the panel");
+        app.dispatch(Action::FocusLeft, &tx);
+        assert_eq!(app.focus, PanelFocus::Pipeline);
+        for action in [
+            Action::TabFindings,
+            Action::TabHistory,
+            Action::TabPlan,
+            Action::TabGuide,
+            Action::TabLive,
+            Action::NextTab,
+        ] {
+            app.dispatch(action, &tx);
+            assert_eq!(app.focus, PanelFocus::Pipeline, "focus survives {action:?}");
+        }
+    }
+
+    #[test]
+    fn g_and_shift_g_jump_the_pipeline_cursor_when_focused() {
+        let (_t, mut app, tx, _rx) = wide_app();
+        app.focus = PanelFocus::Pipeline;
+        app.tab = Tab::Plan;
+        app.view_max.plan.set(10);
+        app.plan_scroll = 5;
+        app.selected = 2;
+        app.dispatch(Action::ScrollTop, &tx);
+        assert_eq!(app.selected, 0, "g jumps the pipeline cursor to the top");
+        assert_eq!(app.plan_scroll, 5, "plan buffer frozen");
+        app.dispatch(Action::Follow, &tx);
+        assert_eq!(
+            app.selected,
+            PIPELINE.len() - 1,
+            "G jumps to the last stage"
+        );
+        assert_eq!(app.plan_scroll, 5, "plan buffer frozen");
+    }
+
+    #[test]
+    fn enter_on_findings_is_focus_aware() {
+        let (_t, mut app, tx, _rx) = wide_app();
+        seed_findings(
+            &mut app,
+            r#"{"stage":"plan-review","findings":[
+                {"id":1,"title":"boom","plan_step":"Step 2","severity":"major","verdict":"confirmed"}]}"#,
+        );
+        // Main focus: Enter opens the finding detail (existing behavior).
+        app.dispatch(Action::Confirm, &tx);
+        assert!(app.finding_detail, "main focus opens the detail overlay");
+        app.finding_detail = false;
+
+        // Pipeline focus: Enter takes the SAME guarded stage-launch path as
+        // everywhere else - proven by an existing guard firing, not merely
+        // by the detail staying closed.
+        app.focus = PanelFocus::Pipeline;
+        app.running = Some(StageId::Plan);
+        app.dispatch(Action::Confirm, &tx);
+        assert!(!app.finding_detail, "no detail under pipeline focus");
+        assert!(
+            app.status_msg
+                .as_deref()
+                .unwrap_or("")
+                .contains("already active"),
+            "the launch path's active-run guard must fire: {:?}",
+            app.status_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn spawning_a_headless_run_resets_focus_to_main() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.view_max.term_width.set(120);
+        app.focus = PanelFocus::Pipeline;
+        app.spawn_headless(
+            StageId::PlanReview,
+            stages::StageCommand {
+                mode: stages::Mode::Headless,
+                agent: runner::AgentKind::Claude,
+                argv: vec!["true".into()],
+                env: vec![],
+                needs_codex: false,
+                stdin: None,
+            },
+            app.dirs.work_root.clone(),
+            &tx,
+        );
+        assert_eq!(app.tab, Tab::Live, "headless spawn lands on live");
+        assert!(app.running.is_some(), "spawn committed");
+        assert_eq!(
+            app.focus,
+            PanelFocus::Main,
+            "j/k must follow the fresh stream even when launched from the sidebar"
+        );
+    }
+
+    #[test]
+    fn focus_left_refuses_when_sidebar_hidden() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.view_max.term_width.set(60); // < 70 cols: the sidebar is not drawn
+        app.dispatch(Action::FocusLeft, &tx);
+        assert_eq!(
+            app.focus,
+            PanelFocus::Main,
+            "focus must never land on an invisible panel"
+        );
+        assert!(
+            app.status_msg.is_some(),
+            "the refusal must be user-visible, not silent"
+        );
+    }
+
+    #[test]
+    fn sidebar_threshold_boundaries_gate_focus_left() {
+        let (_t, mut app, tx, _rx) = test_app();
+        // 69 cols: hidden -> refuse. 70 cols: visible -> accept.
+        app.view_max.term_width.set(69);
+        app.dispatch(Action::FocusLeft, &tx);
+        assert_eq!(app.focus, PanelFocus::Main, "69 cols refuses");
+        assert!(app.status_msg.is_some());
+        app.status_msg = None;
+        app.view_max.term_width.set(70);
+        app.dispatch(Action::FocusLeft, &tx);
+        assert_eq!(app.focus, PanelFocus::Pipeline, "70 cols accepts");
+        assert!(app.status_msg.is_none(), "no refusal at the threshold");
+    }
+
+    #[test]
+    fn open_chat_then_immediate_focus_left_at_80_cols() {
+        let (_t, mut app, tx, _rx) = test_app();
+        app.view_max.term_width.set(80);
+        app.dispatch(Action::SpecChat, &tx);
+        assert!(app.chat.is_some());
+        // The 70<->100 threshold flip is synchronous with opening the chat:
+        // chording out right away lands in transcript-scroll mode, never on
+        // the (now invisible) sidebar - no one-frame stale trap.
+        key(&mut app, &tx, KeyCode::Left, KeyModifiers::ALT);
+        assert!(
+            !app.chat.as_ref().unwrap().input_focused,
+            "alt+left chords out of the input"
+        );
+        let sel = app.selected;
+        key(&mut app, &tx, KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(app.selected, sel, "no invisible sidebar driven at 80 cols");
+        assert_eq!(
+            app.chat.as_ref().unwrap().scroll,
+            1,
+            "the chat transcript scrolls instead"
+        );
+        // Closing the chat flips the threshold back to 70 in the same event.
+        key(&mut app, &tx, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.chat.is_none());
+        app.dispatch(Action::FocusLeft, &tx);
+        assert_eq!(
+            app.focus,
+            PanelFocus::Pipeline,
+            "80 cols without a chat has a sidebar again"
+        );
+    }
+
+    #[test]
+    fn closing_chat_keeps_prior_focus() {
+        let (_t, mut app, tx, _rx) = wide_app();
+        app.tab = Tab::Plan;
+        app.view_max.plan.set(10);
+        app.dispatch(Action::FocusLeft, &tx);
+        assert_eq!(app.focus, PanelFocus::Pipeline);
+        app.dispatch(Action::SpecChat, &tx);
+        key(&mut app, &tx, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.chat.is_none());
+        assert_eq!(
+            app.focus,
+            PanelFocus::Pipeline,
+            "closing the chat restores nothing behind the user's back"
+        );
+        app.selected = 0;
+        app.dispatch(Action::Down, &tx);
+        assert_eq!(app.selected, 1, "sidebar is live again right after close");
+        assert_eq!(app.plan_scroll, 0);
+    }
+
+    #[test]
+    fn chat_escape_survives_adversarial_override() {
+        let (_t, mut app, tx, _rx) = wide_app();
+        let mut o = std::collections::HashMap::new();
+        o.insert("focus-left".to_string(), "h".to_string());
+        app.cfg.keymap = crate::keymap::Keymap::default().with_overrides(&o).unwrap();
+        app.dispatch(Action::SpecChat, &tx);
+        // Plain h resolves to the rebound focus-left everywhere else, but the
+        // focused input is a text surface: h must still TYPE, never escape.
+        key(&mut app, &tx, KeyCode::Char('h'), KeyModifiers::NONE);
+        assert_eq!(chat_draft(&app), "h", "plain h types into the draft");
+        assert!(
+            app.chat.as_ref().unwrap().input_focused,
+            "plain h must not unfocus"
+        );
+        // The emergency chords survive the rebind even though the rebind
+        // stripped the action's default chords from the keymap.
+        key(&mut app, &tx, KeyCode::Char('h'), KeyModifiers::ALT);
+        assert!(
+            !app.chat.as_ref().unwrap().input_focused,
+            "alt+h always escapes the input"
+        );
+        app.chat.as_mut().unwrap().input_focused = true;
+        key(&mut app, &tx, KeyCode::Left, KeyModifiers::ALT);
+        assert!(
+            !app.chat.as_ref().unwrap().input_focused,
+            "alt+left always escapes the input"
+        );
+        assert_eq!(chat_draft(&app), "h", "escaping never edits the draft");
+    }
+
+    #[test]
+    fn alt_left_unfocuses_chat_keeping_draft_even_in_flight() {
+        let (_t, mut app, tx, _rx) = wide_app();
+        app.dispatch(Action::SpecChat, &tx);
+        for c in "draft".chars() {
+            key(&mut app, &tx, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.chat.as_mut().unwrap().in_flight = true;
+        key(&mut app, &tx, KeyCode::Left, KeyModifiers::ALT);
+        {
+            let chat = app.chat.as_ref().unwrap();
+            assert!(
+                !chat.input_focused,
+                "the escape works even while an edit streams"
+            );
+            assert_eq!(chat.input.iter().collect::<String>(), "draft");
+            assert_eq!(chat.cursor, 5, "cursor kept");
+            assert!(chat.in_flight, "nothing cancelled, nothing closed");
+        }
+        // Esc semantics unchanged: still refused while in flight.
+        key(&mut app, &tx, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.chat.is_some(), "esc must not close an in-flight chat");
+        assert!(
+            app.status_msg.as_deref().unwrap_or("").contains("ctrl+x"),
+            "the existing refusal hint: {:?}",
+            app.status_msg
+        );
+    }
+
+    #[test]
+    fn chat_unfocused_jk_moves_pipeline_and_l_refocuses() {
+        let (_t, mut app, tx, _rx) = wide_app();
+        app.dispatch(Action::SpecChat, &tx);
+        {
+            let chat = app.chat.as_mut().unwrap();
+            chat.input = "keep".chars().collect();
+            chat.cursor = 4;
+            chat.input_focused = false;
+        }
+        app.selected = 0;
+        key(&mut app, &tx, KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.selected, 1, "j moves the pipeline while unfocused");
+        key(&mut app, &tx, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.selected, 2, "down arrow too");
+        key(&mut app, &tx, KeyCode::Char('k'), KeyModifiers::NONE);
+        assert_eq!(app.selected, 1);
+        assert_eq!(chat_draft(&app), "keep", "nav never types");
+        key(&mut app, &tx, KeyCode::Char('l'), KeyModifiers::NONE);
+        assert!(app.chat.as_ref().unwrap().input_focused, "l refocuses");
+        assert_eq!(chat_draft(&app), "keep", "l does not type itself");
+        app.chat.as_mut().unwrap().input_focused = false;
+        key(&mut app, &tx, KeyCode::Char('s'), KeyModifiers::NONE);
+        assert!(app.chat.as_ref().unwrap().input_focused, "s refocuses too");
+        assert_eq!(chat_draft(&app), "keep", "s does not type itself");
+    }
+
+    #[test]
+    fn chat_unfocused_honors_rebound_actions() {
+        let (_t, mut app, tx, _rx) = wide_app();
+        let mut o = std::collections::HashMap::new();
+        o.insert("focus-right".to_string(), "y".to_string());
+        o.insert("spec-chat".to_string(), "w".to_string());
+        app.cfg.keymap = crate::keymap::Keymap::default().with_overrides(&o).unwrap();
+        app.dispatch(Action::SpecChat, &tx);
+        app.chat.as_mut().unwrap().input_focused = false;
+        // The unfocused handler resolves through the keymap, so the rebound
+        // chords work...
+        key(&mut app, &tx, KeyCode::Char('y'), KeyModifiers::NONE);
+        assert!(
+            app.chat.as_ref().unwrap().input_focused,
+            "rebound focus-right refocuses"
+        );
+        app.chat.as_mut().unwrap().input_focused = false;
+        key(&mut app, &tx, KeyCode::Char('w'), KeyModifiers::NONE);
+        assert!(
+            app.chat.as_ref().unwrap().input_focused,
+            "rebound spec-chat refocuses"
+        );
+        // ...and the stripped defaults are dead: swallowed, never typed.
+        app.chat.as_mut().unwrap().input_focused = false;
+        key(&mut app, &tx, KeyCode::Char('l'), KeyModifiers::NONE);
+        key(&mut app, &tx, KeyCode::Right, KeyModifiers::NONE);
+        assert!(
+            !app.chat.as_ref().unwrap().input_focused,
+            "stripped defaults no longer refocus"
+        );
+        assert_eq!(chat_draft(&app), "", "nothing typed while unfocused");
+    }
+
+    #[test]
+    fn chat_unfocused_swallows_tab_switch_run_and_typing() {
+        let (_t, mut app, tx, _rx) = wide_app();
+        app.tab = Tab::Plan;
+        app.dispatch(Action::SpecChat, &tx);
+        app.chat.as_mut().unwrap().input_focused = false;
+        // Enter must not submit or queue from sidebar mode.
+        {
+            let chat = app.chat.as_mut().unwrap();
+            chat.input = "hello".chars().collect();
+            chat.cursor = 5;
+            chat.in_flight = true;
+        }
+        key(&mut app, &tx, KeyCode::Enter, KeyModifiers::NONE);
+        {
+            let chat = app.chat.as_ref().unwrap();
+            assert!(
+                chat.pending.is_empty(),
+                "enter must not queue while unfocused"
+            );
+            assert_eq!(chat.input.iter().collect::<String>(), "hello");
+        }
+        {
+            let chat = app.chat.as_mut().unwrap();
+            chat.in_flight = false;
+            chat.input.clear();
+            chat.cursor = 0;
+        }
+        // Tab switches, target cycling, palette, and plain typing: swallowed.
+        key(&mut app, &tx, KeyCode::Char('2'), KeyModifiers::NONE);
+        assert_eq!(app.tab, Tab::Plan, "no tab switch behind the chat");
+        key(&mut app, &tx, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(
+            app.chat.as_ref().unwrap().target_idx,
+            0,
+            "no target cycling while unfocused"
+        );
+        key(&mut app, &tx, KeyCode::Char(':'), KeyModifiers::NONE);
+        assert!(app.palette.is_none(), "no palette behind the chat");
+        key(&mut app, &tx, KeyCode::Char('z'), KeyModifiers::NONE);
+        assert_eq!(chat_draft(&app), "", "plain chars never type");
+        assert!(app.chat.is_some());
+        assert!(app.running.is_none());
+    }
+
+    #[test]
+    fn chat_esc_still_closes_when_idle_and_refuses_in_flight() {
+        let (_t, mut app, tx, _rx) = wide_app();
+        // Focused + idle: Esc closes (unchanged).
+        app.dispatch(Action::SpecChat, &tx);
+        key(&mut app, &tx, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.chat.is_none());
+        // Unfocused + idle: Esc and q both close, q without quitting.
+        app.dispatch(Action::SpecChat, &tx);
+        app.chat.as_mut().unwrap().input_focused = false;
+        key(&mut app, &tx, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.chat.is_none(), "esc closes from sidebar mode");
+        app.dispatch(Action::SpecChat, &tx);
+        app.chat.as_mut().unwrap().input_focused = false;
+        key(&mut app, &tx, KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(app.chat.is_none(), "q closes from sidebar mode");
+        assert!(!app.quit, "q closes the chat, not the app");
+        // In flight: refused from both focus states; ctrl+x still cancels.
+        app.dispatch(Action::SpecChat, &tx);
+        app.chat.as_mut().unwrap().in_flight = true;
+        key(&mut app, &tx, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.chat.is_some(), "focused esc refused in flight");
+        app.chat.as_mut().unwrap().input_focused = false;
+        key(&mut app, &tx, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.chat.is_some(), "unfocused esc refused in flight");
+        key(&mut app, &tx, KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(app.chat.is_some(), "unfocused q refused in flight");
+        key(&mut app, &tx, KeyCode::Char('x'), KeyModifiers::CONTROL);
+        assert!(
+            !app.chat.as_ref().unwrap().in_flight,
+            "ctrl+x still cancels from sidebar mode"
+        );
+        assert_eq!(chat_draft(&app), "", "none of the close keys typed");
+    }
+
+    #[test]
+    fn paste_ignored_while_chat_unfocused() {
+        let (_t, mut app, tx, _rx) = wide_app();
+        app.dispatch(Action::SpecChat, &tx);
+        for c in "ab".chars() {
+            key(&mut app, &tx, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.chat.as_mut().unwrap().input_focused = false;
+        app.on_input(Event::Paste("XY".into()), &tx);
+        {
+            let chat = app.chat.as_ref().unwrap();
+            assert_eq!(
+                chat.input.iter().collect::<String>(),
+                "ab",
+                "clipboard must not land in a hidden editor"
+            );
+            assert_eq!(chat.cursor, 2, "cursor untouched");
+        }
+        assert!(
+            app.status_msg
+                .as_deref()
+                .unwrap_or("")
+                .contains("paste ignored"),
+            "the user is told, not silently dropped: {:?}",
+            app.status_msg
+        );
+        // Refocused, paste inserts again.
+        app.chat.as_mut().unwrap().input_focused = true;
+        app.on_input(Event::Paste("XY".into()), &tx);
+        assert_eq!(chat_draft(&app), "abXY");
+    }
+
+    #[test]
+    fn stage_detail_and_help_open_over_unfocused_chat() {
+        let (_t, mut app, tx, _rx) = wide_app();
+        app.dispatch(Action::SpecChat, &tx);
+        app.chat.as_mut().unwrap().input_focused = false;
+        key(&mut app, &tx, KeyCode::Char('i'), KeyModifiers::NONE);
+        assert!(app.stage_detail, "i opens the stage overlay above the chat");
+        assert!(app.chat.is_some(), "the chat stays open underneath");
+        key(&mut app, &tx, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!app.stage_detail, "esc closes the overlay only");
+        assert!(app.chat.is_some());
+        key(&mut app, &tx, KeyCode::Char('?'), KeyModifiers::NONE);
+        assert!(app.show_help, "? reaches help from sidebar mode");
+        assert_eq!(chat_draft(&app), "", "neither i nor ? typed");
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(32))]
+
+        /// Model-based: with the pipeline focused, j/k/g/G always match the
+        /// wrapping cursor model and never leak into the tab's own buffer.
+        #[test]
+        fn focused_nav_matches_the_wrapping_model(
+            start in 0usize..PIPELINE.len(),
+            moves in proptest::collection::vec(0u8..4, 1..24),
+        ) {
+            let (_t, mut app, tx, _rx) = test_app();
+            app.view_max.term_width.set(120);
+            app.focus = PanelFocus::Pipeline;
+            app.tab = Tab::History;
+            app.view_max.history.set(10);
+            app.history_scroll = 4;
+            app.selected = start;
+            let len = PIPELINE.len() as i32;
+            let mut model = start as i32;
+            for m in moves {
+                match m {
+                    0 => {
+                        app.dispatch(Action::Down, &tx);
+                        model = (model + 1).rem_euclid(len);
+                    }
+                    1 => {
+                        app.dispatch(Action::Up, &tx);
+                        model = (model - 1).rem_euclid(len);
+                    }
+                    2 => {
+                        app.dispatch(Action::ScrollTop, &tx);
+                        model = 0;
+                    }
+                    _ => {
+                        app.dispatch(Action::Follow, &tx);
+                        model = len - 1;
+                    }
+                }
+                proptest::prop_assert_eq!(app.selected, model as usize);
+                proptest::prop_assert_eq!(app.history_scroll, 4);
+            }
+        }
+
+        /// Swallow invariant: while the chat input is unfocused, NO plain
+        /// printable key may ever land in the draft, whatever else it does
+        /// (refocus, close, overlay) - and none may quit the app.
+        #[test]
+        fn chat_unfocused_swallows_every_plain_character(
+            c in proptest::char::range(' ', '~'),
+        ) {
+            let (_t, mut app, tx, _rx) = test_app();
+            app.view_max.term_width.set(120);
+            app.dispatch(Action::SpecChat, &tx);
+            app.chat.as_mut().unwrap().input_focused = false;
+            app.on_input(
+                Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+                &tx,
+            );
+            if let Some(chat) = &app.chat {
+                proptest::prop_assert!(
+                    chat.input.is_empty(),
+                    "'{}' leaked into the draft", c
+                );
+            }
+            proptest::prop_assert!(!app.quit);
+        }
     }
 }

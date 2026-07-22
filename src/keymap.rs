@@ -49,6 +49,8 @@ pub enum Action {
     Settings,
     ResetPlan,
     StageDetail,
+    FocusLeft,
+    FocusRight,
     Architect,
     RunStage(StageId),
     /// Re-run a failed stage with `[retry] models[i]` (palette-only, dynamic).
@@ -138,6 +140,8 @@ pub const ACTIONS: &[(&str, Action, &str)] = &[
         Action::StageDetail,
         "stage: details & guidance",
     ),
+    ("focus-left", Action::FocusLeft, "focus: pipeline sidebar"),
+    ("focus-right", Action::FocusRight, "focus: main panel"),
 ];
 
 pub fn action_by_name(name: &str) -> Option<Action> {
@@ -583,5 +587,68 @@ mod tests {
         assert!(fuzzy_match("RUN PLAN", "run plan-review"));
         assert!(!fuzzy_match("xyz", "run plan-review"));
         assert!(fuzzy_match("", "anything"));
+    }
+
+    #[test]
+    fn focus_actions_bound_and_in_palette() {
+        let km = Keymap::default();
+        // All 8 default chords, individually: the alt variants exist so the
+        // same action stays reachable from inside the chat text surface.
+        for (chord, action) in [
+            ("h", Action::FocusLeft),
+            ("left", Action::FocusLeft),
+            ("alt+h", Action::FocusLeft),
+            ("alt+left", Action::FocusLeft),
+            ("l", Action::FocusRight),
+            ("right", Action::FocusRight),
+            ("alt+l", Action::FocusRight),
+            ("alt+right", Action::FocusRight),
+        ] {
+            let c = parse_chord(chord).unwrap();
+            assert_eq!(km.resolve(c.code, c.mods), Some(action), "chord {chord}");
+        }
+        assert_eq!(action_by_name("focus-left"), Some(Action::FocusLeft));
+        assert_eq!(action_by_name("focus-right"), Some(Action::FocusRight));
+        assert_eq!(describe(Action::FocusLeft), "focus: pipeline sidebar");
+        assert_eq!(describe(Action::FocusRight), "focus: main panel");
+        let entries = palette_entries();
+        assert!(entries.iter().any(|(_, a)| *a == Action::FocusLeft));
+        assert!(entries.iter().any(|(_, a)| *a == Action::FocusRight));
+    }
+
+    #[test]
+    fn focus_chords_match_real_key_events() {
+        let km = Keymap::default();
+        // Real crossterm (code, modifiers) pairs, exactly as terminals
+        // deliver them - not just parse_chord round-trips.
+        for (code, mods, action) in [
+            (KeyCode::Char('h'), KeyModifiers::NONE, Action::FocusLeft),
+            (KeyCode::Left, KeyModifiers::NONE, Action::FocusLeft),
+            (KeyCode::Char('h'), KeyModifiers::ALT, Action::FocusLeft),
+            (KeyCode::Left, KeyModifiers::ALT, Action::FocusLeft),
+            (KeyCode::Char('l'), KeyModifiers::NONE, Action::FocusRight),
+            (KeyCode::Right, KeyModifiers::NONE, Action::FocusRight),
+            (KeyCode::Char('l'), KeyModifiers::ALT, Action::FocusRight),
+            (KeyCode::Right, KeyModifiers::ALT, Action::FocusRight),
+        ] {
+            assert_eq!(km.resolve(code, mods), Some(action), "{code:?} + {mods:?}");
+        }
+        // SHIFT folds into the uppercase char (normalize), and H/L are not
+        // focus chords - shifted letters must keep typing/other meanings.
+        assert_eq!(km.resolve(KeyCode::Char('h'), KeyModifiers::SHIFT), None);
+        assert_eq!(km.resolve(KeyCode::Char('l'), KeyModifiers::SHIFT), None);
+        // Unmatched multi-modifier combos fall through to no action.
+        for (code, mods) in [
+            (
+                KeyCode::Char('h'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            ),
+            (KeyCode::Left, KeyModifiers::CONTROL | KeyModifiers::ALT),
+            (KeyCode::Char('l'), KeyModifiers::CONTROL),
+            (KeyCode::Left, KeyModifiers::SHIFT),
+            (KeyCode::Right, KeyModifiers::SHIFT | KeyModifiers::ALT),
+        ] {
+            assert_eq!(km.resolve(code, mods), None, "{code:?} + {mods:?}");
+        }
     }
 }

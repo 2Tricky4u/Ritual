@@ -86,6 +86,7 @@ fn setup_chat_app(tmp: &tempfile::TempDir) -> App {
         scroll: 0,
         in_flight: false,
         pending: Default::default(),
+        input_focused: true,
     });
     app
 }
@@ -380,8 +381,9 @@ fn whichkey_sections_advertise_exactly_what_works() {
         app.finding_detail = false;
         assert_eq!(
             names(&app),
-            // actions grew to 9 with the palette-only Architect entry.
-            vec![(ctx, n), ("actions", 9), ("global", 7), ("move", 6)],
+            // actions grew to 9 with the palette-only Architect entry; move
+            // grew to 8 with focus-left/focus-right.
+            vec![(ctx, n), ("actions", 9), ("global", 7), ("move", 8)],
             "sections for {ctx}"
         );
         // Confirm (Enter launches/opens) is advertised on EVERY tab.
@@ -435,6 +437,36 @@ fn whichkey_sections_advertise_exactly_what_works() {
     );
     app.finding_detail = false;
 
+    // The move section advertises both focus actions on every tab.
+    app.tab = Tab::Live;
+    let mv = whichkey_sections(&app)
+        .into_iter()
+        .find(|(t, _)| *t == "move")
+        .expect("move section")
+        .1;
+    assert!(
+        mv.contains(&WkEntry::Act(FocusLeft)) && mv.contains(&WkEntry::Act(FocusRight)),
+        "move advertises focus-left/focus-right"
+    );
+
+    // The chat-in-sidebar-mode context: an unfocused chat input advertises
+    // the sidebar-mode keys and only those (a focused chat never reaches
+    // help - `?` types into the draft).
+    let chat_tmp = tempfile::tempdir().unwrap();
+    let mut chat_app = setup_chat_app(&chat_tmp);
+    chat_app.chat.as_mut().unwrap().input_focused = false;
+    let chat_sections = whichkey_sections(&chat_app);
+    assert_eq!(
+        chat_sections[0].0, "chat",
+        "unfocused chat gets its own context section"
+    );
+    for must in [Up, Down, FocusRight, SpecChat, StageDetail] {
+        assert!(
+            chat_sections[0].1.contains(&WkEntry::Act(must)),
+            "chat context advertises {must:?}"
+        );
+    }
+
     // No phantom rows: every Act entry across all contexts either has a
     // bound chord or a non-empty palette label (renders as `:` — never
     // silently dropped like the old FindingsApply).
@@ -455,6 +487,17 @@ fn whichkey_sections_advertise_exactly_what_works() {
                         "phantom entry {a:?} in section {title}"
                     );
                 }
+            }
+        }
+    }
+    // The chat-unfocused context obeys the same no-phantom rule.
+    for (title, entries) in whichkey_sections(&chat_app) {
+        for e in entries {
+            if let WkEntry::Act(a) = e {
+                assert!(
+                    !km.chords_for(a).is_empty() || !ritual::keymap::describe(a).is_empty(),
+                    "phantom entry {a:?} in chat section {title}"
+                );
             }
         }
     }
