@@ -328,6 +328,12 @@ pub struct App {
     pub spec_doc: Option<String>,
     pub plan_doc: Option<String>,
     pub chat: Option<ChatState>,
+    /// Draft rescued from the last idle chat close. Terminals that deliver
+    /// alt+left as a bare Esc followed by Left close the chat on that Esc
+    /// (no kitty disambiguation is pushed in term.rs), so closing must
+    /// never destroy typed input - reopening the chat restores it, aimed
+    /// at the target it was written for.
+    chat_draft_stash: Option<ChatDraft>,
     /// The `S` settings editor overlay (None = closed).
     pub settings: Option<SettingsState>,
     /// The `implement` copy-paste-prompt overlay shown before the handover.
@@ -386,15 +392,19 @@ pub enum PanelFocus {
     Main,
 }
 
-/// Viewport-derived scroll maxima (rendered lines minus height), one per
-/// scrollable tab whose extent only the renderer knows. Written by draw()
-/// through interior mutability - the render path takes &App - and read by
-/// the input path to clamp j/k and implement G=bottom.
+/// Viewport extents + terminal width, written by draw() each frame through
+/// interior mutability (the render path takes &App) and read by the input
+/// path: the per-tab maxima clamp j/k and implement G=bottom, and
+/// `term_width` feeds `sidebar_hidden` so focus-left can refuse instead of
+/// landing on a sidebar that isn't drawn (sidebar visibility at event
+/// time). One frame stale at worst on a real resize; the chat open/close
+/// threshold flip (70<->100 cols) is evaluated at event time, synchronous.
 #[derive(Debug, Default)]
 pub struct ViewMax {
     pub plan: std::cell::Cell<usize>,
     pub guide: std::cell::Cell<usize>,
     pub history: std::cell::Cell<usize>,
+    /// Last drawn terminal width in columns (0 before the first frame).
     pub term_width: std::cell::Cell<u16>,
 }
 
@@ -428,6 +438,17 @@ pub struct SettingsEdit {
     pub input: String,
     /// Validation error shown under the input; the prompt stays open.
     pub error: Option<String>,
+}
+
+/// A chat draft rescued at close time: text, caret, and the target it was
+/// aimed at - restoring the text without the target could submit an edit
+/// against the wrong document.
+#[derive(Debug, Clone)]
+struct ChatDraft {
+    input: Vec<char>,
+    cursor: usize,
+    doc: stages::DocKind,
+    section: Option<String>,
 }
 
 /// One entry in the chat transcript.
@@ -561,6 +582,7 @@ impl App {
             spec_doc: None,
             plan_doc: None,
             chat: None,
+            chat_draft_stash: None,
             settings: None,
             implement_hint: None,
             findings_before: Vec::new(),
@@ -1217,6 +1239,13 @@ impl App {
             self.on_paste(&text);
             return;
         }
+        // Event-time width: a key batched behind a resize must not consult
+        // the previous frame's width (focus could land on a just-hidden
+        // sidebar; the next draw refreshes it anyway).
+        if let Event::Resize(w, _) = ev {
+            self.view_max.term_width.set(w);
+            return;
+        }
         let Event::Key(key) = ev else { return };
         if key.kind != KeyEventKind::Press {
             return;
@@ -1295,7 +1324,11 @@ impl App {
             return;
         }
         if self.chat.is_some() {
-            self.chat_input(key, tx);
+            if self.chat.as_ref().is_some_and(|c| c.input_focused) {
+                self.chat_input(key, tx);
+            } else {
+                self.chat_unfocused_input(key, tx);
+            }
             return;
         }
         if self.filter_editing {
@@ -1457,6 +1490,7 @@ impl App {
             // (the which-key `move` section advertises them everywhere, so
             // they must work everywhere). G=bottom uses the renderer-reported
             // extents in view_max; on the Live stream it means follow-tail.
+            Action::ScrollTop if self.pipeline_focused() => self.selected = 0,
             Action::ScrollTop => match self.tab {
                 Tab::Plan => self.plan_scroll = 0,
                 Tab::Guide => self.guide_scroll = 0,
@@ -1465,6 +1499,9 @@ impl App {
                 Tab::Live if self.stream.is_empty() => self.selected = 0,
                 Tab::Live => self.stream_scroll = Some(0),
             },
+            Action::Follow if self.pipeline_focused() => {
+                self.selected = PIPELINE.len() - 1;
+            }
             Action::Follow => match self.tab {
                 Tab::Plan => self.plan_scroll = self.view_max.plan.get(),
                 Tab::Guide => self.guide_scroll = self.view_max.guide.get(),
@@ -1520,7 +1557,17 @@ impl App {
                     self.status_msg = Some("v toggles resolved on the findings tab (2)".into());
                 }
             }
-            Action::FocusLeft | Action::FocusRight => {}
+            Action::FocusLeft => {
+                if self.sidebar_hidden() {
+                    // Narrow-layout contract: there is no left panel to
+                    // focus - the refusal IS the behavior.
+                    self.status_msg =
+                        Some("no sidebar at this width - widen the terminal to focus it".into());
+                } else {
+                    self.focus = PanelFocus::Pipeline;
+                }
+            }
+            Action::FocusRight => self.focus = PanelFocus::Main,
             Action::Custom(i) => self.run_custom(i, tx),
             Action::RunStage(id) => {
                 if let Some(idx) = PIPELINE.iter().position(|s| *s == id) {
@@ -1550,7 +1597,36 @@ impl App {
         self.tab = TABS[(idx + 1) % TABS.len()].0;
     }
 
+    /// The sidebar is not rendered at the current terminal width (as of
+    /// the last frame; opening/closing the chat flips the threshold
+    /// synchronously because this is evaluated at event time).
+    fn sidebar_hidden(&self) -> bool {
+        crate::ui::dashboard::sidebar_hidden(self.view_max.term_width.get(), self.chat.is_some())
+    }
+
+    /// Single source of truth for "j/k drives the left pipeline sidebar":
+    /// nav/ScrollTop/Follow/on_enter, the sidebar highlight, and the
+    /// which-key help all consume this, so behavior, rendering, and docs
+    /// can never disagree. Never true while the sidebar isn't drawn.
+    pub fn pipeline_focused(&self) -> bool {
+        if self.sidebar_hidden() {
+            return false;
+        }
+        match &self.chat {
+            // An open chat with an unfocused input IS sidebar mode.
+            Some(chat) => !chat.input_focused,
+            None => self.focus == PanelFocus::Pipeline,
+        }
+    }
+
     fn nav(&mut self, delta: i32) {
+        // Pipeline focus owns j/k on every tab; the per-tab match below
+        // is Main-focus behavior (including the Live greeter fallback).
+        if self.pipeline_focused() {
+            self.selected =
+                (self.selected as i32 + delta).rem_euclid(PIPELINE.len() as i32) as usize;
+            return;
+        }
         match self.tab {
             Tab::Findings => {
                 let len = self.visible_findings().len();
@@ -1596,8 +1672,18 @@ impl App {
     }
 
     fn on_enter(&mut self, tx: &mpsc::Sender<AppMsg>) {
-        if self.tab == Tab::Findings {
-            // Enter opens the detail overlay ($EDITOR stays on `e`).
+        // The stage-detail overlay delegates Enter here even while a chat
+        // is open underneath (sidebar mode). Opening the finding detail or
+        // launching a stage would put live surfaces (including `e` ->
+        // $EDITOR) on top of a possibly-streaming chat edit - refuse
+        // everything before any branch can fire.
+        if self.chat.is_some() {
+            self.status_msg = Some("close the chat (esc) first".into());
+            return;
+        }
+        if self.tab == Tab::Findings && !self.pipeline_focused() {
+            // Enter opens the detail overlay ($EDITOR stays on `e`); with
+            // the pipeline focused it falls through to the stage launch.
             if self.selected_finding_af().is_some() {
                 self.finding_detail = true;
             } else {
@@ -1816,6 +1902,9 @@ impl App {
         self.stream.clear();
         self.stream_scroll = None;
         self.tab = Tab::Live;
+        // j/k must follow the fresh stream even when launched from the
+        // sidebar cursor.
+        self.focus = PanelFocus::Main;
         self.running = Some(stage);
         self.running_branch = Some(self.branch.clone());
         self.set_stage(stage, StageStatus::Running, None);
@@ -1904,6 +1993,20 @@ impl App {
             pending: Default::default(),
             input_focused: true,
         };
+        if let Some(draft) = self.chat_draft_stash.take() {
+            chat.cursor = draft.cursor.min(draft.input.len());
+            chat.input = draft.input;
+            // Re-locate the stashed target in the rebuilt list (the docs
+            // may have changed since); a vanished section falls back to
+            // the default target rather than guessing.
+            if let Some(i) = chat
+                .targets
+                .iter()
+                .position(|t| t.doc == draft.doc && t.section == draft.section)
+            {
+                chat.target_idx = i;
+            }
+        }
         // Reattach: a chat edit daemonized before the TUI died is still live,
         // so rebuild the view around it instead of orphaning it (the archive
         // replay repaints the assistant turn; completion lands normally).
@@ -1993,6 +2096,31 @@ impl App {
             self.chat_undo_redo(true);
             return;
         }
+        // Chord out of the input into sidebar mode: any modifier chord
+        // bound to focus-left (draft and cursor kept; allowed in flight -
+        // it closes nothing). The default alt chords are HARDCODED
+        // emergency escapes, same class as the ctrl+x cancel above: a
+        // `[keys]` rebind must never re-trap the chat. Plain keys never
+        // resolve here - they type.
+        // contains(ALT), not ==: a terminal may report extra modifier
+        // bits (enhanced protocols), and caps lock delivers 'H' - neither
+        // may kill the one escape that survives every rebind.
+        let emergency_escape = key.modifiers.contains(KeyModifiers::ALT)
+            && match key.code {
+                KeyCode::Char(c) => c.eq_ignore_ascii_case(&'h'),
+                KeyCode::Left => true,
+                _ => false,
+            };
+        let chorded = !key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+        if emergency_escape
+            || (chorded
+                && self.cfg.keymap.resolve(key.code, key.modifiers) == Some(Action::FocusLeft))
+        {
+            if let Some(chat) = self.chat.as_mut() {
+                chat.input_focused = false;
+            }
+            return;
+        }
         // Alt+Enter inserts a newline; plain Enter submits (handled first
         // because submitting needs `&mut self` to spawn). While an edit is
         // in flight, Enter queues instead (drained as edits finish).
@@ -2032,16 +2160,7 @@ impl App {
             return;
         };
         match key.code {
-            // Closing the overlay while an edit is in flight would defeat
-            // every chat-is-busy guard (the watcher unpauses, a pipeline stage
-            // could launch, a reopened chat double-submits) - block it.
-            KeyCode::Esc => {
-                if chat.in_flight {
-                    self.status_msg = Some("edit in flight - ctrl+x to cancel it first".into());
-                } else {
-                    self.chat = None;
-                }
-            }
+            KeyCode::Esc => self.chat_close_or_refuse(),
             KeyCode::Backspace => {
                 if chat.cursor > 0 {
                     chat.input.remove(chat.cursor - 1);
@@ -2090,6 +2209,24 @@ impl App {
     /// other context ignores it.
     fn on_paste(&mut self, text: &str) {
         if let Some(chat) = self.chat.as_mut() {
+            if !chat.input_focused {
+                // Discard loudly: sidebar mode has no text surface, and
+                // pasting into a hidden editor would lose data invisibly.
+                // The hint follows the LIVE keymap - focus-right may be
+                // rebound away from l.
+                let edit_key = self
+                    .cfg
+                    .keymap
+                    .chords_for(Action::FocusRight)
+                    .iter()
+                    .map(|c| c.caption())
+                    .min_by_key(|c| c.chars().count())
+                    .unwrap_or_else(|| "l".into());
+                self.status_msg = Some(format!(
+                    "paste ignored - press {edit_key} to edit the chat input"
+                ));
+                return;
+            }
             for c in text.chars() {
                 chat.input.insert(chat.cursor, c);
                 chat.cursor += 1;
@@ -2131,6 +2268,85 @@ impl App {
                 }
             )));
             chat.scroll = 0;
+        }
+    }
+
+    /// Esc/q: close the chat when idle. Closing while an edit is in flight
+    /// would defeat every chat-is-busy guard (the watcher unpauses, a
+    /// pipeline stage could launch, a reopened chat double-submits), so
+    /// refuse with the cancel hint. Shared by the focused and sidebar-mode
+    /// key handlers - Esc semantics are identical in both. A non-empty draft
+    /// is stashed, not dropped: some terminals deliver alt+left as a bare
+    /// Esc followed by Left, and that accidental close must be recoverable.
+    fn chat_close_or_refuse(&mut self) {
+        if self.chat.as_ref().is_some_and(|c| c.in_flight) {
+            self.status_msg = Some("edit in flight - ctrl+x to cancel it first".into());
+        } else if let Some(chat) = self.chat.take() {
+            // A terminal may split alt+left into Esc-then-Left, landing here
+            // by accident - keep the draft so reopening recovers it.
+            if !chat.input.is_empty() {
+                let (doc, section) = match chat.target() {
+                    Some(t) => (t.doc, t.section.clone()),
+                    None => (stages::DocKind::Spec, None),
+                };
+                self.chat_draft_stash = Some(ChatDraft {
+                    input: chat.input,
+                    cursor: chat.cursor,
+                    doc,
+                    section,
+                });
+                self.status_msg = Some("chat closed - draft kept, reopen to continue".into());
+            }
+        }
+    }
+
+    /// j/k in chat sidebar mode: move the pipeline cursor, or scroll the
+    /// transcript when the sidebar isn't rendered (narrow terminal) - an
+    /// invisible panel must never be driven.
+    fn chat_sidebar_nav(&mut self, delta: i32) {
+        if self.sidebar_hidden() {
+            if let Some(chat) = self.chat.as_mut() {
+                // scroll = lines up from the bottom (0 = follow tail).
+                chat.scroll = if delta < 0 {
+                    chat.scroll.saturating_add(1)
+                } else {
+                    chat.scroll.saturating_sub(1)
+                };
+            }
+        } else {
+            self.selected =
+                (self.selected as i32 + delta).rem_euclid(PIPELINE.len() as i32) as usize;
+        }
+    }
+
+    /// Keys while the chat is open with the input UNFOCUSED (sidebar mode,
+    /// modeled on stage_detail_input). Actions resolve through the keymap
+    /// so `[keys]` rebinds keep working; raw key handling is limited to the
+    /// invariant emergency controls (Esc, ctrl+x). Everything unmatched is
+    /// swallowed: the chat hides the tabufline and the right panel, and
+    /// invisible state changes are forbidden.
+    fn chat_unfocused_input(&mut self, key: KeyEvent, _tx: &mpsc::Sender<AppMsg>) {
+        if key.code == KeyCode::Char('x') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.chat_cancel();
+            return;
+        }
+        if key.code == KeyCode::Esc {
+            self.chat_close_or_refuse();
+            return;
+        }
+        match self.cfg.keymap.resolve(key.code, key.modifiers) {
+            Some(Action::Down) => self.chat_sidebar_nav(1),
+            Some(Action::Up) => self.chat_sidebar_nav(-1),
+            // Back into the input - without typing the chord's character.
+            Some(Action::FocusRight | Action::SpecChat) => {
+                if let Some(chat) = self.chat.as_mut() {
+                    chat.input_focused = true;
+                }
+            }
+            Some(Action::Quit) => self.chat_close_or_refuse(),
+            Some(Action::StageDetail) => self.stage_detail = true,
+            Some(Action::Help) => self.show_help = true,
+            _ => {}
         }
     }
 
@@ -8700,6 +8916,48 @@ mod tests {
     }
 
     #[test]
+    fn split_esc_close_keeps_draft_recoverable_on_reopen() {
+        // A terminal (or slow SSH link) may deliver alt+left as a bare Esc
+        // followed by Left. The Esc closes the idle chat, but the draft must
+        // survive: reopening restores text and caret.
+        let (_t, mut app, tx, _rx) = wide_app();
+        app.dispatch(Action::SpecChat, &tx);
+        for c in "draft".chars() {
+            key(&mut app, &tx, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        key(&mut app, &tx, KeyCode::Left, KeyModifiers::NONE);
+        key(&mut app, &tx, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.chat.is_none(), "the bare esc still closes the chat");
+        assert!(
+            app.status_msg
+                .as_deref()
+                .unwrap_or("")
+                .contains("draft kept"),
+            "the close announces the rescued draft: {:?}",
+            app.status_msg
+        );
+        // The trailing Left of the split chord lands on the dashboard - it
+        // must not panic or disturb the stash.
+        key(&mut app, &tx, KeyCode::Left, KeyModifiers::NONE);
+        app.dispatch(Action::SpecChat, &tx);
+        let chat = app.chat.as_ref().unwrap();
+        assert_eq!(chat.input.iter().collect::<String>(), "draft");
+        assert_eq!(chat.cursor, 4, "caret restored where it was");
+        // A close with a cleared input stashes nothing: the next open is a
+        // genuinely fresh chat, not a resurrection of stale text.
+        for _ in 0.."draft".len() {
+            key(&mut app, &tx, KeyCode::End, KeyModifiers::NONE);
+            key(&mut app, &tx, KeyCode::Backspace, KeyModifiers::NONE);
+        }
+        key(&mut app, &tx, KeyCode::Esc, KeyModifiers::NONE);
+        app.dispatch(Action::SpecChat, &tx);
+        assert!(
+            app.chat.as_ref().unwrap().input.is_empty(),
+            "deliberately cleared draft stays cleared across a close"
+        );
+    }
+
+    #[test]
     fn chat_unfocused_jk_moves_pipeline_and_l_refocuses() {
         let (_t, mut app, tx, _rx) = wide_app();
         app.dispatch(Action::SpecChat, &tx);
@@ -8953,5 +9211,122 @@ mod tests {
             }
             proptest::prop_assert!(!app.quit);
         }
+    }
+
+    // ---- dual-review regression pins --------------------------------------
+
+    #[test]
+    fn enter_from_stage_detail_over_chat_is_refused() {
+        // Narrow chat (sidebar hidden): i -> stage detail -> Enter delegates
+        // to on_enter. Neither the finding detail nor a stage launch may
+        // land on top of the open chat.
+        let (_t, mut app, tx, _rx) = test_app();
+        app.view_max.term_width.set(90);
+        seed_findings(
+            &mut app,
+            r#"{"stage":"plan-review","findings":[
+                {"id":1,"title":"boom","plan_step":"Step 2","severity":"major","verdict":"confirmed"}]}"#,
+        );
+        app.dispatch(Action::SpecChat, &tx);
+        key(&mut app, &tx, KeyCode::Char('h'), KeyModifiers::ALT);
+        assert!(!app.chat.as_ref().unwrap().input_focused);
+        key(&mut app, &tx, KeyCode::Char('i'), KeyModifiers::NONE);
+        assert!(app.stage_detail);
+        key(&mut app, &tx, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(
+            !app.finding_detail,
+            "the finding detail must not open over the chat"
+        );
+        assert!(app.running.is_none(), "no stage may launch behind the chat");
+        assert!(app.chat.is_some());
+        assert!(
+            app.status_msg
+                .as_deref()
+                .unwrap_or("")
+                .contains("close the chat"),
+            "{:?}",
+            app.status_msg
+        );
+    }
+
+    #[test]
+    fn reopened_chat_restores_draft_and_target() {
+        let (_t, mut app, tx, _rx) = wide_app();
+        std::fs::create_dir_all(app.dirs.feature_dir(&app.slug)).unwrap();
+        std::fs::write(app.dirs.plan_file(&app.slug), "# Plan\n\n## Steps\n1. x\n").unwrap();
+        app.dispatch(Action::SpecChat, &tx);
+        let plan_idx = app
+            .chat
+            .as_ref()
+            .unwrap()
+            .targets
+            .iter()
+            .position(|t| t.doc == stages::DocKind::Plan && t.section.is_none())
+            .expect("plan target offered");
+        app.chat.as_mut().unwrap().target_idx = plan_idx;
+        for c in "keep me".chars() {
+            key(&mut app, &tx, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        key(&mut app, &tx, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.chat.is_none());
+        assert!(
+            app.status_msg
+                .as_deref()
+                .unwrap_or("")
+                .contains("draft kept"),
+            "{:?}",
+            app.status_msg
+        );
+        app.dispatch(Action::SpecChat, &tx);
+        let chat = app.chat.as_ref().unwrap();
+        assert_eq!(chat.input.iter().collect::<String>(), "keep me");
+        assert_eq!(chat.cursor, 7);
+        let tgt = chat.target().expect("target restored");
+        assert_eq!(
+            tgt.doc,
+            stages::DocKind::Plan,
+            "the rescued draft aims at the target it was written for"
+        );
+        assert!(tgt.section.is_none());
+    }
+
+    #[test]
+    fn chat_escape_tolerates_capslock_and_extra_modifiers() {
+        let (_t, mut app, tx, _rx) = wide_app();
+        app.dispatch(Action::SpecChat, &tx);
+        // Caps lock: terminals deliver alt+h as 'H' + ALT (no SHIFT bit).
+        key(&mut app, &tx, KeyCode::Char('H'), KeyModifiers::ALT);
+        assert!(
+            !app.chat.as_ref().unwrap().input_focused,
+            "caps lock must not kill the emergency escape"
+        );
+        app.chat.as_mut().unwrap().input_focused = true;
+        // Enhanced-keyboard protocols may report extra modifier bits.
+        key(
+            &mut app,
+            &tx,
+            KeyCode::Left,
+            KeyModifiers::ALT | KeyModifiers::SHIFT,
+        );
+        assert!(
+            !app.chat.as_ref().unwrap().input_focused,
+            "extra modifier bits must not kill the emergency escape"
+        );
+    }
+
+    #[test]
+    fn paste_hint_follows_rebound_focus_right() {
+        let (_t, mut app, tx, _rx) = wide_app();
+        let mut o = std::collections::HashMap::new();
+        o.insert("focus-right".to_string(), "y".to_string());
+        app.cfg.keymap = crate::keymap::Keymap::default().with_overrides(&o).unwrap();
+        app.dispatch(Action::SpecChat, &tx);
+        app.chat.as_mut().unwrap().input_focused = false;
+        app.on_input(Event::Paste("XY".into()), &tx);
+        assert!(
+            app.status_msg.as_deref().unwrap_or("").contains("press y"),
+            "the hint must follow the live keymap: {:?}",
+            app.status_msg
+        );
     }
 }

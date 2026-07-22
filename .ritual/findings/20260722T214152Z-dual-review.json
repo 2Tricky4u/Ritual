@@ -1,0 +1,105 @@
+{
+  "ritual_findings": 1,
+  "stage": "dual-review",
+  "branch": "main",
+  "generated_at": "2026-07-22T21:41:52Z",
+  "source_models": {
+    "claude": "claude-fable-5",
+    "codex": "gpt-5.6"
+  },
+  "findings": [
+    {
+      "id": 1,
+      "severity": "major",
+      "title": "Sidebar-mode i overlay lets Enter launch a stage invisibly under a still-open chat",
+      "file": "src/ui/app.rs",
+      "line": 1668,
+      "plan_step": null,
+      "snippet": "        if self.running.is_some()\n            || self.chat_running()",
+      "scenario": "Wide terminal -> s (chat opens, idle) -> alt+h (sidebar mode) -> i -> Enter: stage_detail_input delegates to on_enter, whose guard checks chat_running() (in_flight only), so the idle open chat does not block. run_stage sets tab=Live but draw_main still renders the chat split, the stage streams invisibly, and chat_unfocused_input swallows the advertised x cancel.",
+      "sources": [
+        "claude"
+      ],
+      "verdict": "confirmed",
+      "action": "fixed"
+    },
+    {
+      "id": 2,
+      "severity": "minor",
+      "title": "Sidebar-mode footer claims 'j/k pipeline' at widths where j/k scrolls the transcript",
+      "file": "src/ui/dashboard.rs",
+      "line": 850,
+      "plan_step": null,
+      "snippet": "            \" j/k pipeline · l edit input · i stage · ctrl+x cancel · esc close\"",
+      "scenario": "Chat open at term width < 100 (sidebar hidden), alt+h to sidebar mode: the footer - the only in-context documentation, since the chat swallows ? - says 'j/k pipeline', but chat_sidebar_nav scrolls the transcript at this width. Was pinned wrong by the boundary_99_chat snapshot.",
+      "sources": [
+        "claude",
+        "codex"
+      ],
+      "verdict": "confirmed",
+      "action": "fixed"
+    },
+    {
+      "id": 3,
+      "severity": "minor",
+      "title": "One-frame-stale term_width after resize lets focus-left land on a not-rendered sidebar",
+      "file": "src/ui/app.rs",
+      "line": 1543,
+      "plan_step": null,
+      "snippet": "                if self.sidebar_hidden() {",
+      "scenario": "Terminal at 120 cols (last frame drawn), user resizes to 60; an h keypress batched behind the resize event sees term_width==120, so sidebar_hidden() is false and focus becomes Pipeline with no refusal even though the next frame draws no sidebar. Codex's 'before the first render' variant was refuted (the loop draws before processing input); the resize-batch window was real.",
+      "sources": [
+        "claude",
+        "codex"
+      ],
+      "verdict": "confirmed",
+      "action": "fixed"
+    },
+    {
+      "id": 4,
+      "severity": "major",
+      "title": "Terminals delivering alt+left as split Esc-then-Left still destroy the chat draft",
+      "file": "src/ui/app.rs",
+      "line": 2123,
+      "plan_step": null,
+      "snippet": "            KeyCode::Esc => self.chat_close_or_refuse(),",
+      "scenario": "Focused idle chat with a typed draft; the terminal or a slow SSH link delivers alt+left as a bare Esc event followed by Left. The Esc arm closes the chat, dropping ChatState.input irrecoverably; the trailing Left dispatches FocusLeft on the dashboard. term.rs pushes no kitty/DisambiguateEscapeCodes, so nothing distinguishes a lone ESC from an alt prefix. The emergency_escape chord only covers the coalesced single-event encoding.",
+      "sources": [
+        "claude"
+      ],
+      "verdict": "unconfirmed",
+      "action": "fixed"
+    },
+    {
+      "id": 5,
+      "severity": "minor",
+      "title": "Sidebar-mode transcript scroll is unclamped above the renderer's extent",
+      "file": "src/ui/app.rs",
+      "line": 2243,
+      "plan_step": null,
+      "snippet": "                    chat.scroll.saturating_add(1)",
+      "scenario": "Narrow chat (sidebar hidden), short transcript; hold k 50 times -> chat.scroll=50 while the renderer clamps display at max_start, so the user must press j ~50 times before the tail moves again. Mirrors the pre-existing unclamped focused-chat Up handler; a clamp needs a chat extent field in ViewMax.",
+      "sources": [
+        "claude"
+      ],
+      "verdict": "unconfirmed",
+      "action": "pending"
+    },
+    {
+      "id": 6,
+      "severity": "minor",
+      "title": "alt+l/alt+right allegedly fail to move focus out of the focused chat input",
+      "file": "src/ui/app.rs",
+      "line": 2136,
+      "plan_step": null,
+      "snippet": "            KeyCode::Right => chat.cursor = (chat.cursor + 1).min(chat.input.len()),",
+      "scenario": "Codex read alt+l/alt+right as leave-chat chords; by design they are focus-right (return to the input from sidebar mode), so from the focused input they are no-ops. Verified in code: alt+l is correctly swallowed by the plain-char guard; the only residue is that alt+right matches the unmodified KeyCode::Right arm and moves the text cursor by one - benign.",
+      "sources": [
+        "codex"
+      ],
+      "verdict": "refuted",
+      "action": "fixed",
+      "reason": "skipped"
+    }
+  ]
+}

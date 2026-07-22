@@ -303,6 +303,14 @@ impl Default for Keymap {
             ("v", "toggle-resolved"),
             ("S", "settings"),
             ("i", "stage-detail"),
+            ("h", "focus-left"),
+            ("left", "focus-left"),
+            ("alt+h", "focus-left"),
+            ("alt+left", "focus-left"),
+            ("l", "focus-right"),
+            ("right", "focus-right"),
+            ("alt+l", "focus-right"),
+            ("alt+right", "focus-right"),
         ];
         let map = defaults
             .iter()

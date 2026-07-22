@@ -1,0 +1,27 @@
+---
+source: tests/ui_snapshots.rs
+assertion_line: 769
+expression: render(&app)
+---
+"                            │   live   findings   history    plan    guide              "
+"  PIPELINE ──────────────── │─────────────────────────────────────────────────────────────"
+"  ○ spec                    │                                                             "
+"  ○ plan                    │   CRIT  ◇single src/state.rs:42 Race in state save   →⚑M  "
+"  ○ plan-review             │    two writers [dual-review:confirmed]                      "
+"  ○ tests-red               │                                                             "
+"  ○ implement               │                                                             "
+"  ○ dual-review             │                                                             "
+"  ○ coverage                │                                                             "
+"  » next: spec              │                                                             "
+"  architecture.md missing - │                                                             "
+"    run `ritual architect`  │                                                             "
+"    to ground planning      │                                                             "
+"                            │                                                             "
+" 󰚩 AGENTS ───────────────── │                                                             "
+"  󰚩 claude …                │                                                             "
+"  󰚩 codex …                 │                                                             "
+"  󱘖 bridge …                │                                                             "
+"   nvim …                   │                                                             "
+"   check ?                  │                                                             "
+"                            │                                                             "
+" RITUAL   detached  detached                                                          "

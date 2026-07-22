@@ -1,0 +1,25 @@
+---
+source: tests/ui_snapshots.rs
+assertion_line: 781
+expression: "render_at(&app, 69, 20)"
+---
+"   live    findings    history   plan   guide                      "
+"─────────────────────────────────────────────────────────────────────"
+" no spec or plan yet; press enter on the spec stage                  "
+"                                                                     "
+"                                                                     "
+"                                                                     "
+"                                                                     "
+"                                                                     "
+"                                                                     "
+"                                                                     "
+"                                                                     "
+"                                                                     "
+"                                                                     "
+"                                                                     "
+"                                                                     "
+"                                                                     "
+"                                                                     "
+"                                                                     "
+"                                                                     "
+" RITUAL   detached  detached                                     "

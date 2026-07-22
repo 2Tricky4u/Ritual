@@ -7,6 +7,8 @@
 //! shades (darker sidebar, statusline_bg bottom bar), powerline statusline
 //! with the user's live separator glyphs ( / ), PmenuSel purple selection,
 //! tabufline pills, nvdash greeter, telescope-style palette, which-key help.
+//! Focus cue: the sidebar selection row is bright only while the pipeline
+//! is actually focused (`App::pipeline_focused`), dimmed otherwise.
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -29,6 +31,18 @@ const MIN_SIDEBAR_TERM_W: u16 = 70;
 const CHAT_SIDEBAR_MIN_TERM_W: u16 = 100;
 /// Below this main width, chat stacks vertically (preview above, chat below).
 const CHAT_STACK_MIN_W: u16 = 55;
+
+/// Whether the sidebar is dropped at this terminal width. The single
+/// threshold predicate shared by the renderer (layout) and the input path
+/// (`App::sidebar_hidden`, the focus-left refusal): they cannot disagree.
+pub fn sidebar_hidden(term_width: u16, chat_open: bool) -> bool {
+    let min = if chat_open {
+        CHAT_SIDEBAR_MIN_TERM_W
+    } else {
+        MIN_SIDEBAR_TERM_W
+    };
+    term_width < min
+}
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -211,14 +225,12 @@ pub fn draw(f: &mut Frame, app: &App) {
         .split(f.area());
 
     let content = rows[0];
-    // Chat mode needs the width for its own preview|chat split, so the sidebar
-    // only survives on wide terminals.
-    let sidebar_min = if app.chat.is_some() {
-        CHAT_SIDEBAR_MIN_TERM_W
-    } else {
-        MIN_SIDEBAR_TERM_W
-    };
-    if content.width >= sidebar_min {
+    // The input path needs the width for the focus-left refusal and the
+    // chat's sidebar mode - the sanctioned renderer→input channel.
+    app.view_max.term_width.set(f.area().width);
+    // Chat mode needs the width for its own preview|chat split, so the
+    // sidebar only survives on wide terminals.
+    if !sidebar_hidden(content.width, app.chat.is_some()) {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -341,7 +353,11 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::default());
     }
 
-    // PIPELINE
+    // PIPELINE. The selection row is bright only when j/k actually drives
+    // it: pipeline focus, or the Live greeter fallback (empty stream, no
+    // chat) - an always-bright row would claim a focus it doesn't have.
+    let cursor_live = app.pipeline_focused()
+        || (app.tab == Tab::Live && app.stream.is_empty() && app.chat.is_none());
     lines.push(section_header(t, t.icon_pipeline(), "PIPELINE", w));
     for (i, id) in PIPELINE.iter().enumerate() {
         let status = app.stage_status(*id);
@@ -367,13 +383,20 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             suffix.push(' ');
             suffix.push_str(t.icon_stale());
         }
-        if selected {
+        if selected && cursor_live {
             // PmenuSel: purple row, dark text.
             let spans = vec![Span::styled(
                 format!("  {icon} {}{suffix}", id.label()),
                 Style::default().fg(t.on_accent()).bg(t.bg_selection()),
             )];
             lines.push(fill_row(spans, w, t.bg_selection()));
+        } else if selected {
+            // Dimmed cue: the cursor is here, but j/k drives the panel.
+            let spans = vec![Span::styled(
+                format!("  {icon} {}{suffix}", id.label()),
+                Style::default().fg(t.fg()).bg(t.bg_row2()),
+            )];
+            lines.push(fill_row(spans, w, t.bg_row2()));
         } else {
             let label_color = match status {
                 StageStatus::Done if stale => t.warn(),
@@ -762,23 +785,35 @@ fn draw_chat_panel(f: &mut Frame, app: &App, chat: &ChatState, area: Rect) {
     let text: String = chat.input.iter().collect();
     let mut consumed = 0usize; // chars consumed incl. the row's trailing '\n'
     let mut input_lines: Vec<Line> = Vec::new();
+    let input_fg = if chat.input_focused {
+        t.fg()
+    } else {
+        t.muted()
+    };
+    let prompt_fg = if chat.input_focused {
+        t.highlight()
+    } else {
+        t.muted()
+    };
     for (row, seg) in text.split('\n').enumerate() {
         let lead = if row == 0 {
             Span::styled(
                 format!(" {} ", t.icon_prompt()),
-                Style::default().fg(t.highlight()).bg(t.bg_row()),
+                Style::default().fg(prompt_fg).bg(t.bg_row()),
             )
         } else {
             Span::styled("   ", Style::default().bg(t.bg_row()))
         };
         let mut spans = vec![lead];
-        if row == cursor_row {
+        // The caret is drawn only while the input is focused; sidebar
+        // mode renders the draft dimmed and caretless.
+        if chat.input_focused && row == cursor_row {
             let col = chat.cursor - consumed;
             let before: String = seg.chars().take(col).collect();
             let after: String = seg.chars().skip(col).collect();
             spans.push(Span::styled(
                 before,
-                Style::default().fg(t.fg()).bg(t.bg_row()),
+                Style::default().fg(input_fg).bg(t.bg_row()),
             ));
             spans.push(Span::styled(
                 "▏",
@@ -786,12 +821,12 @@ fn draw_chat_panel(f: &mut Frame, app: &App, chat: &ChatState, area: Rect) {
             ));
             spans.push(Span::styled(
                 after,
-                Style::default().fg(t.fg()).bg(t.bg_row()),
+                Style::default().fg(input_fg).bg(t.bg_row()),
             ));
         } else {
             spans.push(Span::styled(
                 seg.to_string(),
-                Style::default().fg(t.fg()).bg(t.bg_row()),
+                Style::default().fg(input_fg).bg(t.bg_row()),
             ));
         }
         input_lines.push(fill_row(spans, rows[2].width, t.bg_row()));
@@ -806,10 +841,18 @@ fn draw_chat_panel(f: &mut Frame, app: &App, chat: &ChatState, area: Rect) {
 
     // Persistent key footer: the chat swallows `?` (it types), so this line
     // is the only in-context documentation. Two states: idle vs in-flight.
-    let footer = if chat.in_flight {
-        " enter queue · ctrl+x cancel edit · ↑↓ scroll"
+    let footer = if !chat.input_focused {
+        // Below the sidebar threshold j/k scrolls the transcript instead of
+        // driving a pipeline that isn't drawn - the footer must not lie.
+        if sidebar_hidden(f.area().width, true) {
+            " j/k scroll · l edit input · i stage · ctrl+x cancel · esc close"
+        } else {
+            " j/k pipeline · l edit input · i stage · ctrl+x cancel · esc close"
+        }
+    } else if chat.in_flight {
+        " enter queue · ctrl+x cancel edit · alt+←/alt+h sidebar · ↑↓ scroll"
     } else {
-        " enter send · alt+enter ⏎ · tab target · ↑↓ scroll · alt+z/ctrl+z undo/redo · esc close"
+        " enter send · alt+enter ⏎ · tab target · alt+←/alt+h sidebar · alt+z/ctrl+z undo · esc close"
     };
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -1962,6 +2005,29 @@ pub fn whichkey_sections(app: &App) -> Vec<(&'static str, Vec<WkEntry>)> {
             ("move", vec![Act(Up), Act(Down)]),
         ];
     }
+    // Chat sidebar mode (input unfocused): `chat_unfocused_input` honors
+    // exactly these. A FOCUSED chat never reaches help - `?` types.
+    if app.chat.as_ref().is_some_and(|c| !c.input_focused) {
+        return vec![(
+            "chat",
+            vec![
+                Act(Up),
+                Act(Down),
+                Act(FocusRight),
+                Act(SpecChat),
+                Act(StageDetail),
+                Act(Help),
+                Lit {
+                    keys: "ctrl+x",
+                    desc: "cancel edit",
+                },
+                Lit {
+                    keys: "esc/q",
+                    desc: "close chat",
+                },
+            ],
+        )];
+    }
     // Per-tab context: ONLY what is specific to this tab. Finding-targeted
     // keys (o/e and the triage set) live on Findings; Confirm appears
     // everywhere because Enter launches the selected stage from every tab
@@ -2027,6 +2093,8 @@ pub fn whichkey_sections(app: &App) -> Vec<(&'static str, Vec<WkEntry>)> {
             vec![
                 Act(Up),
                 Act(Down),
+                Act(FocusLeft),
+                Act(FocusRight),
                 Act(ScrollTop),
                 Act(Follow),
                 Act(FeaturePrev),
@@ -2060,7 +2128,7 @@ fn draw_help(f: &mut Frame, app: &App) {
         for entry in entries {
             let (keys, desc) = match entry {
                 WkEntry::Act(a) => {
-                    let caps: Vec<String> = app
+                    let mut caps: Vec<String> = app
                         .cfg
                         .keymap
                         .chords_for(a)
@@ -2076,7 +2144,17 @@ fn draw_help(f: &mut Frame, app: &App) {
                         // palette" - the row must never vanish silently.
                         (":".to_string(), desc.to_string())
                     } else {
-                        (caps.join(" / "), desc.to_string())
+                        // Show the shortest keycaps (the modifier-less
+                        // primaries) and elide further aliases: an action
+                        // with four chords (focus-left) would otherwise blow
+                        // the column budget and clip its description.
+                        caps.sort_by_key(|c| c.chars().count());
+                        let shown = if caps.len() > 2 {
+                            format!("{} / {} …", caps[0], caps[1])
+                        } else {
+                            caps.join(" / ")
+                        };
+                        (shown, desc.to_string())
                     }
                 }
                 WkEntry::Lit { keys, desc } => (keys.to_string(), desc.to_string()),

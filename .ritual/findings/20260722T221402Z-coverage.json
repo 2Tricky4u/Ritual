@@ -1,0 +1,14 @@
+{
+  "ritual_findings": 1,
+  "stage": "coverage",
+  "branch": "main",
+  "generated_at": "2026-07-22T22:14:02Z",
+  "satisfied": [],
+  "findings": [
+    {"id": 1, "severity": "major", "title": "D11 not built: `./check.sh` green not demonstrated",
+     "deliverable": "D11",
+     "file": "check.sh", "line": null, "plan_step": null,
+     "scenario": "Acceptance criterion is `./check.sh` exits 0 (fmt, clippy -D warnings, all tests incl. insta). The read-only coverage gate cannot execute commands, and the tree offers no file-anchored proof of a green run: the working tree still has uncommitted churn across src/keymap.rs, src/ui/app.rs, src/ui/dashboard.rs, modified and new snapshots, and a new proptest-regressions/ui/ entry. Run ./check.sh and confirm exit 0 to close this deliverable.",
+     "sources": ["coverage"], "verdict": "confirmed", "action": "pending"}
+  ]
+}

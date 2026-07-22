@@ -1,22 +1,22 @@
 ---
 source: tests/ui_snapshots.rs
-assertion_line: 161
+assertion_line: 162
 expression: render(&app)
 ---
 "╭ keys ──────────────────────────────────────────────────────────────────────────────────╮"
 "│  findings                         actions                                            mo│"
 "│   enter  run stage / open item     i  stage: details & guidance                       k│"
 "│   f  finding: mark fixed           x  cancel running stage                            j│"
-"│   d  finding: dismiss              c  run check.sh fast                               g│"
-"│   F  queue/apply claude answer     C  run full check.sh                               G│"
-"│   m  finding: queue manual fix     a  take over in claude                             [│"
-"│   A  queue all code fixes          s  chat: edit spec/plan                            ]│"
-"│   t  apply recommended triage      :  refresh the architecture map (palette-only)      │"
-"│   :  apply queued answers          u  undo last plan fix                               │"
+"│   d  finding: dismiss              c  run check.sh fast                               h│"
+"│   F  queue/apply claude answer     C  run full check.sh                               l│"
+"│   m  finding: queue manual fix     a  take over in claude                             g│"
+"│   A  queue all code fixes          s  chat: edit spec/plan                            G│"
+"│   t  apply recommended triage      :  refresh the architecture map (palette-only)     [│"
+"│   :  apply queued answers          u  undo last plan fix                              ]│"
 "│   v  show/hide resolved            Q  findings → nvim quickfix                         │"
 "│   /  filter findings/history                                                           │"
 "│   o  open in running nvim         global                                               │"
-"│   e  open in $EDITOR               ctrl+c / q  quit ritual                             │"
+"│   e  open in $EDITOR               q / ctrl+c  quit ritual                             │"
 "│                                    ?  show help                                        │"
 "│                                    :  command palette                                  │"
 "│                                    tab  next tab                                       │"

@@ -1,0 +1,194 @@
+{
+  "ritual_findings": 1,
+  "stage": "plan-review",
+  "branch": "main",
+  "generated_at": "2026-07-22T20:48:06Z",
+  "source_models": {
+    "claude": "claude-fable-5",
+    "codex": "gpt-5.6"
+  },
+  "findings": [
+    {
+      "id": 1,
+      "severity": "major",
+      "title": "Narrow terminals make the pipeline unreachable, violating focus-always-reachable",
+      "file": null,
+      "line": null,
+      "plan_step": "Design §Focus model (hidden sidebar) / chat sidebar mode",
+      "scenario": "User opens chat in an 80-column terminal, presses alt+left, and gets a refusal because chat hides the sidebar; pipeline unreachable until the terminal widens or chat closes.",
+      "sources": [
+        "codex"
+      ],
+      "verdict": "accepted",
+      "action": "fixed",
+      "reason": "Narrow-layout contract made explicit in the plan: when the sidebar is not rendered there is no left panel to focus, FocusLeft refuses with an explanatory message, and the user is never trapped (unfocused chat scrolls the transcript, Esc/q close). Overlay/swap layout rejected as scope expansion; Codex closed the finding on this clarification."
+    },
+    {
+      "id": 2,
+      "severity": "major",
+      "title": "pipeline_focused() chat branch ignores sidebar_hidden, breaking single-source-of-truth",
+      "file": null,
+      "line": null,
+      "plan_step": "Design §Focus model (pipeline_focused definition)",
+      "snippet": "chat open → `!chat.input_focused` is the decider (unfocused chat = sidebar mode); otherwise `focus == Pipeline && !view_max.sidebar_hidden.get()`",
+      "scenario": "Terminal resized below the chat threshold after the chat was unfocused: pipeline_focused() returns true while chat_unfocused_input scrolls the transcript, so rendering, help, and navigation disagree.",
+      "sources": [
+        "codex"
+      ],
+      "verdict": "accepted",
+      "action": "fixed",
+      "reason": "Predicate revised: chat open → !chat.input_focused && !sidebar_hidden()."
+    },
+    {
+      "id": 3,
+      "severity": "major",
+      "title": "Renderer-derived sidebar_hidden is one frame stale across chat open/close and resize",
+      "file": null,
+      "line": null,
+      "plan_step": "Design §Focus model (hidden sidebar) / §Rendering",
+      "scenario": "Opening chat flips the hide threshold from 70 to 100 columns, but a FocusLeft queued in the same event batch observes the stale false value and enters sidebar mode on an invisible panel.",
+      "sources": [
+        "codex"
+      ],
+      "verdict": "accepted",
+      "action": "fixed",
+      "reason": "Design changed: ViewMax carries term_width (Cell<u16>) instead of a bool; a shared pure fn sidebar_hidden(term_width, chat_open) is evaluated at event time, making the chat open/close threshold flip synchronous. Only a real resize stays one frame stale (same contract as existing scroll extents). New test open_chat_then_immediate_focus_left_at_80_cols."
+    },
+    {
+      "id": 4,
+      "severity": "major",
+      "title": "[keys] override can strip every modifier escape chord, re-trapping the chat",
+      "file": "src/keymap.rs",
+      "line": 322,
+      "plan_step": "Keymap defaults / Chat chord-out",
+      "snippet": "pub fn with_overrides(mut self, overrides: &HashMap<String, String>) -> Result<Self> {",
+      "scenario": "User sets focus-left = \"h\": with_overrides is a rebind that removes the action's previous chords, so plain h types into chat and no modifier escape remains — chat is permanently capturing except destructive Esc.",
+      "sources": [
+        "codex"
+      ],
+      "verdict": "accepted",
+      "action": "fixed",
+      "reason": "Default chords alt+left/alt+h reserved as hardcoded emergency escapes inside chat_input regardless of [keys] (same class as the hardcoded ctrl+x cancel); footer advertises them; new test chat_escape_survives_adversarial_override."
+    },
+    {
+      "id": 5,
+      "severity": "minor",
+      "title": "D1 keymap test omits alt+h, alt+l, and alt+right default chords",
+      "file": null,
+      "line": null,
+      "plan_step": "Tests (keymap unit) / D1",
+      "scenario": "One of the untested ACTIONS defaults is misspelled or mapped to the wrong action; the acceptance test stays green while the footer advertises a chord that does not work.",
+      "sources": [
+        "codex"
+      ],
+      "verdict": "accepted",
+      "action": "fixed",
+      "reason": "Test asserts all 8 default chords individually; also dropped the plan's obsolete 'extend parse_chord for alt+' clause (parse_chord already accepts alt+, src/keymap.rs:220)."
+    },
+    {
+      "id": 6,
+      "severity": "minor",
+      "title": "Modifier resolution in chat_input underspecified for multi-modifier/enhanced-keyboard events",
+      "file": null,
+      "line": null,
+      "plan_step": "Chat chord-out (chat_input keymap resolution)",
+      "scenario": "A terminal emits Alt+Shift+H or Ctrl+Alt+Left; normalization resolves it differently or not at all, leaving the advertised escape unavailable on that terminal.",
+      "sources": [
+        "codex"
+      ],
+      "verdict": "accepted",
+      "action": "fixed",
+      "reason": "Unit tests added with exact crossterm KeyEvent modifier combos incl. SHIFT-folding; unmatched multi-modifier combos fall through to typing, which is safe because the hardcoded emergency escapes (finding 4) are modifier-exact and tested."
+    },
+    {
+      "id": 7,
+      "severity": "major",
+      "title": "Pipeline-focused Enter on Findings launches stages without guard-path test coverage",
+      "file": null,
+      "line": null,
+      "plan_step": "Focus-aware navigation (on_enter) / D4",
+      "scenario": "User focuses left on the Findings tab and presses Enter expecting item activation; the selected stage launches an external agent run consuming budget, and the test only checked that no detail opened.",
+      "sources": [
+        "codex"
+      ],
+      "verdict": "accepted",
+      "action": "fixed",
+      "reason": "Test strengthened (behavior unchanged — Enter-launches-stage is existing advertised behavior): enter_on_findings_is_focus_aware must assert the same guarded launch path is taken and an existing guard (e.g. active-run refusal) fires."
+    },
+    {
+      "id": 8,
+      "severity": "minor",
+      "title": "chat_unfocused_input hard-codes keys instead of resolving configurable Actions",
+      "file": null,
+      "line": null,
+      "plan_step": "Chat sidebar mode (chat_unfocused_input)",
+      "scenario": "User remaps focus-right or spec-chat; the configured chord does not refocus while default l/s still does (or vice versa), diverging from the every-input-is-an-Action architecture.",
+      "sources": [
+        "codex"
+      ],
+      "verdict": "accepted",
+      "action": "fixed",
+      "reason": "Plan now states chat_unfocused_input resolves through the keymap first and matches on Action; raw handling limited to Esc/ctrl+x emergency controls; new test chat_unfocused_honors_rebound_actions."
+    },
+    {
+      "id": 9,
+      "severity": "minor",
+      "title": "Paste silently discarded while chat is unfocused loses clipboard data without feedback",
+      "file": null,
+      "line": null,
+      "plan_step": "Chat sidebar mode (on_paste guard) / D6",
+      "scenario": "User believes the input is active, pastes a long prompt in sidebar mode, presses l, and discovers the paste vanished with no message.",
+      "sources": [
+        "codex"
+      ],
+      "verdict": "accepted",
+      "action": "fixed",
+      "reason": "Discarded paste now emits a status message ('paste ignored — press l to edit the chat input'); test asserts message + no state mutation."
+    },
+    {
+      "id": 10,
+      "severity": "minor",
+      "title": "Dual focus authorities leave the chat-close transition unspecified",
+      "file": null,
+      "line": null,
+      "plan_step": "Design §Focus model / Chat section",
+      "scenario": "App.focus == Pipeline, chat opens focused, then closes: focus silently reverts to Pipeline though the user was just editing on the right — previously undefined and untested.",
+      "sources": [
+        "codex"
+      ],
+      "verdict": "accepted",
+      "action": "fixed",
+      "reason": "Partial: transition now specified (closing chat leaves App.focus untouched, visibly reflected by the sidebar highlight) with new test closing_chat_keeps_prior_focus. The suggested 3-state PanelFocus::ChatInput redesign was rebutted (overlay-local state avoids save/restore bookkeeping; derived predicate already guarantees consistency); Codex accepted the rebuttal."
+    },
+    {
+      "id": 11,
+      "severity": "minor",
+      "title": "Snapshot coverage misses hidden-sidebar and width-boundary transitions",
+      "file": null,
+      "line": null,
+      "plan_step": "Tests (snapshots) / D8",
+      "scenario": "App marks the sidebar focused while it is omitted, or shows the wrong chat footer at 99/100 columns; the wide-terminal snapshots stay green.",
+      "sources": [
+        "codex"
+      ],
+      "verdict": "accepted",
+      "action": "fixed",
+      "reason": "Boundary snapshots added at 69/70 cols (no chat) and 99/100 cols (chat open), both focus states where meaningful; wired into D8's acceptance."
+    },
+    {
+      "id": 12,
+      "severity": "major",
+      "title": "Terminals encoding alt+left as Esc-then-Left destroy the draft via the escape chord",
+      "file": null,
+      "line": null,
+      "plan_step": "Verification / premortem",
+      "scenario": "In tmux or SSH without proper modifier encoding, alt+left arrives as Esc first: an idle chat closes and the draft is lost instead of unfocusing; in flight, Esc is refused and Left moves the cursor.",
+      "sources": [
+        "codex"
+      ],
+      "verdict": "accepted",
+      "action": "fixed",
+      "reason": "Partial: manual verification matrix extended to plain terminal + tmux + SSH for both alt+left and alt+h; footer advertises alt+h (ESC-prefixed chord that survives broken CSI-modifier arrow encoding); residual exotic-terminal risk documented. Softening Esc semantics rebutted as an explicit user decision; Codex accepted."
+    }
+  ]
+}

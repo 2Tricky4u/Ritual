@@ -1,0 +1,25 @@
+---
+source: tests/ui_snapshots.rs
+assertion_line: 782
+expression: "render_at(&app, 70, 20)"
+---
+"                            │   live    findings    history   plan  "
+"  PIPELINE ──────────────── │─────────────────────────────────────────"
+"  ○ spec                    │ no spec or plan yet; press enter on the "
+"  ○ plan                    │ spec stage                              "
+"  ○ plan-review             │                                         "
+"  ○ tests-red               │                                         "
+"  ○ implement               │                                         "
+"  ○ dual-review             │                                         "
+"  ○ coverage                │                                         "
+"  » next: spec              │                                         "
+"  architecture.md missing - │                                         "
+"    run `ritual architect`  │                                         "
+"    to ground planning      │                                         "
+"                            │                                         "
+" 󰚩 AGENTS ───────────────── │                                         "
+"  󰚩 claude …                │                                         "
+"  󰚩 codex …                 │                                         "
+"  󱘖 bridge …                │                                         "
+"   nvim …                   │                                         "
+" RITUAL   detached  detached                                      "

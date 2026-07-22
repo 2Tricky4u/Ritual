@@ -6,7 +6,7 @@ use ratatui::backend::TestBackend;
 
 use ritual::config::Config;
 use ritual::state::RitualDirs;
-use ritual::ui::app::{App, Tab};
+use ritual::ui::app::{App, PanelFocus, Tab};
 use ritual::ui::dashboard;
 
 fn setup_app(tmp: &tempfile::TempDir) -> App {
@@ -739,6 +739,56 @@ fn dashboard_spec_chat_ascii() {
 }
 
 #[test]
+fn dashboard_chat_unfocused_sidebar_mode() {
+    // Chord-out state: input dimmed and caretless, sidebar-mode footer,
+    // sidebar visible (>= 100 cols) with the bright pipeline cue.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_chat_app(&tmp);
+    app.chat.as_mut().unwrap().input_focused = false;
+    insta::assert_snapshot!(render_at(&app, 110, 26));
+}
+
+#[test]
+fn dashboard_findings_pipeline_focused() {
+    // Pipeline focus on a non-Live tab: the sidebar cursor is the live one.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".ritual/findings")).unwrap();
+    std::fs::write(
+        tmp.path()
+            .join(".ritual/findings/20260711T000000Z-dual-review.json"),
+        r#"{"ritual_findings":1,"stage":"dual-review","branch":"main",
+            "findings":[
+              {"id":1,"severity":"critical","title":"Race in state save","file":"src/state.rs","line":42,
+               "scenario":"two writers","sources":["claude"],"verdict":"confirmed","action":"pending"}
+            ]}"#,
+    )
+    .unwrap();
+    let mut app = setup_app(&tmp);
+    app.tab = Tab::Findings;
+    app.focus = PanelFocus::Pipeline;
+    insta::assert_snapshot!(render(&app));
+}
+
+#[test]
+fn dashboard_sidebar_boundary_widths() {
+    // The hidden/visible flip is pinned at the exact thresholds: 69/70 cols
+    // without a chat, 99/100 with one (sidebar-mode chat, so the visible
+    // side also pins the focus cue).
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = setup_app(&tmp);
+    app.focus = PanelFocus::Pipeline;
+    app.tab = Tab::Plan;
+    insta::assert_snapshot!("boundary_69_no_chat", render_at(&app, 69, 20));
+    insta::assert_snapshot!("boundary_70_no_chat", render_at(&app, 70, 20));
+
+    let tmp2 = tempfile::tempdir().unwrap();
+    let mut chat_app = setup_chat_app(&tmp2);
+    chat_app.chat.as_mut().unwrap().input_focused = false;
+    insta::assert_snapshot!("boundary_99_chat", render_at(&chat_app, 99, 24));
+    insta::assert_snapshot!("boundary_100_chat", render_at(&chat_app, 100, 24));
+}
+
+#[test]
 fn dashboard_guide_tab_renders() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = setup_app(&tmp);
@@ -1050,6 +1100,25 @@ fn rendering_survives_hostile_sizes_in_every_state() {
                 let t = tempfile::tempdir().unwrap();
                 let mut a = setup_app(&t);
                 a.tab = Tab::Guide;
+                (t, a)
+            }),
+        ),
+        (
+            "chat-sidebar-mode",
+            Box::new(|| {
+                let t = tempfile::tempdir().unwrap();
+                let mut a = setup_chat_app(&t);
+                a.chat.as_mut().unwrap().input_focused = false;
+                (t, a)
+            }),
+        ),
+        (
+            "pipeline-focused",
+            Box::new(|| {
+                let t = tempfile::tempdir().unwrap();
+                let mut a = setup_app(&t);
+                a.focus = PanelFocus::Pipeline;
+                a.tab = Tab::Findings;
                 (t, a)
             }),
         ),
