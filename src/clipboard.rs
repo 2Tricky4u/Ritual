@@ -66,15 +66,36 @@ fn try_tool(bin: &str, args: &[&str], text: &str) -> bool {
     {
         let Some(mut stdin) = child.stdin.take() else {
             let _ = child.kill();
+            let _ = child.wait();
             return false;
         };
         if stdin.write_all(text.as_bytes()).is_err() {
+            // EPIPE and friends: kill AND reap, never leak a zombie.
+            let _ = child.kill();
+            let _ = child.wait();
             return false;
         }
         // stdin dropped here → EOF, so the tool finishes and exits (wl-copy /
         // xclip fork a daemon to keep serving the selection; the parent exits).
     }
-    matches!(child.wait(), Ok(s) if s.success())
+    // Bounded wait: callers run this off the event loop, but a wedged
+    // compositor can keep wl-copy from ever exiting - poll briefly, then kill
+    // and reap so the worker thread (and any synchronous caller) is never
+    // stuck forever.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(s)) => return s.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(15));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
 }
 
 /// Emit an OSC 52 clipboard-set sequence to the terminal. Non-rendering, so it

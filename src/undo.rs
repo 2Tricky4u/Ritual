@@ -21,13 +21,16 @@ fn redo_dir(dirs: &RitualDirs, slug: &str, doc_label: &str) -> PathBuf {
     dirs.feature_dir(slug).join(".redo").join(doc_label)
 }
 
-/// Sortable snapshot name: millis + process-local sequence (two edits in the
-/// same millisecond, e.g. a drained queue, must still order correctly).
+/// Sortable snapshot name: millis + pid + process-local sequence. The seq
+/// orders two edits in the same millisecond (e.g. a drained queue); the pid
+/// keeps a TUI and a CLI snapshotting the same doc in the same millisecond
+/// from colliding on a name (both start SEQ at 0) and losing a level.
 fn snapshot_name() -> String {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     format!(
-        "{}-{:04}.md",
+        "{}-{:06}-{:04}.md",
         chrono::Utc::now().format("%Y%m%dT%H%M%S%3fZ"),
+        std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     )
 }
@@ -95,7 +98,8 @@ pub fn undo(dirs: &RitualDirs, slug: &str, doc_label: &str, doc_path: &Path) -> 
     std::fs::create_dir_all(&rdir)?;
     std::fs::write(rdir.join(snapshot_name()), current)?;
     let restored = std::fs::read_to_string(&snap).context("reading undo snapshot")?;
-    std::fs::write(doc_path, restored)?;
+    // Atomic: a crash mid-restore must never leave a truncated doc.
+    crate::fsx::atomic_write(doc_path, restored.as_bytes())?;
     std::fs::remove_file(&snap)?;
     Ok(true)
 }
@@ -113,7 +117,8 @@ pub fn redo(dirs: &RitualDirs, slug: &str, doc_label: &str, doc_path: &Path) -> 
     // Directly onto the undo stack. This must NOT clear the redo branch.
     std::fs::write(udir.join(snapshot_name()), current)?;
     let restored = std::fs::read_to_string(&snap).context("reading redo snapshot")?;
-    std::fs::write(doc_path, restored)?;
+    // Atomic: a crash mid-restore must never leave a truncated doc.
+    crate::fsx::atomic_write(doc_path, restored.as_bytes())?;
     std::fs::remove_file(&snap)?;
     Ok(true)
 }

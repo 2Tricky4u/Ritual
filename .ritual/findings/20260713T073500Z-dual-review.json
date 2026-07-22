@@ -3,7 +3,10 @@
   "stage": "dual-review",
   "branch": "test/pr-comment-validation",
   "generated_at": "2026-07-13T07:35:00Z",
-  "source_models": {"claude": "claude-opus-4-8", "codex": "gpt-5-codex"},
+  "source_models": {
+    "claude": "claude-opus-4-8",
+    "codex": "gpt-5-codex"
+  },
   "findings": [
     {
       "id": 1,
@@ -11,11 +14,16 @@
       "title": "Synthetic finding A (both models) — inline anchor validation",
       "file": "docs/pr-comment-validation.md",
       "line": 8,
+      "plan_step": null,
       "snippet": "- anchor A — a synthetic \"confirmed\" dual-review finding is anchored to this line.",
       "scenario": "Synthetic finding used only to validate that ritual pr-comment --inline posts an anchored review comment at file:line on a real PR head commit.",
-      "sources": ["claude", "codex"],
+      "sources": [
+        "claude",
+        "codex"
+      ],
       "verdict": "confirmed",
-      "action": ""
+      "action": "",
+      "answer": "auto"
     },
     {
       "id": 2,
@@ -23,11 +31,15 @@
       "title": "Synthetic finding B (single model) — second inline anchor",
       "file": "docs/pr-comment-validation.md",
       "line": 9,
+      "plan_step": null,
       "snippet": "- anchor B — a second synthetic finding is anchored to this line to prove multiple inline posts.",
       "scenario": "Second synthetic finding; proves multiple inline comments post in one run and that the single-source (single) marker renders.",
-      "sources": ["claude"],
+      "sources": [
+        "claude"
+      ],
       "verdict": "confirmed",
-      "action": ""
+      "action": "",
+      "answer": "manual"
     },
     {
       "id": 3,
@@ -35,8 +47,12 @@
       "title": "Dismissed finding — must NOT reach the PR",
       "file": "docs/pr-comment-validation.md",
       "line": 3,
+      "plan_step": null,
       "scenario": "Resolved (dismissed) findings are excluded from both the summary table and inline comments; its absence on the PR is the assertion.",
-      "sources": ["claude", "codex"],
+      "sources": [
+        "claude",
+        "codex"
+      ],
       "verdict": "confirmed",
       "action": "dismissed"
     },
@@ -46,10 +62,14 @@
       "title": "Unconfirmed finding — must NOT reach the PR",
       "file": "docs/pr-comment-validation.md",
       "line": 4,
+      "plan_step": null,
       "scenario": "Only cross-model confirmed findings are posted; an unconfirmed verdict is filtered out.",
-      "sources": ["codex"],
+      "sources": [
+        "codex"
+      ],
       "verdict": "unconfirmed",
-      "action": ""
+      "action": "",
+      "answer": "auto"
     }
   ]
 }

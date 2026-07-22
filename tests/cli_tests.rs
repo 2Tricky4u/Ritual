@@ -1000,6 +1000,45 @@ fn history_json_is_array() {
 }
 
 #[test]
+fn clean_exits_nonzero_on_partial_failure() {
+    let tmp = setup_project();
+    let runs = tmp.path().join(".ritual/runs");
+    std::fs::create_dir_all(&runs).unwrap();
+    let yesterday = (chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339();
+    std::fs::write(
+        runs.join("20260701T000001Z-x.meta.json"),
+        format!(
+            r#"{{"run_id":"20260701T000001Z-x","stage":"plan-review","ok":true,"started_at":"{yesterday}"}}"#
+        ),
+    )
+    .unwrap();
+    // A non-empty DIRECTORY named like the archive: remove_file() fails on
+    // it, so the group partially fails and the scriptability contract
+    // demands a nonzero exit.
+    let blocker = runs.join("20260701T000001Z-x.jsonl");
+    std::fs::create_dir(&blocker).unwrap();
+    std::fs::write(blocker.join("keep"), "x").unwrap();
+
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["clean", "--keep", "0"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("FAILED 20260701T000001Z-x"));
+
+    // With the blocker gone the same clean succeeds.
+    std::fs::remove_file(blocker.join("keep")).unwrap();
+    std::fs::remove_dir(&blocker).unwrap();
+    Command::cargo_bin("ritual")
+        .unwrap()
+        .current_dir(tmp.path())
+        .args(["clean", "--keep", "0"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn bad_keybinding_config_errors_cleanly() {
     let tmp = setup_project();
     std::fs::write(

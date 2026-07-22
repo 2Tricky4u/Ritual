@@ -27,11 +27,16 @@ old run artifacts safely.
    total retained may exceed `keep`. Missing/unparseable `state.json` →
    protect nothing, but print a notice. Document these semantics in the CLI
    help text.
-5. Chained runs: if any prune candidate has `meta.chain`, refuse (with an
-   explanation that `verify-log` would break PERMANENTLY - the oldest retained
-   link no longer chains from GENESIS, and future runs chain onto the retained
-   head) unless `--allow-chain-break` is passed. `--dry-run` exercises the same
-   refusal/warning path.
+5. Chained runs: prune only as a contiguous prefix of the chain in LINKAGE
+   order (finish order - under parallel runs that is NOT run-id order),
+   covered by a tamper-evident `Checkpoint` written BEFORE any deletion.
+   Verify -> checkpoint -> prefix selection runs under the chain lock so a
+   finishing daemon cannot append between the two. `verify-log` treats the
+   checkpoint as a rolling genesis, so the log stays intact forever - no
+   override flag exists or is needed. Chained candidates outside the prefix
+   are kept (`ChainContinuity`). If the chain is already broken, refuse
+   chained pruning with a notice - never checkpoint over a broken chain.
+   `--dry-run` reports the would-be checkpoint without writing it.
 6. Deletion order per group: `.meta.json` FIRST, then `.request.json`,
    `.status`, `.jsonl`. A partial failure then leaves an orphan group the next
    `clean` collects, and `verify-log` never observes meta-without-archive.
@@ -48,11 +53,24 @@ old run artifacts safely.
      `.jsonl`/`.request.json`/`.status` files pruned
    - group with live `.status` (test uses own pid) never pruned; dead-pid
      `Vanished` group pruned
-   - chained run: refused without `--allow-chain-break`, pruned with it
+   - chained runs: only a contiguous linkage-order prefix of candidates is
+     pruned, behind a checkpoint written before deletion; a keeper ends the
+     prefix (`ChainContinuity`); already-broken chain refuses chained
+     pruning; `--dry-run` reports the checkpoint without writing it
    - `run_id` path-escape in a meta file cannot delete outside `runs_dir`
    - partial deletion failure: continues, reports, exits nonzero (unix
      permissions trick)
    - missing `state.json` handled with notice
+
+## Deliverables
+- [x] D1: `Clean` CLI variant with `keep` (default 50) and `dry_run` (no chain-break override - chained pruning is checkpoint-based, per step 5) - accept: `ritual clean --help` shows both flags and documents the additive-protection retention semantics (protected runs - state-referenced, today's, live - don't consume keep slots) - route: cli.rs
+- [x] D2: Filename-based run enumeration with path-escape guard - accept: run-ids come only from scanned filenames (never `RunMeta.run_id`); a meta with `"run_id": "../../x"` cannot cause deletion outside `runs_dir` - route: clean module, per step 2
+- [x] D3: Run-state classification of each group - accept: `Running` (live pid) never pruned regardless of age; `Finished` subject to retention; `Vanished` (no meta, dead/absent pid) prunable as garbage - route: `runner::run_state()`, per step 3
+- [x] D4: Additive stage-reference retention - accept: newest `keep` finished runs kept; runs referenced by a feature stage in `state.json` always kept without consuming a keep slot; missing/unparseable `state.json` protects nothing but prints a notice - route: retention logic, per step 4
+- [x] D5: Checkpoint-based chained pruning - accept: chained candidates prune only as a contiguous linkage-order prefix covered by a tamper-evident `Checkpoint` written BEFORE any deletion under the chain lock; `verify-log` stays intact (checkpoint acts as rolling genesis); an already-broken chain refuses chained pruning with a notice; `--dry-run` reports the would-be checkpoint without writing it - route: per step 5
+- [x] D6: Meta-first deletion order with failure tolerance - accept: per group deletes `.meta.json`, `.request.json`, `.status`, `.jsonl` in that order; continues past individual failures, reports each, exits nonzero if any failed - route: per step 6
+- [x] D7: `--dry-run` mode - accept: prints what would be deleted / kept / skipped and why; snapshot of the runs dir before/after is identical - route: per step 7
+- [x] D8: Test suite covering step 8's list - accept: tests exist and pass for keep-count & `--keep 0`, stage-reference protection (in/out of window, duplicate refs), dry-run immutability, malformed-meta and orphan-sidecar pruning, live-pid protection & dead-pid pruning, checkpoint-based chained pruning (contiguous-prefix selection, checkpoint before deletion, broken-chain refusal, dry-run checkpoint reporting), path-escape guard, partial-failure exit code, missing-`state.json` notice - route: tests, per step 8
 
 ## Risks / open decision
 - Deleting any chained run breaks `verify-log` permanently (not just for the

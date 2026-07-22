@@ -291,15 +291,78 @@ pub fn clean(dirs: &RitualDirs, keep: usize, dry_run: bool) -> Result<CleanRepor
                 "deletion target escaped audit dir: {}",
                 dir.display()
             );
-            if !dry_run && std::fs::remove_dir_all(&dir).is_err() {
+            if !dry_run {
+                // A real removal failure is a failure like any other target's:
+                // it must reach report.failures (and the exit code), not
+                // vanish into a skipped counter.
+                if let Err(e) = std::fs::remove_dir_all(&dir) {
+                    report.failures.push((
+                        dir.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| dir.display().to_string()),
+                        format!("audit dir: {e}"),
+                    ));
+                    continue;
+                }
+            }
+            pruned += 1;
+        }
+        if pruned > 0 {
+            // Dry runs say WOULD, exactly like the run-group phrasing.
+            report.notices.push(if dry_run {
+                format!("would prune {pruned} old audit report dir(s) (newest {AUDIT_KEEP} kept)")
+            } else {
+                format!("pruned {pruned} old audit report dir(s) (newest {AUDIT_KEEP} kept)")
+            });
+        }
+    }
+
+    // 8. Findings files: the dir otherwise grows forever (every gate and the
+    //    dashboard reparse all of it). Prune only files where EVERY finding is
+    //    resolved (fixed/dismissed) - open findings are the workflow's
+    //    currency and are never touched - and keep the newest FINDINGS_KEEP
+    //    resolved files as recent history (lessons.md draws on dispositions).
+    const FINDINGS_KEEP: usize = 20;
+    let findings_dir = dirs.findings_dir();
+    if findings_dir.is_dir() {
+        let mut resolved_files: Vec<std::path::PathBuf> = crate::findings::load_all(&findings_dir)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|lf| {
+                !lf.file.findings.is_empty() && lf.file.findings.iter().all(|f| f.resolved())
+            })
+            .map(|lf| lf.path)
+            .collect();
+        resolved_files.sort(); // timestamp-prefixed names: oldest first
+        let excess = resolved_files.len().saturating_sub(FINDINGS_KEEP);
+        let mut pruned = 0usize;
+        for path in resolved_files.into_iter().take(excess) {
+            assert!(
+                path.starts_with(&findings_dir),
+                "deletion target escaped findings dir: {}",
+                path.display()
+            );
+            if !dry_run && let Err(e) = std::fs::remove_file(&path) {
+                report.failures.push((
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.display().to_string()),
+                    format!("findings file: {e}"),
+                ));
                 continue;
             }
             pruned += 1;
         }
         if pruned > 0 {
-            report.notices.push(format!(
-                "pruned {pruned} old audit report dir(s) (newest {AUDIT_KEEP} kept)"
-            ));
+            report.notices.push(if dry_run {
+                format!(
+                    "would prune {pruned} fully-resolved findings file(s) (newest {FINDINGS_KEEP} kept)"
+                )
+            } else {
+                format!(
+                    "pruned {pruned} fully-resolved findings file(s) (newest {FINDINGS_KEEP} kept)"
+                )
+            });
         }
     }
     Ok(report)
@@ -405,6 +468,75 @@ mod tests {
     }
 
     #[test]
+    fn state_referenced_run_inside_the_keep_window_stays_state_ref() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = dirs(&tmp);
+        for i in 1..=3 {
+            mk_finished(&d, &format!("20260701T00000{i}Z-x"));
+        }
+        // Reference the NEWEST run (inside the window); keep window = 1.
+        let mut st = State::default();
+        let f = st.feature_for_branch_mut("main");
+        f.stages.entry(StageId::PlanReview).or_default().runs = vec!["20260701T000003Z-x".into()];
+        st.save(&d).unwrap();
+
+        let r = clean(&d, 1, false).unwrap();
+        // The referenced run is kept as StateRef (classification precedes the
+        // window) and never consumes the keep slot, which falls to the middle
+        // run; only the oldest is pruned.
+        assert_eq!(ids(&r.deleted_groups), ["20260701T000001Z-x"]);
+        assert!(
+            r.kept
+                .iter()
+                .any(|(id, why)| id == "20260701T000003Z-x" && *why == KeepReason::StateRef),
+            "{:?}",
+            r.kept
+        );
+        assert!(
+            r.kept
+                .iter()
+                .any(|(id, why)| id == "20260701T000002Z-x" && *why == KeepReason::KeepWindow),
+            "{:?}",
+            r.kept
+        );
+    }
+
+    #[test]
+    fn duplicate_stage_references_across_features_protect_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = dirs(&tmp);
+        mk_finished(&d, "20260701T000001Z-x");
+        mk_finished(&d, "20260701T000002Z-x");
+        // TWO features (different branches) reference the SAME run.
+        let mut st = State::default();
+        st.feature_for_branch_mut("main")
+            .stages
+            .entry(StageId::PlanReview)
+            .or_default()
+            .runs = vec!["20260701T000001Z-x".into()];
+        st.feature_for_branch_mut("feat/other")
+            .stages
+            .entry(StageId::DualReview)
+            .or_default()
+            .runs = vec!["20260701T000001Z-x".into()];
+        st.save(&d).unwrap();
+
+        let r = clean(&d, 0, false).unwrap();
+        assert_eq!(ids(&r.deleted_groups), ["20260701T000002Z-x"]);
+        assert!(d.runs_dir().join("20260701T000001Z-x.meta.json").exists());
+        // Protected exactly once, not double-counted per referencing feature.
+        assert_eq!(
+            r.kept
+                .iter()
+                .filter(|(id, why)| id == "20260701T000001Z-x" && *why == KeepReason::StateRef)
+                .count(),
+            1,
+            "{:?}",
+            r.kept
+        );
+    }
+
+    #[test]
     fn state_ref_wins_over_today_in_keep_reasons() {
         let tmp = tempfile::tempdir().unwrap();
         let d = dirs(&tmp);
@@ -499,6 +631,7 @@ mod tests {
             crate::provenance::verify_log(&d.runs_dir()).unwrap(),
             crate::provenance::VerifyOutcome::Ok {
                 runs: 3,
+                unchained: 0,
                 checkpoint: None
             }
         );
@@ -524,6 +657,97 @@ mod tests {
                 .unwrap()
                 .self_hash,
             first.self_hash
+        );
+    }
+
+    #[test]
+    fn audit_dir_dry_run_says_would_and_deletes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = dirs(&tmp);
+        for i in 0..7 {
+            std::fs::create_dir_all(d.audit_dir().join(format!("20260701T00000{i}Z"))).unwrap();
+        }
+        let report = clean(&d, 10, true).unwrap();
+        let notice = report
+            .notices
+            .iter()
+            .find(|n| n.contains("audit report dir"))
+            .expect("audit prune notice");
+        assert!(notice.starts_with("would prune 2"), "{notice}");
+        assert_eq!(
+            std::fs::read_dir(d.audit_dir()).unwrap().count(),
+            7,
+            "dry run must not delete"
+        );
+        // The real run prunes down to the keep window.
+        let report = clean(&d, 10, false).unwrap();
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        assert_eq!(std::fs::read_dir(d.audit_dir()).unwrap().count(), 5);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit_dir_removal_failure_lands_in_failures() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let d = dirs(&tmp);
+        for i in 0..6 {
+            std::fs::create_dir_all(d.audit_dir().join(format!("20260701T00000{i}Z"))).unwrap();
+        }
+        // The oldest (prunable) dir is made unremovable: non-empty + no write.
+        let locked = d.audit_dir().join("20260701T000000Z");
+        std::fs::write(locked.join("lane.md"), "x").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let report = clean(&d, 10, false).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            report
+                .failures
+                .iter()
+                .any(|(id, why)| id == "20260701T000000Z" && why.contains("audit dir")),
+            "real removal failure must reach report.failures (exit 1): {:?}",
+            report.failures
+        );
+    }
+
+    #[test]
+    fn findings_pruning_keeps_open_files_and_a_recent_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = dirs(&tmp);
+        std::fs::create_dir_all(d.findings_dir()).unwrap();
+        let resolved = r#"{"findings":[{"title":"t","verdict":"confirmed","action":"fixed"}]}"#;
+        let open = r#"{"findings":[{"title":"t","verdict":"confirmed","action":"pending"}]}"#;
+        for i in 0..22 {
+            std::fs::write(
+                d.findings_dir().join(format!("20260601T{i:06}Z-x.json")),
+                resolved,
+            )
+            .unwrap();
+        }
+        // The OLDEST file has an open finding: it must survive any pruning.
+        std::fs::write(d.findings_dir().join("20260101T000000Z-open.json"), open).unwrap();
+
+        let report = clean(&d, 10, true).unwrap();
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|n| n.starts_with("would prune 2 fully-resolved")),
+            "{:?}",
+            report.notices
+        );
+        assert_eq!(std::fs::read_dir(d.findings_dir()).unwrap().count(), 23);
+
+        let report = clean(&d, 10, false).unwrap();
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        assert_eq!(
+            std::fs::read_dir(d.findings_dir()).unwrap().count(),
+            21,
+            "20 newest resolved + the open file"
+        );
+        assert!(
+            d.findings_dir().join("20260101T000000Z-open.json").exists(),
+            "open findings are the currency - never pruned"
         );
     }
 

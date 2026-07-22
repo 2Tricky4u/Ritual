@@ -36,15 +36,19 @@ pub struct ReviewVerdict {
 /// failure).
 pub fn parse_review(text: &str) -> ReviewVerdict {
     let lines: Vec<&str> = text.lines().collect();
-    // A regressions line may appear anywhere; take the LAST one.
-    let regressions = lines
-        .iter()
-        .rev()
-        .find_map(|l| parse_regressions(l))
-        .flatten();
     let anchor = lines
         .iter()
         .rposition(|l| l.trim().to_ascii_lowercase().starts_with("review:"));
+    // A regressions line only counts inside the final REVIEW block: prose
+    // like "Regressions: unlikely" earlier in the transcript is commentary,
+    // not the verdict. Take the LAST one within the block.
+    let regressions = anchor.and_then(|start| {
+        lines[start..]
+            .iter()
+            .rev()
+            .find_map(|l| parse_regressions(l))
+            .flatten()
+    });
     let mut per_finding = HashMap::new();
     if let Some(start) = anchor {
         for line in &lines[start + 1..] {

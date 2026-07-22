@@ -205,18 +205,45 @@ pub struct Chain {
 pub const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 /// this = sha256(prev ‖ sha256(archive bytes) ‖ canonical(meta minus chain)).
+/// Canonical bytes come from a JSON Value (chain key removed), which
+/// verification can rebuild from the on-disk meta TEXT: schema evolution (a
+/// new RunMeta field, an old binary's meta) can no longer shift a struct
+/// round-trip and raise false tamper alarms.
 pub fn compute_link(prev: &str, archive_bytes: &[u8], meta: &RunMeta) -> Result<Chain> {
+    let value = serde_json::to_value(meta).context("serializing meta for chain")?;
+    compute_link_from_value(prev, archive_bytes, value)
+}
+
+pub(crate) fn compute_link_from_value(
+    prev: &str,
+    archive_bytes: &[u8],
+    mut value: serde_json::Value,
+) -> Result<Chain> {
+    if let Some(o) = value.as_object_mut() {
+        o.remove("chain");
+    }
+    let canonical = serde_json::to_vec(&value).context("serializing meta for chain")?;
+    Ok(link_of(prev, archive_bytes, &canonical))
+}
+
+/// Legacy (pre-0.13) canonical form - the struct's serde round-trip - kept so
+/// chains written by older binaries keep verifying.
+fn compute_link_legacy(prev: &str, archive_bytes: &[u8], meta: &RunMeta) -> Result<Chain> {
     let mut unchained = meta.clone();
     unchained.chain = None;
     let canonical = serde_json::to_vec(&unchained).context("serializing meta for chain")?;
+    Ok(link_of(prev, archive_bytes, &canonical))
+}
+
+fn link_of(prev: &str, archive_bytes: &[u8], canonical: &[u8]) -> Chain {
     let mut h = Sha256::new();
     h.update(prev.as_bytes());
     h.update(sha256_hex(archive_bytes).as_bytes());
-    h.update(&canonical);
-    Ok(Chain {
+    h.update(canonical);
+    Chain {
         prev: prev.to_string(),
         this: to_hex(&h.finalize()),
-    })
+    }
 }
 
 /// Rolling genesis written by `ritual clean`: stands in for pruned chained
@@ -373,6 +400,9 @@ pub fn last_link(runs_dir: &Path) -> String {
 pub enum VerifyOutcome {
     Ok {
         runs: usize,
+        /// Runs archived WITHOUT a chain link (lock failure at archive
+        /// time): verified-count honesty requires disclosing them.
+        unchained: usize,
         checkpoint: Option<Checkpoint>,
     },
     Broken {
@@ -446,9 +476,26 @@ pub fn verify_log(runs_dir: &Path) -> Result<VerifyOutcome> {
         let meta = succ[0];
         let chain = meta.chain.as_ref().unwrap();
         let archive = runs_dir.join(format!("{}.jsonl", meta.run_id));
+        // A missing archive is tampering/loss in its own right - it must
+        // never alias an EMPTY archive (whose deletion would otherwise
+        // recompute the identical link and verify clean).
+        if !archive.exists() {
+            return Ok(VerifyOutcome::Broken {
+                run_id: meta.run_id.clone(),
+                reason: "archive missing (.jsonl deleted)".into(),
+            });
+        }
         let bytes = std::fs::read(&archive).unwrap_or_default();
-        let expected = compute_link(&prev, &bytes, meta)?;
-        if expected.this != chain.this {
+        // Prefer the on-disk JSON (schema-evolution-proof), falling back to
+        // the legacy struct round-trip for links written by older binaries.
+        let disk_ok = std::fs::read_to_string(runs_dir.join(format!("{}.meta.json", meta.run_id)))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .map(|v| compute_link_from_value(&prev, &bytes, v).map(|c| c.this == chain.this))
+            .transpose()?
+            .unwrap_or(false);
+        let expected = compute_link_legacy(&prev, &bytes, meta)?;
+        if !disk_ok && expected.this != chain.this {
             return Ok(VerifyOutcome::Broken {
                 run_id: meta.run_id.clone(),
                 reason: "content hash mismatch (archive or meta was modified)".into(),
@@ -471,8 +518,26 @@ pub fn verify_log(runs_dir: &Path) -> Result<VerifyOutcome> {
             reason: "orphaned link (prev-hash not reachable from the chain start)".into(),
         });
     }
+    // Tip anchor: when a `chain.tip` sidecar exists (written on every chained
+    // append), the walk must end exactly there - deleting the newest chained
+    // meta(s) leaves a self-consistent shorter chain the walk alone cannot
+    // see. Absent file = legacy repo, tolerated.
+    if let Ok(tip) = std::fs::read_to_string(runs_dir.join("chain.tip")) {
+        let tip = tip.trim();
+        if !tip.is_empty() && tip != prev {
+            return Ok(VerifyOutcome::Broken {
+                run_id: "chain.tip".into(),
+                reason: "chain tip mismatch (newest chained run(s) deleted or replaced)".into(),
+            });
+        }
+    }
+    // Unchained runs (chain-lock failure at archive time) are outside the
+    // walk entirely: disclose the count so "chain intact: N verified" can
+    // never silently cover N of N+k runs.
+    let unchained = metas.iter().filter(|m| m.chain.is_none()).count();
     Ok(VerifyOutcome::Ok {
         runs: walked,
+        unchained,
         checkpoint,
     })
 }
@@ -648,6 +713,7 @@ mod tests {
             verify_log(tmp.path()).unwrap(),
             VerifyOutcome::Ok {
                 runs: 2,
+                unchained: 0,
                 checkpoint: None
             }
         );
@@ -700,7 +766,9 @@ mod tests {
 
         // Crash-recovery window: a and b still on disk but covered -> skipped.
         match verify_log(tmp.path()).unwrap() {
-            VerifyOutcome::Ok { runs, checkpoint } => {
+            VerifyOutcome::Ok {
+                runs, checkpoint, ..
+            } => {
                 assert_eq!(runs, 1); // only c is walked
                 assert_eq!(checkpoint.unwrap().pruned_runs, 2);
             }
@@ -767,6 +835,7 @@ mod tests {
             verify_log(tmp.path()).unwrap(),
             VerifyOutcome::Ok {
                 runs: 2,
+                unchained: 0,
                 checkpoint: None
             }
         );
@@ -798,6 +867,7 @@ mod tests {
             verify_log(tmp.path()).unwrap(),
             VerifyOutcome::Ok {
                 runs: 8,
+                unchained: 0,
                 checkpoint: None
             },
             "eight serialized appends form one unforked line"
@@ -917,6 +987,67 @@ mod tests {
         match verify_log(tmp.path()).unwrap() {
             VerifyOutcome::Broken { run_id, .. } => assert!(run_id.ends_with("-a"), "{run_id}"),
             other => panic!("expected Broken, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deleting_an_empty_archive_still_breaks_the_chain() {
+        // An EMPTY archive hashes like a missing one - existence must be
+        // checked separately or its deletion verifies clean.
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("20260711T000001Z-a.jsonl");
+        std::fs::write(&archive, b"").unwrap();
+        let mut meta = RunMeta {
+            run_id: "20260711T000001Z-a".into(),
+            stage: "test".into(),
+            ok: true,
+            ..Default::default()
+        };
+        meta.chain = Some(compute_link(GENESIS, b"", &meta).unwrap());
+        std::fs::write(
+            tmp.path().join("20260711T000001Z-a.meta.json"),
+            serde_json::to_string_pretty(&meta).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            verify_log(tmp.path()).unwrap(),
+            VerifyOutcome::Ok { runs: 1, .. }
+        ));
+        std::fs::remove_file(&archive).unwrap();
+        match verify_log(tmp.path()).unwrap() {
+            VerifyOutcome::Broken { run_id, reason } => {
+                assert!(run_id.ends_with("-a"), "{run_id}");
+                assert!(reason.contains("missing"), "{reason}");
+            }
+            other => panic!("expected Broken, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unchained_runs_are_disclosed_in_the_ok_outcome() {
+        let tmp = tempfile::tempdir().unwrap();
+        mk_run(tmp.path(), "20260711T000001Z-a", GENESIS);
+        // A meta archived without a link (chain-lock failure) sits outside
+        // the walk; the Ok outcome must count it, never silently cover it.
+        let meta = RunMeta {
+            run_id: "20260711T000002Z-b".into(),
+            stage: "test".into(),
+            ok: true,
+            ..Default::default()
+        };
+        std::fs::write(
+            tmp.path().join("20260711T000002Z-b.meta.json"),
+            serde_json::to_string_pretty(&meta).unwrap(),
+        )
+        .unwrap();
+        match verify_log(tmp.path()).unwrap() {
+            VerifyOutcome::Ok {
+                runs, unchained, ..
+            } => {
+                assert_eq!(runs, 1);
+                assert_eq!(unchained, 1, "the unchained meta must be disclosed");
+            }
+            other => panic!("expected Ok, got {other:?}"),
         }
     }
 

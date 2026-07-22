@@ -29,8 +29,10 @@ pub struct FileConfig {
     pub budget_code_fix_usd: Option<f64>,
     /// Ceiling for ONE coverage (completeness judge) run.
     pub budget_coverage_usd: Option<f64>,
-    /// Ceiling for EACH `ritual audit` leg (discovery run, every lane run,
-    /// and the judge run) - a full audit costs up to (lanes + 1) × this.
+    /// Per-leg cap unit for `ritual audit`: the discovery run and every lane
+    /// run are each capped at 1× this; the judge run (which adjudicates every
+    /// lane's candidates) at (lanes + 1)×. Worst-case total for a full audit
+    /// is therefore (2 × lanes + 2) × this - a CEILING, not a typical spend.
     pub budget_audit_usd: Option<f64>,
     /// Hard cap on audit lanes per run (the always-on global-overview lane
     /// counts toward it). Clamped to at least 1.
@@ -289,14 +291,30 @@ impl Config {
                 continue;
             }
             let fc = load_file(&path)?;
+            // Mirror the S-editor's validation: a hand-edited file with a
+            // value the editor refuses (zero/negative/non-finite budget, zero
+            // timeout) must fail loudly here, not load and misdecode
+            // downstream (0.0 budgets gate every run; NaN passes every
+            // comparison).
+            let budget = |key: &str, v: f64| -> Result<f64> {
+                anyhow::ensure!(
+                    v.is_finite() && v > 0.0,
+                    "{}: `{key}` must be a number > 0",
+                    path.display()
+                );
+                Ok(v)
+            };
             if let Some(t) = fc.theme {
                 theme_name = t;
             }
             if let Some(i) = fc.icons {
-                icons = if i == "ascii" {
-                    IconSet::Ascii
-                } else {
-                    IconSet::Nerd
+                // Reject unknown values loudly (theme already does): a case
+                // slip silently coerced to Nerd means mojibake with zero
+                // diagnostic on ascii-only terminals.
+                icons = match i.as_str() {
+                    "ascii" => IconSet::Ascii,
+                    "nerd" => IconSet::Nerd,
+                    _ => anyhow::bail!("{}: unknown icons '{i}' (ascii, nerd)", path.display()),
                 };
             }
             if let Some(b) = fc.base_ref {
@@ -309,32 +327,32 @@ impl Config {
                 cfg.codex_cmd = split_cmd(&c)?;
             }
             if let Some(b) = fc.budget_plan_review_usd {
-                cfg.budget_plan_review_usd = b;
+                cfg.budget_plan_review_usd = budget("budget_plan_review_usd", b)?;
             }
             if let Some(b) = fc.budget_dual_review_usd {
-                cfg.budget_dual_review_usd = b;
+                cfg.budget_dual_review_usd = budget("budget_dual_review_usd", b)?;
             }
             if let Some(b) = fc.budget_doc_chat_usd {
-                cfg.budget_doc_chat_usd = b;
+                cfg.budget_doc_chat_usd = budget("budget_doc_chat_usd", b)?;
             }
             if let Some(b) = fc.budget_finding_fix_usd {
-                cfg.budget_finding_fix_usd = b;
+                cfg.budget_finding_fix_usd = budget("budget_finding_fix_usd", b)?;
             }
             if let Some(b) = fc.budget_code_fix_usd {
-                cfg.budget_code_fix_usd = b;
+                cfg.budget_code_fix_usd = budget("budget_code_fix_usd", b)?;
             }
             if let Some(b) = fc.budget_coverage_usd {
-                cfg.budget_coverage_usd = b;
+                cfg.budget_coverage_usd = budget("budget_coverage_usd", b)?;
             }
             if let Some(b) = fc.budget_audit_usd {
-                cfg.budget_audit_usd = b;
+                cfg.budget_audit_usd = budget("budget_audit_usd", b)?;
             }
             if let Some(v) = fc.audit_max_lanes {
                 // 0 lanes is a config typo, not a request for a no-op audit.
                 cfg.audit_max_lanes = v.max(1);
             }
             if let Some(b) = fc.budget_architect_usd {
-                cfg.budget_architect_usd = b;
+                cfg.budget_architect_usd = budget("budget_architect_usd", b)?;
             }
             if let Some(a) = fc.architect {
                 if let Some(e) = a.enabled {
@@ -345,7 +363,7 @@ impl Config {
                 }
             }
             if let Some(b) = fc.budget_complete_usd {
-                cfg.budget_complete_usd = b;
+                cfg.budget_complete_usd = budget("budget_complete_usd", b)?;
             }
             if let Some(v) = fc.complete_max_rounds {
                 cfg.complete_max_rounds = v;
@@ -366,7 +384,7 @@ impl Config {
                 cfg.redaction = r;
             }
             if let Some(b) = fc.budget_daily_usd {
-                cfg.budget_daily_usd = Some(b);
+                cfg.budget_daily_usd = Some(budget("budget_daily_usd", b)?);
             }
             if let Some(n) = fc.notifications {
                 cfg.notifications = n;
@@ -381,6 +399,12 @@ impl Config {
                 cfg.fallback_model = Some(f);
             }
             if let Some(t) = fc.check_timeout_secs {
+                // 0 would kill every check instantly; the editor forbids it.
+                anyhow::ensure!(
+                    t >= 1,
+                    "{}: `check_timeout_secs` must be >= 1",
+                    path.display()
+                );
                 cfg.check_timeout_secs = t;
             }
             if let Some(o) = fc.offline {
@@ -509,6 +533,42 @@ mod tests {
         assert_eq!(cfg.audit_max_lanes, 8, "audit lane cap default");
         assert_eq!(cfg.complete_max_rounds, 5);
         assert_eq!(cfg.complete_max_attempts_per_item, 2);
+    }
+
+    #[test]
+    fn loader_rejects_values_the_editor_forbids() {
+        // Parity with settings::validate: zero/negative/non-finite budgets and
+        // a zero check timeout must fail the LOAD, not misdecode downstream.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".ritual")).unwrap();
+        for (bad, why) in [
+            ("budget_daily_usd = 0.0\n", "zero budget"),
+            ("budget_code_fix_usd = -1.0\n", "negative budget"),
+            ("budget_audit_usd = nan\n", "NaN budget"),
+            ("check_timeout_secs = 0\n", "zero timeout"),
+        ] {
+            std::fs::write(tmp.path().join(".ritual/config.toml"), bad).unwrap();
+            assert!(
+                Config::load(tmp.path(), None, false).is_err(),
+                "{why} must be rejected at load"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_icons_value_fails_loudly_not_as_nerd() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".ritual")).unwrap();
+        std::fs::write(
+            tmp.path().join(".ritual/config.toml"),
+            "icons = \"Ascii\"\n",
+        )
+        .unwrap();
+        let err = Config::load(tmp.path(), None, false).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("unknown icons"),
+            "case-slipped icons value must not silently coerce to Nerd: {err:#}"
+        );
     }
 
     #[test]

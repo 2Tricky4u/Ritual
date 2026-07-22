@@ -9,9 +9,15 @@
 
 # Overload guardrail: on a 529, headless Claude runs (plan-review, dual-review)
 # retry on this model instead of dying mid-review. Comma-separated list allowed.
-# Does NOT ride the interactive `plan` stage (ritual design: interactive
-# stages negotiate with you), and triggers on overload, not on entitlement.
+# ALSO rides the interactive `plan` stage (the session silently switches to
+# this model under overload), and triggers on overload, not on entitlement.
 fallback_model = "claude-opus-4-8"
+budget_plan_review_usd = 15.0
+budget_dual_review_usd = 15.0
+budget_doc_chat_usd = 1.0
+budget_finding_fix_usd = 5.0
+budget_code_fix_usd = 15.0
+budget_coverage_usd = 5.0
 
 [models]
 # Planning → Fable 5.
@@ -20,6 +26,7 @@ plan-review = "claude-fable-5"   # headless critique of the plan (gets the Opus 
 
 [effort]
 # Deep planning: give the plan stage maximum reasoning effort.
-# Stage keys: spec, plan, plan-review, tests-red, implement, dual-review.
+# Stage keys: spec, plan, plan-review, tests-red, implement, dual-review,
+# coverage, plan-fix, code-fix. Anything else is silently ignored.
 # `spec` is local (no CLI) so an effort there is a no-op.
 plan = "xhigh"

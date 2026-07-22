@@ -73,7 +73,37 @@ pub enum AppMsg {
     /// Off-thread git probe results feeding the pipeline guidance.
     GuidanceProbe(Box<crate::guidance::Probe>),
     FileChanged,
+    /// The off-thread CodeRabbit preflight finished: its findings file (if
+    /// any) is on disk and needs stamping + a reload - the .ritual watcher
+    /// ignores that path, so nothing else would ever pick it up.
+    CoderabbitDone {
+        msg: Option<String>,
+        new_files: Vec<String>,
+    },
+    /// The off-thread clipboard write finished. Clipboard tools can wedge for
+    /// seconds on a stuck compositor, so `copy` never runs on the event loop.
+    ClipboardDone {
+        ok: bool,
+        /// true = the user asked explicitly (`c`), so report in the status bar.
+        announce: bool,
+    },
+    /// A finished run's exit processing (findings diff, coverage finalize,
+    /// branch stamping, desktop notify) completed off-thread; apply the
+    /// resulting state. Keeps slow fs/subprocess work out of `update()`.
+    RunProcessed(Box<RunProcessed>),
     Tick,
+}
+
+/// What the off-thread run-exit worker computed for [`AppMsg::RunProcessed`].
+pub struct RunProcessed {
+    stage: StageId,
+    branch: String,
+    status: StageStatus,
+    /// The coverage finalizer's status-line message, when the run was coverage.
+    coverage_msg: Option<String>,
+    /// How many new findings files the run produced (already branch-stamped).
+    new_findings: usize,
+    meta: crate::history::RunMeta,
 }
 
 /// What a successful architect refresh reports back to the status line.
@@ -290,6 +320,11 @@ pub struct App {
         Option<std::time::SystemTime>,
         Option<std::time::SystemTime>,
     ),
+    /// Cached spec/plan contents, refreshed with `doc_mtimes` (guidance
+    /// recompute + the mtime-gated tick): the render path (plan tab, chat
+    /// preview) must never do disk reads per frame.
+    pub spec_doc: Option<String>,
+    pub plan_doc: Option<String>,
     pub chat: Option<ChatState>,
     /// The `S` settings editor overlay (None = closed).
     pub settings: Option<SettingsState>,
@@ -509,6 +544,8 @@ impl App {
             guidance_probe: crate::guidance::Probe::default(),
             probe_running: false,
             doc_mtimes: (None, None, None),
+            spec_doc: None,
+            plan_doc: None,
             chat: None,
             settings: None,
             implement_hint: None,
@@ -804,6 +841,8 @@ impl App {
                 || self.architect_running(),
             self.cfg.architect_enabled,
         );
+        self.spec_doc = std::fs::read_to_string(self.dirs.spec_file(&self.slug)).ok();
+        self.plan_doc = std::fs::read_to_string(self.dirs.plan_file(&self.slug)).ok();
         self.doc_mtimes = (
             std::fs::metadata(self.dirs.spec_file(&self.slug))
                 .and_then(|m| m.modified())
@@ -1106,6 +1145,34 @@ impl App {
                 self.guidance_probe = *probe;
                 self.recompute_guidance();
             }
+            AppMsg::CoderabbitDone { msg, new_files } => {
+                if !new_files.is_empty() {
+                    // The run may have exited already: stamp + count the late
+                    // findings here (idempotent if the run exit saw them).
+                    crate::findings::stamp_branch(
+                        &self.dirs.findings_dir(),
+                        &new_files,
+                        &self.branch,
+                    );
+                    self.reload_artifacts();
+                }
+                if let Some(m) = msg {
+                    self.status_msg = Some(m);
+                }
+            }
+            AppMsg::RunProcessed(p) => self.on_run_processed(*p, tx),
+            AppMsg::ClipboardDone { ok, announce } => {
+                if let Some(h) = self.implement_hint.as_mut() {
+                    h.copied = ok;
+                }
+                if announce {
+                    self.status_msg = Some(if ok {
+                        "implement prompt copied to clipboard".into()
+                    } else {
+                        "couldn't reach a clipboard - select the prompt manually".into()
+                    });
+                }
+            }
             AppMsg::FileChanged => {
                 // Source changed: refresh the code-staleness probe (cheap,
                 // off-thread, single-flight).
@@ -1180,7 +1247,7 @@ impl App {
             return;
         }
         if self.implement_hint.is_some() {
-            self.implement_hint_input(key.code);
+            self.implement_hint_input(key.code, tx);
             return;
         }
         if self.show_help {
@@ -1625,12 +1692,13 @@ impl App {
                 if stage == StageId::Implement {
                     // Copy the prompt straight to the clipboard so the user
                     // doesn't have to mouse-select it out of the float (which
-                    // grabs the sidebar behind it too).
-                    let copied = crate::clipboard::copy(stages::IMPLEMENT_PROMPT);
+                    // grabs the sidebar behind it too). Off-thread: a wedged
+                    // clipboard tool must never stall the event loop.
+                    self.spawn_clipboard_copy(tx, false);
                     self.implement_hint = Some(ImplementHint {
                         req,
                         resuming: session.is_some(),
-                        copied,
+                        copied: false,
                     });
                 } else {
                     self.pending_attached = Some(req);
@@ -1638,6 +1706,18 @@ impl App {
             }
             Mode::Headless => self.spawn_headless(stage, cmd, run_cwd, tx),
         }
+    }
+
+    /// Write the implement prompt to the system clipboard on a background
+    /// thread; the result comes back as [`AppMsg::ClipboardDone`]. Clipboard
+    /// tools poll a compositor that may be wedged - never wait on the event
+    /// loop.
+    fn spawn_clipboard_copy(&self, tx: &mpsc::Sender<AppMsg>, announce: bool) {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let ok = crate::clipboard::copy(stages::IMPLEMENT_PROMPT);
+            let _ = tx.blocking_send(AppMsg::ClipboardDone { ok, announce });
+        });
     }
 
     /// `a`: reattach interactively to the selected stage's session
@@ -1700,12 +1780,20 @@ impl App {
             if let Some(msg) = crate::secrets::preflight(&self.cfg, &self.dirs) {
                 self.status_msg = Some(msg);
             }
-            // Cloud review can take minutes, so run it off the event loop; its
-            // findings file lands via the .ritual watcher when done.
+            // Cloud review can take minutes, so run it off the event loop;
+            // CoderabbitDone reports back with whatever file it wrote (the
+            // .ritual watcher never fires for findings).
             if self.cfg.coderabbit_enabled {
                 let (cfg, dirs) = (self.cfg.clone(), self.dirs.clone());
+                let tx2 = tx.clone();
                 std::thread::spawn(move || {
-                    let _ = crate::coderabbit::preflight(&cfg, &dirs);
+                    let before = list_dir(&dirs.findings_dir());
+                    let msg = crate::coderabbit::preflight(&cfg, &dirs);
+                    let new_files: Vec<String> = list_dir(&dirs.findings_dir())
+                        .into_iter()
+                        .filter(|f| !before.contains(f))
+                        .collect();
+                    let _ = tx2.blocking_send(AppMsg::CoderabbitDone { msg, new_files });
                 });
             }
         }
@@ -2337,24 +2425,25 @@ impl App {
         };
         let agg = self.visible_findings();
         let finding = agg.get(self.selected_finding).map(|af| af.finding.clone());
+        // Values ride ENV VARS, never the `sh -c` text: finding fields are
+        // agent-authored, so verbatim substitution would be shell injection.
+        // `${VAR}` expands bare or inside double quotes in the template.
+        let branch = self.branch.clone();
+        let run_id = self.current_run_id.clone().unwrap_or_default();
+        let file = finding
+            .as_ref()
+            .and_then(|f| f.file.clone())
+            .unwrap_or_default();
+        let line = finding
+            .as_ref()
+            .and_then(|f| f.line)
+            .map(|l| l.to_string())
+            .unwrap_or_default();
         let rendered = template
-            .replace("{{branch}}", &self.branch)
-            .replace("{{run_id}}", self.current_run_id.as_deref().unwrap_or(""))
-            .replace(
-                "{{finding.file}}",
-                finding
-                    .as_ref()
-                    .and_then(|f| f.file.as_deref())
-                    .unwrap_or(""),
-            )
-            .replace(
-                "{{finding.line}}",
-                &finding
-                    .as_ref()
-                    .and_then(|f| f.line)
-                    .map(|l| l.to_string())
-                    .unwrap_or_default(),
-            );
+            .replace("{{branch}}", "${RITUAL_BRANCH}")
+            .replace("{{run_id}}", "${RITUAL_RUN_ID}")
+            .replace("{{finding.file}}", "${RITUAL_FINDING_FILE}")
+            .replace("{{finding.line}}", "${RITUAL_FINDING_LINE}");
         self.status_msg = Some(format!("cmd {name}: running…"));
         self.tab = Tab::Live;
         let cwd = self
@@ -2365,6 +2454,10 @@ impl App {
             let out = std::process::Command::new("sh")
                 .arg("-c")
                 .arg(&rendered)
+                .env("RITUAL_BRANCH", &branch)
+                .env("RITUAL_RUN_ID", &run_id)
+                .env("RITUAL_FINDING_FILE", &file)
+                .env("RITUAL_FINDING_LINE", &line)
                 .current_dir(&cwd)
                 .output();
             let text = match out {
@@ -2481,81 +2574,124 @@ impl App {
         self.run_task = None;
         match outcome {
             Ok(out) => {
-                let new_findings: Vec<String> = list_dir(&self.dirs.findings_dir())
-                    .into_iter()
-                    .filter(|f| !self.findings_before.contains(f))
-                    .collect();
-                let status = if !out.meta.ok {
-                    StageStatus::Failed
-                } else if stage == StageId::Coverage {
-                    // Coverage is Done ONLY at zero gaps + a real deliverables
-                    // checklist (shared, print-free finalizer - never write to
-                    // the alt-screen); route its message to the status line.
-                    let (st, msgs) = crate::coverage::finalize(&self.dirs, &branch, &new_findings);
-                    if let Some(m) = msgs.into_iter().next_back() {
-                        self.status_msg = Some(m);
-                    }
-                    st
-                } else if new_findings.is_empty() {
-                    StageStatus::NeedsAttention
-                } else {
-                    StageStatus::Done
-                };
-                // Stamp the real branch onto this run's findings so completeness
-                // consumers scope by branch (parity with the CLI; after finalize
-                // so A3's fingerprint reflects the post-tick tree, before reload).
-                crate::findings::stamp_branch(&self.dirs.findings_dir(), &new_findings, &branch);
-                crate::notify::notify(
-                    self.cfg.notifications,
-                    &format!(
-                        "ritual: {} {}",
-                        stage.label(),
-                        match status {
-                            StageStatus::Done => "done",
-                            StageStatus::NeedsAttention => "needs attention",
-                            _ => "failed",
-                        }
-                    ),
-                    &if status == StageStatus::Failed {
-                        format!("{}: {}", branch, crate::history::decode_failure(&out.meta))
+                // The exit processing walks the findings dir, runs the coverage
+                // finalizer, rewrites findings files (branch stamp) and shells
+                // out for the desktop notification - all far too slow for the
+                // event loop on a cold or remote fs. Do it off-thread and apply
+                // the result when `RunProcessed` comes back.
+                let dirs = self.dirs.clone();
+                let findings_before = std::mem::take(&mut self.findings_before);
+                let notifications = self.cfg.notifications;
+                let work = move || {
+                    let new_findings: Vec<String> = list_dir(&dirs.findings_dir())
+                        .into_iter()
+                        .filter(|f| !findings_before.contains(f))
+                        .collect();
+                    let mut coverage_msg = None;
+                    let status = if !out.meta.ok {
+                        StageStatus::Failed
+                    } else if stage == StageId::Coverage {
+                        // Coverage is Done ONLY at zero gaps + a real
+                        // deliverables checklist (shared, print-free finalizer -
+                        // never write to the alt-screen); route its message to
+                        // the status line.
+                        let (st, msgs) = crate::coverage::finalize(&dirs, &branch, &new_findings);
+                        coverage_msg = msgs.into_iter().next_back();
+                        st
+                    } else if new_findings.is_empty() {
+                        StageStatus::NeedsAttention
                     } else {
-                        format!(
-                            "{}: {} new findings, ${:.2}",
-                            branch,
-                            new_findings.len(),
-                            out.meta.total_cost_usd.unwrap_or(0.0)
-                        )
-                    },
-                );
-                self.status_msg = Some(match status {
-                    StageStatus::Done => format!(
-                        "{} done: {} new findings file(s), ${:.3}",
-                        stage.label(),
-                        new_findings.len(),
-                        out.meta.total_cost_usd.unwrap_or(0.0)
-                    ),
-                    StageStatus::NeedsAttention => format!(
-                        "{} finished without findings, needs attention{}",
-                        stage.label(),
-                        out.meta
-                            .session_id
-                            .as_deref()
-                            .map(|s| format!(" (claude --resume {s})"))
-                            .unwrap_or_default()
-                    ),
-                    _ => format!(
-                        "{} failed: {}",
-                        stage.label(),
-                        crate::history::decode_failure(&out.meta)
-                    ),
-                });
-                self.set_stage_for(&branch, stage, status, Some(out.meta.run_id.clone()));
+                        StageStatus::Done
+                    };
+                    // Stamp the real branch onto this run's findings so
+                    // completeness consumers scope by branch (parity with the
+                    // CLI; after finalize so A3's fingerprint reflects the
+                    // post-tick tree, before reload).
+                    crate::findings::stamp_branch(&dirs.findings_dir(), &new_findings, &branch);
+                    crate::notify::notify(
+                        notifications,
+                        &format!(
+                            "ritual: {} {}",
+                            stage.label(),
+                            match status {
+                                StageStatus::Done => "done",
+                                StageStatus::NeedsAttention => "needs attention",
+                                _ => "failed",
+                            }
+                        ),
+                        &if status == StageStatus::Failed {
+                            format!("{}: {}", branch, crate::history::decode_failure(&out.meta))
+                        } else {
+                            format!(
+                                "{}: {} new findings, ${:.2}",
+                                branch,
+                                new_findings.len(),
+                                out.meta.total_cost_usd.unwrap_or(0.0)
+                            )
+                        },
+                    );
+                    RunProcessed {
+                        stage,
+                        branch,
+                        status,
+                        coverage_msg,
+                        new_findings: new_findings.len(),
+                        meta: out.meta,
+                    }
+                };
+                // Outside a tokio runtime (plain unit tests) process inline -
+                // same fallback as the guidance probe.
+                match tokio::runtime::Handle::try_current() {
+                    Ok(handle) => {
+                        let tx2 = tx.clone();
+                        handle.spawn_blocking(move || {
+                            let _ = tx2.blocking_send(AppMsg::RunProcessed(Box::new(work())));
+                        });
+                    }
+                    Err(_) => {
+                        let processed = work();
+                        self.on_run_processed(processed, tx);
+                    }
+                }
             }
             Err(e) => {
                 self.status_msg = Some(format!("{} failed: {e:#}", stage.label()));
                 self.set_stage_for(&branch, stage, StageStatus::Failed, None);
+                self.reload_artifacts();
+                self.spawn_guidance_probe(tx);
             }
         }
+    }
+
+    /// Apply the off-thread run-exit processing: status line, stage status,
+    /// artifact reload. Pure state mutation - safe on the event loop.
+    fn on_run_processed(&mut self, p: RunProcessed, tx: &mpsc::Sender<AppMsg>) {
+        if let Some(m) = p.coverage_msg {
+            self.status_msg = Some(m);
+        }
+        self.status_msg = Some(match p.status {
+            StageStatus::Done => format!(
+                "{} done: {} new findings file(s), ${:.3}",
+                p.stage.label(),
+                p.new_findings,
+                p.meta.total_cost_usd.unwrap_or(0.0)
+            ),
+            StageStatus::NeedsAttention => format!(
+                "{} finished without findings, needs attention{}",
+                p.stage.label(),
+                p.meta
+                    .session_id
+                    .as_deref()
+                    .map(|s| format!(" (claude --resume {s})"))
+                    .unwrap_or_default()
+            ),
+            _ => format!(
+                "{} failed: {}",
+                p.stage.label(),
+                crate::history::decode_failure(&p.meta)
+            ),
+        });
+        self.set_stage_for(&p.branch, p.stage, p.status, Some(p.meta.run_id.clone()));
         self.reload_artifacts();
         self.spawn_guidance_probe(tx);
     }
@@ -2898,7 +3034,7 @@ impl App {
     /// Keys while the implement launch overlay is up: `enter` commits the
     /// handover to `claude --resume`; `c` re-copies the prompt; `esc`/other
     /// cancels (nothing launched).
-    fn implement_hint_input(&mut self, code: KeyCode) {
+    fn implement_hint_input(&mut self, code: KeyCode, tx: &mpsc::Sender<AppMsg>) {
         match code {
             KeyCode::Enter => {
                 if let Some(hint) = self.implement_hint.take() {
@@ -2906,15 +3042,8 @@ impl App {
                 }
             }
             KeyCode::Char('c') => {
-                let ok = crate::clipboard::copy(stages::IMPLEMENT_PROMPT);
-                if let Some(h) = self.implement_hint.as_mut() {
-                    h.copied = ok;
-                }
-                self.status_msg = Some(if ok {
-                    "implement prompt copied to clipboard".into()
-                } else {
-                    "couldn't reach a clipboard - select the prompt manually".into()
-                });
+                self.spawn_clipboard_copy(tx, true);
+                self.status_msg = Some("copying to clipboard…".into());
             }
             _ => {
                 self.implement_hint = None;
@@ -3901,15 +4030,21 @@ impl App {
             let (etx, mut erx) = mpsc::channel::<AgentEvent>(256);
             let watch = tokio::spawn(async move {
                 let mut tail = FixTail::default();
+                let mut last_full_text: Option<String> = None;
                 while let Some(ev) = erx.recv().await {
                     match ev {
                         AgentEvent::Completed { result_text, .. } => {
-                            tail.result_text = result_text; // last Completed wins
+                            // Last Completed wins; codex's turn.completed
+                            // carries NO text, so fall back to the final
+                            // agent message - that is where its
+                            // ANSWERS/REVIEW block lives.
+                            tail.result_text = result_text.or_else(|| last_full_text.clone());
                         }
                         AgentEvent::Text { text } if !text.trim().is_empty() => {
                             let t = text.trim();
                             let skip = t.chars().count().saturating_sub(200);
                             tail.last_text = Some(t.chars().skip(skip).collect());
+                            last_full_text = Some(t.to_string());
                         }
                         _ => {}
                     }
@@ -6731,7 +6866,9 @@ mod tests {
         app.current_run_id = Some("r-777".into());
         app.cfg.commands = vec![(
             "dump".into(),
-            "printf '%s|%s|%s|%s' '{{branch}}' '{{finding.file}}' '{{finding.line}}' '{{run_id}}' > custom-out.txt".into(),
+            // Placeholders expand via env vars (injection-proof), so they
+            // must sit bare or in DOUBLE quotes in the template.
+            r#"printf '%s|%s|%s|%s' "{{branch}}" "{{finding.file}}" "{{finding.line}}" "{{run_id}}" > custom-out.txt"#.into(),
         )];
 
         app.run_custom(0, &tx);

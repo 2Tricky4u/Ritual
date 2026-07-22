@@ -1,7 +1,7 @@
 # Project
 
 ## Commands
-- `./check.sh fast`: lint + typecheck (must pass after every edit; hook enforces)
+- `./check.sh fast`: lint + typecheck (must pass after every edit; the PostToolUse hook from `ritual init --skills` enforces this once installed)
 - `./check.sh` (full): lint + typecheck + tests
 
 ## Workflow

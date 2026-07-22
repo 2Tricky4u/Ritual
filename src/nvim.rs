@@ -40,9 +40,12 @@ pub fn discover(config_override: Option<&str>) -> Option<PathBuf> {
     candidates.pop().map(|(_, p)| p)
 }
 
-/// Single-quote escape for vimscript string literals: ' -> ''.
+/// Single-quote escape for vimscript string literals: ' -> ''. Newlines have
+/// no representation inside a '…' literal (a raw one makes remote-expr reject
+/// the whole expression, killing every quickfix entry) - flatten to spaces;
+/// quickfix lines are single-line anyway.
 fn vim_escape(s: &str) -> String {
-    s.replace('\'', "''")
+    s.replace(['\r', '\n'], " ").replace('\'', "''")
 }
 
 fn remote_expr(server: &Path, expr: &str) -> Result<String> {
@@ -117,6 +120,16 @@ mod tests {
     #[test]
     fn escaping_single_quotes() {
         assert_eq!(vim_escape("it's a 'test'"), "it''s a ''test''");
+    }
+
+    #[test]
+    fn newlines_flatten_instead_of_breaking_the_literal() {
+        // A raw newline inside '…' makes remote-expr reject the whole
+        // setqflist expression - every entry must stay single-line.
+        assert_eq!(
+            vim_escape("line one\nline two\r\nthree"),
+            "line one line two  three"
+        );
     }
 
     #[test]

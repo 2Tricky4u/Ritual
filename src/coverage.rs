@@ -184,6 +184,9 @@ pub fn finalize(
         .ok()
         .and_then(|t| serde_json::from_str::<FindingsFile>(&t).ok())
     else {
+        msgs.push(format!(
+            "coverage report {name} is unreadable or unparseable; needs attention"
+        ));
         return (StageStatus::NeedsAttention, msgs);
     };
     let mut report = parse_report(&ff);

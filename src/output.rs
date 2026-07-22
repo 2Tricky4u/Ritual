@@ -197,8 +197,9 @@ pub fn render_history(cfg: &Config, metas: &[RunMeta], summary: &DaySummary, lim
             .map(|d| format!("{:.1}s", d as f64 / 1000.0))
             .unwrap_or_else(|| "-".into());
         // Short model tag so retried-with-model attempts are tellable apart.
-        let mut model = m.model.clone().unwrap_or_else(|| "-".into());
-        model.truncate(14);
+        // Char-based, never byte-based: String::truncate panics off a char
+        // boundary, and model names are agent-supplied.
+        let model: String = m.model.as_deref().unwrap_or("-").chars().take(14).collect();
         println!(
             "  {} {}  {}  {}  {}  {}  {}  {}",
             status,
@@ -292,7 +293,9 @@ pub fn render_costs(cfg: &Config, metas: &[RunMeta]) {
             hex(t, p.cyan, &format!("{cache:>6}")),
         );
     }
-    if let Some(budget) = cfg.budget_daily_usd {
+    // A zero/negative/non-finite budget has no meaningful gauge (and 0.0
+    // would render inf%/NaN%, with NaN passing for green) - skip it.
+    if let Some(budget) = cfg.budget_daily_usd.filter(|b| b.is_finite() && *b > 0.0) {
         let spent = crate::history::today_summary(metas).cost_usd;
         let pct = 100.0 * spent / budget;
         let color = if pct >= 100.0 {

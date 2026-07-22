@@ -86,13 +86,28 @@ impl Finding {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     Critical,
     Major,
     #[default]
     Minor,
+}
+
+/// Tolerant by hand: an unknown severity value from a drifted skill must
+/// never fail the whole file's parse (which would silently drop every
+/// finding in it and let the gates pass). Unknown non-minor dialects map
+/// conservatively so they still show up in the critical/major gates.
+impl<'de> Deserialize<'de> for Severity {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(match s.to_ascii_lowercase().as_str() {
+            "critical" | "blocker" => Severity::Critical,
+            "minor" | "info" | "nit" | "low" | "" => Severity::Minor,
+            _ => Severity::Major,
+        })
+    }
 }
 
 impl Severity {
@@ -424,12 +439,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_severity_is_skipped_not_fatal() {
-        // A whole-file parse error must not break load_all.
+    fn unknown_severity_is_tolerated_not_fatal() {
+        // One drifted severity value must not drop the whole file (that would
+        // let has_open_confirmed/CI gates pass silently); junk files are
+        // still skipped.
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(
             tmp.path().join("20260711T000000Z-a.json"),
-            r#"{"findings":[{"severity":"apocalyptic"}]}"#,
+            r#"{"findings":[{"title":"drifted","severity":"apocalyptic"},
+                            {"title":"blocking","severity":"blocker"}]}"#,
         )
         .unwrap();
         std::fs::write(
@@ -439,8 +457,11 @@ mod tests {
         .unwrap();
         std::fs::write(tmp.path().join("garbage.json"), "not json").unwrap();
         let loaded = load_all(tmp.path()).unwrap();
-        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].file.findings[0].title, "good");
+        // Unknown dialects stay visible to the gates: conservative mapping.
+        assert_eq!(loaded[1].file.findings[0].severity, Severity::Major);
+        assert_eq!(loaded[1].file.findings[1].severity, Severity::Critical);
     }
 
     fn mk_file(sev_titles: &[(&str, &str)]) -> FindingsFile {

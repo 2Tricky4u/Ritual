@@ -628,22 +628,23 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// The live document (re-read every frame, so edits appear as they happen),
-/// focused on the current target: the whole doc, or one section's raw slice.
+/// The live document (from the App's mtime-gated cache, so edits appear
+/// within a tick without per-frame disk reads), focused on the current
+/// target: the whole doc, or one section's raw slice.
 fn draw_chat_preview(f: &mut Frame, app: &App, chat: &ChatState, area: Rect) {
     let t = &app.cfg.theme;
     let target = chat.target();
-    let (path, doc_label) = match target {
+    let (full, doc_label) = match target {
         Some(tg) => (
             match tg.doc {
-                crate::stages::DocKind::Spec => app.dirs.spec_file(&app.slug),
-                crate::stages::DocKind::Plan => app.dirs.plan_file(&app.slug),
+                crate::stages::DocKind::Spec => app.spec_doc.clone(),
+                crate::stages::DocKind::Plan => app.plan_doc.clone(),
             },
             tg.doc.label(),
         ),
-        None => (app.dirs.spec_file(&app.slug), "spec"),
+        None => (app.spec_doc.clone(), "spec"),
     };
-    let full = std::fs::read_to_string(&path).unwrap_or_default();
+    let full = full.unwrap_or_default();
     // The FULL document renders; a section target becomes a focus range:
     // banded and auto-scrolled to, with the rest visible for context.
     let (header, focus) = match target {
@@ -1317,8 +1318,8 @@ fn draw_history(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_plan(f: &mut Frame, app: &App, area: Rect) {
-    let plan = std::fs::read_to_string(app.dirs.plan_file(&app.slug)).ok();
-    let spec = std::fs::read_to_string(app.dirs.spec_file(&app.slug)).ok();
+    let plan = app.plan_doc.clone();
+    let spec = app.spec_doc.clone();
     let text = match (plan, spec) {
         (Some(p), _) => p,
         (None, Some(s)) => format!("*(no plan yet; spec below)*\n\n{s}"),

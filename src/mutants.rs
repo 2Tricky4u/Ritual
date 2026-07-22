@@ -33,11 +33,13 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, base: Option<&str>) -> Result<Mutant
     // The gate mutates the diff against `base_ref`; outside a git repo there
     // is no diff to mutate - skip gracefully (ritual works in non-git dirs)
     // instead of erroring the whole gate.
+    // Exit code alone is not enough: inside `.git/` (or a bare repo) the
+    // command exits 0 and prints "false" - the stdout is the answer.
     let in_repo = std::process::Command::new("git")
         .args(["rev-parse", "--is-inside-work-tree"])
         .current_dir(&dirs.work_root)
         .output()
-        .is_ok_and(|o| o.status.success());
+        .is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true");
     if !in_repo {
         return Ok(MutantsReport {
             no_git: true,
@@ -115,12 +117,13 @@ pub fn run(cfg: &Config, dirs: &RitualDirs, base: Option<&str>) -> Result<Mutant
             findings,
             ..Default::default()
         };
-        std::fs::create_dir_all(dirs.findings_dir())?;
+        // Millisecond stamp (run-id style) so same-second runs never clobber;
+        // atomic write so a concurrent reader never parses a torn file.
         let path = dirs.findings_dir().join(format!(
             "{}-mutants.json",
-            Utc::now().format("%Y%m%dT%H%M%SZ")
+            Utc::now().format("%Y%m%dT%H%M%S%3fZ")
         ));
-        std::fs::write(&path, serde_json::to_string_pretty(&file)?)?;
+        crate::fsx::atomic_write(&path, serde_json::to_string_pretty(&file)?.as_bytes())?;
         report.findings_path = Some(path);
     }
     Ok(report)

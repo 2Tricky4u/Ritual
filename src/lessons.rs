@@ -86,10 +86,9 @@ pub fn refresh(dirs: &RitualDirs) -> Result<Option<PathBuf>> {
     let path = dirs.lessons_file();
     match generate(dirs)? {
         Some(md) => {
-            std::fs::create_dir_all(dirs.root())?;
-            let tmp = path.with_extension("md.tmp");
-            std::fs::write(&tmp, md)?;
-            std::fs::rename(&tmp, &path)?;
+            // Unique-tmp atomic write: a TUI and a CLI both refresh before
+            // review spawns, and a shared `.tmp` name interleaves/aborts.
+            crate::fsx::atomic_write(&path, md.as_bytes())?;
             Ok(Some(path))
         }
         None => {

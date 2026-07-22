@@ -20,6 +20,15 @@ fn main() -> Result<()> {
             rt.block_on(ui::app::run(cfg, dirs, cli.theme.clone(), cli.ascii))?;
         }
         Some(Command::Init { force, skills }) => {
+            // In a linked worktree, project_root is the MAIN checkout: init
+            // here would clobber ITS check.sh/CLAUDE.md while leaving this
+            // worktree unscaffolded. Worktrees share the main .ritual/.
+            anyhow::ensure!(
+                dirs.project_root == dirs.work_root,
+                "this is a linked worktree of {}; run `ritual init` in the main checkout \
+                 (worktrees share its .ritual/ state)",
+                dirs.project_root.display()
+            );
             let report = scaffold::init(&dirs.project_root, force)?;
             output::render_init(&cfg, &report);
             if skills {
@@ -283,7 +292,13 @@ fn main() -> Result<()> {
                 .iter()
                 .find(|m| m.run_id == run_id)
                 .with_context(|| format!("no run '{run_id}'; see `ritual history`"))?;
-            let recorded = meta.repro.clone().unwrap_or_default();
+            // No bundle recorded (bench/chat runs): say so - a fabricated
+            // default bundle would print bogus values and a meaningless
+            // DIFFERS diff.
+            let Some(recorded) = meta.repro.clone() else {
+                println!("run '{run_id}' recorded no repro bundle (bench/chat runs don't)");
+                return Ok(());
+            };
             println!("{}", serde_json::to_string_pretty(&recorded)?);
             let current = ritual::provenance::collect(&cfg, &dirs);
             if current == recorded {
@@ -371,14 +386,25 @@ fn main() -> Result<()> {
             rt.block_on(ritual::runner::daemon_main(&dirs, &run_id))?;
         }
         Some(Command::VerifyLog) => match ritual::provenance::verify_log(&dirs.runs_dir())? {
-            ritual::provenance::VerifyOutcome::Ok { runs, checkpoint } => match checkpoint {
-                Some(cp) => println!(
-                    "chain intact: checkpoint({}, {} pruned) + {runs} run(s) verified",
-                    cp.created_at.format("%Y-%m-%d"),
-                    cp.pruned_runs
-                ),
-                None => println!("chain intact: {runs} chained run(s) verified"),
-            },
+            ritual::provenance::VerifyOutcome::Ok {
+                runs,
+                unchained,
+                checkpoint,
+            } => {
+                match checkpoint {
+                    Some(cp) => println!(
+                        "chain intact: checkpoint({}, {} pruned) + {runs} run(s) verified",
+                        cp.created_at.format("%Y-%m-%d"),
+                        cp.pruned_runs
+                    ),
+                    None => println!("chain intact: {runs} chained run(s) verified"),
+                }
+                if unchained > 0 {
+                    println!(
+                        "  ⚠ {unchained} run(s) are OUTSIDE the chain (archived without a link, e.g. chain-lock failure) - the verified count does not cover them"
+                    );
+                }
+            }
             ritual::provenance::VerifyOutcome::Broken { run_id, reason } => {
                 eprintln!("CHAIN BROKEN at {run_id}: {reason}");
                 std::process::exit(1);

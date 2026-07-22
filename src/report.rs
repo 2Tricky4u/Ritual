@@ -27,7 +27,9 @@ pub fn generate(
     let slug = match feature {
         Some(f) => state::branch_slug(f),
         None => state::branch_slug(
-            &state::current_branch(&dirs.project_root).unwrap_or_else(|| "detached".into()),
+            // work_root, not project_root: in a linked worktree the report
+            // must cover the branch checked out HERE, as `status` does.
+            &state::current_branch(&dirs.work_root).unwrap_or_else(|| "detached".into()),
         ),
     };
     let st = State::load(dirs)?;

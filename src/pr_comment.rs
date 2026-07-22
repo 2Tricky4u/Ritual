@@ -25,6 +25,12 @@ fn latest_dual_review(findings_dir: &Path) -> Option<LoadedFindings> {
         })
 }
 
+/// One markdown table cell: agent-authored text may carry newlines (which
+/// split the row) and pipes (which add columns) - flatten both.
+fn md_cell(s: &str) -> String {
+    s.replace(['\r', '\n'], " ").replace('|', "\\|")
+}
+
 /// Markdown body: header + one table row per confirmed, unresolved finding.
 fn build_body(file: &FindingsFile) -> (String, usize) {
     let mut rows = Vec::new();
@@ -41,9 +47,9 @@ fn build_body(file: &FindingsFile) -> (String, usize) {
             "| {} | {} | `{}` | {} | {} |",
             f.severity.label(),
             sources,
-            f.location(),
-            f.title.replace('|', "\\|"),
-            f.scenario.replace('|', "\\|"),
+            md_cell(&f.location()),
+            md_cell(&f.title),
+            md_cell(&f.scenario),
         ));
     }
     let mut body = format!(
@@ -69,18 +75,22 @@ fn build_body(file: &FindingsFile) -> (String, usize) {
     (body, rows.len())
 }
 
-fn gh(cfg: &Config) -> std::process::Command {
+/// Every `gh` invocation is pinned to the work root: gh resolves the repo
+/// (and the current branch's PR) from its cwd, and ritual's contract is the
+/// work root, not wherever the process happens to run.
+fn gh(cfg: &Config, work_root: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new(&cfg.gh_cmd[0]);
     cmd.args(&cfg.gh_cmd[1..]);
+    cmd.current_dir(work_root);
     cmd
 }
 
 /// PR number from the arg, else the PR associated with the current branch.
-fn resolve_pr(cfg: &Config, pr: Option<u32>) -> Result<u32> {
+fn resolve_pr(cfg: &Config, work_root: &Path, pr: Option<u32>) -> Result<u32> {
     if let Some(n) = pr {
         return Ok(n);
     }
-    let out = gh(cfg)
+    let out = gh(cfg, work_root)
         .args(["pr", "view", "--json", "number"])
         .output()
         .context("running gh pr view (is gh installed?)")?;
@@ -101,10 +111,10 @@ pub fn pr_comment(cfg: &Config, dirs: &RitualDirs, pr: Option<u32>, inline: bool
     let (raw_body, posted) = build_body(&latest.file);
     // PR comments leave the machine: redact like any other outward artifact.
     let body = Redactor::new(cfg.redaction).text(&raw_body);
-    let pr = resolve_pr(cfg, pr)?;
+    let pr = resolve_pr(cfg, &dirs.work_root, pr)?;
 
     // Body via stdin, no argv-length or quoting hazards.
-    let mut child = gh(cfg)
+    let mut child = gh(cfg, &dirs.work_root)
         .args(["pr", "comment", &pr.to_string(), "--body-file", "-"])
         .stdin(std::process::Stdio::piped())
         .spawn()
@@ -126,7 +136,7 @@ pub fn pr_comment(cfg: &Config, dirs: &RitualDirs, pr: Option<u32>, inline: bool
     );
 
     if inline {
-        post_inline(cfg, &latest.file, pr);
+        post_inline(cfg, &dirs.work_root, &latest.file, pr);
     }
     Ok(())
 }
@@ -155,8 +165,8 @@ fn inline_body(f: &crate::findings::Finding) -> String {
 
 /// Best-effort per-finding review comments: each needs a file+line and the
 /// PR's head commit; individual failures are warnings, never fatal.
-fn post_inline(cfg: &Config, file: &FindingsFile, pr: u32) {
-    let head = gh(cfg)
+fn post_inline(cfg: &Config, work_root: &Path, file: &FindingsFile, pr: u32) {
+    let head = gh(cfg, work_root)
         .args(["pr", "view", &pr.to_string(), "--json", "headRefOid"])
         .output()
         .ok()
@@ -177,7 +187,7 @@ fn post_inline(cfg: &Config, file: &FindingsFile, pr: u32) {
             continue; // no location -> summary table only
         };
         let body = redactor(&inline_body(f));
-        let status = gh(cfg)
+        let status = gh(cfg, work_root)
             .args([
                 "api",
                 &format!("repos/{{owner}}/{{repo}}/pulls/{pr}/comments"),
@@ -230,6 +240,25 @@ mod tests {
         assert!(body.contains("claude + codex"));
         assert!(!body.contains("dismissed noise"));
         assert!(!body.contains("unconfirmed"));
+    }
+
+    #[test]
+    fn multiline_titles_and_scenarios_stay_on_one_table_row() {
+        let file = file_from(
+            r#"{"stage":"dual-review","branch":"b","generated_at":"2026-07-22",
+                "source_models":{"claude":"c"},
+                "findings":[
+                  {"title":"line one\ntitle two","severity":"major","verdict":"confirmed",
+                   "file":"src/a.rs","line":3,"scenario":"first\r\nsecond","sources":["claude"]}
+                ]}"#,
+        );
+        let (body, n) = build_body(&file);
+        assert_eq!(n, 1);
+        let row = body.lines().find(|l| l.contains("line one")).unwrap();
+        assert!(
+            row.contains("line one title two") && row.contains("first  second"),
+            "newlines must flatten into the row, not split it: {row}"
+        );
     }
 
     #[test]

@@ -47,12 +47,13 @@ pub fn review(cfg: &Config, dirs: &RitualDirs) -> Result<Option<PathBuf>> {
         findings,
         ..Default::default()
     };
-    std::fs::create_dir_all(dirs.findings_dir())?;
+    // Millisecond stamp (run-id style) so same-second runs never clobber;
+    // atomic write so a concurrent reader never parses a torn file.
     let path = dirs.findings_dir().join(format!(
         "{}-coderabbit.json",
-        Utc::now().format("%Y%m%dT%H%M%SZ")
+        Utc::now().format("%Y%m%dT%H%M%S%3fZ")
     ));
-    std::fs::write(&path, serde_json::to_string_pretty(&file)?)?;
+    crate::fsx::atomic_write(&path, serde_json::to_string_pretty(&file)?.as_bytes())?;
     Ok(Some(path))
 }
 

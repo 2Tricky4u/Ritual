@@ -1110,7 +1110,7 @@ pub fn build(
 pub fn ensure_online(cfg: &Config) -> Result<()> {
     anyhow::ensure!(
         !cfg.offline,
-        "offline = true blocks agent runs (settings: S -> offline, or [offline] in .ritual/config.toml)"
+        "offline = true blocks agent runs (settings: S -> offline, or the top-level `offline = false` key in .ritual/config.toml)"
     );
     Ok(())
 }

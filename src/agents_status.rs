@@ -35,7 +35,12 @@ pub(crate) fn run_capture(argv: &[String], extra: &[&str]) -> Option<std::proces
 }
 
 pub(crate) fn probe_claude_auth(cfg: &Config) -> Option<ClaudeAuth> {
-    let out = run_capture(&cfg.claude_cmd, &["auth", "status"])?;
+    // `--json` pins the machine-readable shape (the default today, but the
+    // flag makes drift to human text impossible); a failed exit is unknown.
+    let out = run_capture(&cfg.claude_cmd, &["auth", "status", "--json"])?;
+    if !out.status.success() {
+        return None;
+    }
     serde_json::from_slice(&out.stdout).ok()
 }
 
@@ -56,7 +61,7 @@ pub(crate) fn probe_codex_cli(cfg: &Config) -> Option<bool> {
 pub(crate) fn probe_mcp_server(cfg: &Config, name: &str) -> Option<bool> {
     let out = run_capture(&cfg.claude_cmd, &["mcp", "list"])?;
     let text = String::from_utf8_lossy(&out.stdout);
-    let prefix = format!("{name}:");
+    let prefix = format!("{}:", name.to_lowercase());
     for line in text.lines() {
         let lower = line.to_lowercase();
         if lower.starts_with(&prefix) {

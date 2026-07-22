@@ -96,6 +96,22 @@ pub static CATALOG: &[SettingDef] = &[
         get: |c| Some(c.budget_coverage_usd.to_string()),
     },
     SettingDef {
+        key: "budget_audit_usd",
+        label: "audit (per leg)",
+        doc: "USD cap unit per audit leg; judge caps at (lanes+1)x",
+        group: "budgets",
+        kind: SettingKind::F64,
+        get: |c| Some(c.budget_audit_usd.to_string()),
+    },
+    SettingDef {
+        key: "budget_architect_usd",
+        label: "architect (per run)",
+        doc: "USD cap for ONE architecture-map survey run",
+        group: "budgets",
+        kind: SettingKind::F64,
+        get: |c| Some(c.budget_architect_usd.to_string()),
+    },
+    SettingDef {
         key: "budget_complete_usd",
         label: "complete (per invocation)",
         doc: "USD ceiling for a whole `ritual complete` loop",
@@ -249,6 +265,46 @@ pub static CATALOG: &[SettingDef] = &[
         group: "behavior",
         kind: SettingKind::U64,
         get: |c| Some(c.check_timeout_secs.to_string()),
+    },
+    SettingDef {
+        key: "audit_max_lanes",
+        label: "audit lanes (max)",
+        doc: "hard cap on audit lanes per run (min 1)",
+        group: "behavior",
+        kind: SettingKind::U64,
+        get: |c| Some(c.audit_max_lanes.to_string()),
+    },
+    SettingDef {
+        key: "complete_max_rounds",
+        label: "complete: max rounds",
+        doc: "hard round cap for the complete loop",
+        group: "behavior",
+        kind: SettingKind::U64,
+        get: |c| Some(c.complete_max_rounds.to_string()),
+    },
+    SettingDef {
+        key: "complete_clean_rounds",
+        label: "complete: clean rounds",
+        doc: "consecutive clean rounds to declare done",
+        group: "behavior",
+        kind: SettingKind::U64,
+        get: |c| Some(c.complete_clean_rounds.to_string()),
+    },
+    SettingDef {
+        key: "complete_round_scope",
+        label: "complete: gaps per round",
+        doc: "how many deliverable gaps each round drives",
+        group: "behavior",
+        kind: SettingKind::U64,
+        get: |c| Some(c.complete_round_scope.to_string()),
+    },
+    SettingDef {
+        key: "complete_max_attempts_per_item",
+        label: "complete: attempts per item",
+        doc: "per-deliverable attempts before it is marked stuck",
+        group: "behavior",
+        kind: SettingKind::U64,
+        get: |c| Some(c.complete_max_attempts_per_item.to_string()),
     },
 ];
 
@@ -498,6 +554,12 @@ fn write_atomic(config_path: &Path, contents: &str) -> anyhow::Result<()> {
         tmp.write_all(contents.as_bytes())?;
         tmp.flush()?;
     }
+    // NamedTempFile creates 0600; a shared project config that was
+    // group/world-readable must not silently lose that on one settings edit.
+    // Best-effort: a chmod failure must not block the write.
+    if let Ok(meta) = std::fs::metadata(config_path) {
+        let _ = tmp.as_file().set_permissions(meta.permissions());
+    }
     tmp.persist(config_path)
         .with_context(|| format!("replacing {}", config_path.display()))?;
     Ok(())
@@ -506,6 +568,22 @@ fn write_atomic(config_path: &Path, contents: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn write_setting_preserves_existing_file_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "budget_daily_usd = 5.0\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_setting(&path, "budget_daily_usd", Some(&SettingValue::F64(9.0))).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o644,
+            "a settings edit must not drop shared read access"
+        );
+    }
 
     /// Byte-identical stand-in for the real homeserver project config.
     const HOMESERVER_FIXTURE: &str = "\

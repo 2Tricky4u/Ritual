@@ -320,16 +320,22 @@ pub async fn daemon_main(dirs: &RitualDirs, run_id: &str) -> Result<()> {
 /// Land a failure meta + clean the sidecars: a tailer must always find an
 /// answer on disk, whatever killed the run.
 fn write_failure_meta(dirs: &RitualDirs, run_id: &str, identity: RunMeta, error: &str) {
-    let meta = RunMeta {
-        run_id: run_id.to_string(),
-        ok: false,
-        error: Some(error.to_string()),
-        finished_at: Some(Utc::now()),
-        ..identity
-    };
     let meta_path = dirs.runs_dir().join(format!("{run_id}.meta.json"));
-    if let Ok(json) = serde_json::to_string_pretty(&meta) {
-        let _ = crate::fsx::atomic_write(&meta_path, json.as_bytes());
+    // A meta already on disk means the run finished and recorded its real
+    // outcome: a SIGTERM raced in after the success meta landed (or an
+    // unbiased select! with both branches ready) must never replace it with
+    // a cancellation. Sidecar cleanup below still runs.
+    if !meta_path.exists() {
+        let meta = RunMeta {
+            run_id: run_id.to_string(),
+            ok: false,
+            error: Some(error.to_string()),
+            finished_at: Some(Utc::now()),
+            ..identity
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&meta) {
+            let _ = crate::fsx::atomic_write(&meta_path, json.as_bytes());
+        }
     }
     let _ = std::fs::remove_file(status_path(dirs, run_id));
     let _ = std::fs::remove_file(request_path(dirs, run_id));
@@ -439,8 +445,9 @@ pub struct RunOutcome {
 }
 
 /// Spawn a headless agent run. Events arrive on the returned channel; the
-/// raw stream is archived verbatim to `.ritual/runs/<run_id>.jsonl` BEFORE
-/// parsing, and a `<run_id>.meta.json` summary is written when it exits.
+/// raw stream is archived to `.ritual/runs/<run_id>.jsonl` BEFORE parsing
+/// (redacted first when redaction is on, so the file is safe to share), and
+/// a `<run_id>.meta.json` summary is written when it exits.
 pub async fn execute_run(
     dirs: &RitualDirs,
     req: RunRequest,
@@ -452,8 +459,12 @@ pub async fn execute_run(
     tokio::fs::create_dir_all(&runs_dir).await?;
 
     // Liveness sidecar for tailers/resurrection; removed once meta lands.
+    // A failed write (ENOSPC, perms) is fatal HERE: without it tailers
+    // declare the run vanished after the grace window while the agent burns
+    // tokens - better to fail loudly before spawning, and the daemon wrapper
+    // still lands a failure meta.
     let status_file = status_path(dirs, &run_id);
-    let _ = std::fs::write(
+    std::fs::write(
         &status_file,
         serde_json::to_string(&RunStatus {
             pid: std::process::id(),
@@ -461,7 +472,8 @@ pub async fn execute_run(
             branch: req.branch.clone(),
             proc_start: proc_start_time(std::process::id()),
         })?,
-    );
+    )
+    .with_context(|| format!("writing {}", status_file.display()))?;
 
     let archive_path = runs_dir.join(format!("{run_id}.jsonl"));
     let mut archive = tokio::fs::File::create(&archive_path)
@@ -557,6 +569,7 @@ pub async fn execute_run(
     let mut redactor = crate::redact::Redactor::new(req.redact);
     let mut reader = BufReader::new(stdout);
     let mut buf: Vec<u8> = Vec::new();
+    let mut saw_completed_ok = false;
     loop {
         buf.clear();
         if reader.read_until(b'\n', &mut buf).await? == 0 {
@@ -567,6 +580,9 @@ pub async fn execute_run(
         archive.write_all(line.as_bytes()).await?;
         archive.write_all(b"\n").await?;
         for ev in req.agent.parse(&line) {
+            if matches!(ev, AgentEvent::Completed { ok: true, .. }) {
+                saw_completed_ok = true;
+            }
             harvest(&mut meta, &ev);
             let _ = tx.send(ev).await;
         }
@@ -578,7 +594,11 @@ pub async fn execute_run(
 
     meta.finished_at = Some(Utc::now());
     meta.exit_code = status.code();
-    meta.ok = status.success() && meta.error.is_none() && meta.completed_ok();
+    // ok means the stream actually said so: a Completed{ok:true} was seen
+    // (tracked explicitly - codex may complete without usage/cost/duration,
+    // so side fields cannot stand in for the event), the exit was clean, and
+    // no error survived to the end.
+    meta.ok = status.success() && meta.error.is_none() && saw_completed_ok;
     if !meta.ok && meta.error.is_none() {
         // The real reason often lives ONLY on stderr; decode_failure would
         // otherwise report a bare exit code.
@@ -597,9 +617,20 @@ pub async fn execute_run(
     let locked = crate::provenance::with_chain_lock(&runs_dir, || {
         let prev = crate::provenance::last_link(&runs_dir);
         meta.chain = crate::provenance::compute_link(&prev, &archive_bytes, &meta).ok();
-        crate::fsx::atomic_write(&meta_path, serde_json::to_string_pretty(&meta)?.as_bytes())
+        crate::fsx::atomic_write(&meta_path, serde_json::to_string_pretty(&meta)?.as_bytes())?;
+        // Tip sidecar (best-effort, after the meta so it never leads it):
+        // verify_log checks the walk ends here, making a deleted newest
+        // chained meta (a silent rollback) detectable.
+        if let Some(c) = &meta.chain {
+            let _ = crate::fsx::atomic_write(&runs_dir.join("chain.tip"), c.this.as_bytes());
+        }
+        Ok(())
     });
-    if locked.is_err() {
+    if let Err(e) = locked {
+        // Disclose loudly: an unchained meta is invisible to the chain walk,
+        // and verify-log would otherwise print "intact" over a gap. The
+        // verify side counts unchained runs too - this is the write-side half.
+        eprintln!("warning: run {run_id} archived WITHOUT a chain link (chain lock failed: {e:#})");
         meta.chain = None;
         crate::fsx::atomic_write(&meta_path, serde_json::to_string_pretty(&meta)?.as_bytes())
             .with_context(|| format!("writing {}", meta_path.display()))?;
@@ -637,12 +668,34 @@ fn harvest(meta: &mut RunMeta, ev: &AgentEvent) {
             duration_ms,
             permission_denials,
         } => {
-            meta.total_cost_usd = *total_cost_usd;
-            meta.usage = usage.clone();
-            meta.num_turns = *num_turns;
-            meta.duration_ms = *duration_ms;
-            meta.permission_denials = permission_denials.clone();
-            if !ok {
+            // Multi-turn streams (codex emits one turn.completed per turn)
+            // must ACCUMULATE usage/cost, not keep only the last turn's.
+            if let Some(c) = total_cost_usd {
+                *meta.total_cost_usd.get_or_insert(0.0) += c;
+            }
+            if let Some(u) = usage {
+                let acc = meta.usage.get_or_insert_with(Default::default);
+                acc.input_tokens += u.input_tokens;
+                acc.output_tokens += u.output_tokens;
+                acc.cache_read_input_tokens += u.cache_read_input_tokens;
+                acc.cache_creation_input_tokens += u.cache_creation_input_tokens;
+            }
+            if num_turns.is_some() {
+                meta.num_turns = *num_turns;
+            }
+            if duration_ms.is_some() {
+                meta.duration_ms = *duration_ms;
+            }
+            if !permission_denials.is_empty() {
+                meta.permission_denials = permission_denials.clone();
+            }
+            if *ok {
+                // A successful later turn supersedes a recoverable mid-stream
+                // error notification: the stream's last word wins, so a run
+                // that ends ok:true is not recorded failed.
+                meta.error = None;
+                meta.error_subtype = None;
+            } else {
                 meta.error = Some(
                     result_text
                         .clone()
@@ -652,14 +705,6 @@ fn harvest(meta: &mut RunMeta, ev: &AgentEvent) {
             }
         }
         _ => {}
-    }
-}
-
-impl RunMeta {
-    /// True if we saw a Completed{ok:true}; a stream that never completed
-    /// (killed, crashed) is not ok even when the exit code is 0.
-    fn completed_ok(&self) -> bool {
-        self.duration_ms.is_some() || self.usage.is_some() || self.total_cost_usd.is_some()
     }
 }
 

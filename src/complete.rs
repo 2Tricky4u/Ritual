@@ -71,8 +71,13 @@ pub fn plan_round(state: &mut DriveState, report: &CoverageReport, b: &Bounds) -
             }
             return RoundAction::Drive(Vec::new()); // confirming clean round
         }
-        // Gaps remain but every one is stuck.
-        return RoundAction::Stuck(state.stuck.iter().cloned().collect());
+        // Gaps remain but every one is stuck. Report the STILL-OPEN gaps,
+        // not the historical stuck set: a deliverable that went stuck in an
+        // earlier round but was since fixed incidentally is no longer the
+        // human's problem.
+        let still_open: BTreeSet<String> =
+            report.gaps.iter().map(|g| g.deliverable.clone()).collect();
+        return RoundAction::Stuck(still_open.into_iter().collect());
     }
 
     state.clean_streak = 0;
@@ -122,6 +127,21 @@ pub fn illegal_tick(before: &str, after: &str) -> Option<String> {
             return Some(item);
         }
     }
+    // Aggregate backstop: the unchecked count may only grow (unchecking,
+    // adding items). A net decrease is a tick under a reworded text or a
+    // deleted deliverable - self-certification the exact-text check above
+    // can't see. Legitimate rewording keeps the item unchecked, so the
+    // total is preserved and passes.
+    let unchecked_after = items(after, false);
+    let n_before: usize = unchecked_before.values().sum();
+    let n_after: usize = unchecked_after.values().sum();
+    if n_after < n_before {
+        return unchecked_before
+            .iter()
+            .find(|(t, n)| unchecked_after.get(*t).copied().unwrap_or(0) < **n)
+            .map(|(t, _)| t.clone())
+            .or_else(|| Some(String::new()));
+    }
     None
 }
 
@@ -143,6 +163,24 @@ mod tests {
         let b2 = "  * [ ] item\n";
         let a2 = "  * [X] item\n";
         assert_eq!(illegal_tick(b2, a2).as_deref(), Some("item"));
+    }
+
+    #[test]
+    fn illegal_tick_catches_reword_and_tick_and_deletion() {
+        let before = "## Deliverables\n- [ ] D1: parser handles drift\n- [x] D2: docs\n";
+        // Reword-and-tick: the unchecked text vanishes and a checked one
+        // appears - the unchecked count dropped, so the gate fires.
+        let reworded = "## Deliverables\n- [x] D1: parser handles input drift\n- [x] D2: docs\n";
+        assert_eq!(
+            illegal_tick(before, reworded).as_deref(),
+            Some("D1: parser handles drift")
+        );
+        // Deleting the unchecked deliverable outright is the same dodge.
+        let deleted = "## Deliverables\n- [x] D2: docs\n";
+        assert_eq!(
+            illegal_tick(before, deleted).as_deref(),
+            Some("D1: parser handles drift")
+        );
     }
 
     #[test]

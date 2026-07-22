@@ -125,6 +125,28 @@ pub fn ps(dirs: &RitualDirs) -> Result<()> {
     Ok(())
 }
 
+/// Infer an archive's dialect when the .request.json sidecar is gone: codex
+/// event types are namespaced (`thread.`/`turn.`/`item.`), Claude's are bare
+/// words. None when nothing is recognizable (caller falls back).
+fn sniff_agent(archive: &std::path::Path) -> Option<runner::AgentKind> {
+    let text = std::fs::read_to_string(archive).ok()?;
+    for line in text.lines().take(20) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(t) = v.get("type").and_then(|t| t.as_str()) else {
+            continue;
+        };
+        if t.starts_with("thread.") || t.starts_with("turn.") || t.starts_with("item.") {
+            return Some(runner::AgentKind::Codex);
+        }
+        if matches!(t, "system" | "assistant" | "user" | "result") {
+            return Some(runner::AgentKind::Claude);
+        }
+    }
+    None
+}
+
 /// Humanized age from the run id's millisecond timestamp prefix.
 fn run_age(run_id: &str) -> String {
     let Some(ts) = run_id.split('-').next() else {
@@ -152,9 +174,12 @@ pub fn attach(cfg: &Config, dirs: &RitualDirs, run_id: &str, kill: bool) -> Resu
                 println!("{run_id} ({}) killed", status.stage);
                 return Ok(());
             }
-            // The agent lives in the persisted request, not the status file.
+            // The agent lives in the persisted request, not the status file;
+            // with the request gone, sniff the archive dialect rather than
+            // replaying a codex stream through the Claude parser.
             let agent = runner::load_request(dirs, run_id)
                 .map(|r| r.agent)
+                .or_else(|| sniff_agent(&dirs.runs_dir().join(format!("{run_id}.jsonl"))))
                 .unwrap_or(runner::AgentKind::Claude);
             println!(
                 "attached to {run_id} ({} on {})",
@@ -260,6 +285,20 @@ pub fn complete(cfg: &Config, dirs: &RitualDirs, check: bool) -> Result<bool> {
             let cov_after = coverage_files(&dirs.findings_dir());
             if cov_after.difference(&cov_before).next().is_none() {
                 println!("stopped: the coverage judge produced no report this round");
+                break;
+            }
+            // The NEW report must also parse: a malformed judge file is
+            // invisible to `latest_report` (which skips junk), so trusting
+            // the set-difference alone would let garbage read as a clean
+            // round and advance the clean streak.
+            let new_parses = cov_after.difference(&cov_before).any(|name| {
+                std::fs::read_to_string(dirs.findings_dir().join(name))
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<crate::findings::FindingsFile>(&t).ok())
+                    .is_some()
+            });
+            if !new_parses {
+                println!("stopped: the coverage judge wrote an unparseable report this round");
                 break;
             }
             let mut report =
@@ -1041,8 +1080,8 @@ fn run_spec_stage(
     } else {
         StageStatus::Pending
     };
-    set_stage(st, branch, StageId::Spec, new_status, None, None);
-    st.save(dirs)?;
+    // Reload-merge-save: the editor session may have been open a while.
+    set_stage_persist(dirs, st, branch, StageId::Spec, new_status, None, None)?;
     println!(
         "spec {} ({})",
         if meaningful {
@@ -1089,6 +1128,7 @@ fn run_interactive(
         .with_context(|| format!("launching {bin}"))?;
 
     // Completion heuristics per stage (attached runs give us no event stream).
+    let mut implement_done = false;
     let new_status = match stage {
         StageId::Plan => {
             if mtime(&dirs.plan_file(&slug)) != plan_mtime_before {
@@ -1114,14 +1154,7 @@ fn run_interactive(
                 StageStatus::Failed
             } else {
                 if check_green(&dirs.work_root, cfg.check_timeout_secs) {
-                    set_stage(
-                        st,
-                        branch,
-                        StageId::Implement,
-                        StageStatus::Done,
-                        None,
-                        Some(&dirs.work_root),
-                    );
+                    implement_done = true;
                     println!("check.sh green: tests-red and implement both done");
                 } else {
                     println!("failing tests in place, ready to implement");
@@ -1145,8 +1178,29 @@ fn run_interactive(
             }
         }
     };
-    set_stage(st, branch, stage, new_status, None, Some(&dirs.work_root));
-    st.save(dirs)?;
+    // Reload-merge-save (set_stage_persist): an interactive session can run
+    // for hours, so saving the snapshot loaded at launch would clobber
+    // everything the TUI or another CLI wrote meanwhile.
+    if implement_done {
+        set_stage_persist(
+            dirs,
+            st,
+            branch,
+            StageId::Implement,
+            StageStatus::Done,
+            None,
+            Some(&dirs.work_root),
+        )?;
+    }
+    set_stage_persist(
+        dirs,
+        st,
+        branch,
+        stage,
+        new_status,
+        None,
+        Some(&dirs.work_root),
+    )?;
     // Scriptability parity with the headless path: a crashed session is a
     // nonzero exit (NeedsAttention keeps 0 - the stage ran, work remains).
     anyhow::ensure!(
@@ -1258,6 +1312,7 @@ fn run_headless(
             stage.label(),
             &refs,
             !outcome.meta.ok,
+            cfg.redaction,
         )?;
         println!(
             "junit: {} ({} tests, {} failures)",

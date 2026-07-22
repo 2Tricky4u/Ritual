@@ -495,7 +495,10 @@ fn budget_check(cfg: &Config) -> CheckResult {
         ("finding-fix", cfg.budget_finding_fix_usd),
         ("code-fix", cfg.budget_code_fix_usd),
         ("coverage", cfg.budget_coverage_usd),
-        ("audit (per leg)", cfg.budget_audit_usd),
+        (
+            "audit (per-leg unit; judge caps at (lanes+1)×)",
+            cfg.budget_audit_usd,
+        ),
         ("architect", cfg.budget_architect_usd),
     ] {
         if per_run > daily {

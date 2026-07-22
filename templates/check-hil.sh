@@ -27,8 +27,10 @@ CAPTURE_SECS="${CAPTURE_SECS:-10}"
 LOG="$(mktemp)"
 trap 'rm -f "$LOG"' EXIT
 
-timeout "$CAPTURE_SECS" cat "$PORT" > "$LOG" 2>/dev/null || true
+# Configure the line BEFORE capturing: a fresh-plugged adapter defaults to
+# 9600 and would capture framing garbage at the wrong baud.
 stty -F "$PORT" "$BAUD" 2>/dev/null || true
+timeout "$CAPTURE_SECS" cat "$PORT" > "$LOG" 2>/dev/null || true
 
 # Assert on what the firmware must print (adapt patterns):
 grep -q "BOOT OK"        "$LOG" || { echo "no boot banner"; tail -20 "$LOG"; exit 1; }
